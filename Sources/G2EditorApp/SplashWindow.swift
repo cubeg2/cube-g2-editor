@@ -79,6 +79,11 @@ struct SplashCard: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.white.opacity(0.75))
                         .fixedSize()
+                    // Numer wersji — testerzy podają go w zgłoszeniach (prośba użytkownika 2026-10-16).
+                    Text(AppUpdates.versionText.map { "Version \($0)" } ?? "Development build")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.5))
+                        .fixedSize()
                 }
                 .frame(width: 400)
                 PatchCables(cables: PatchCables.right).frame(width: 150, height: 150)
