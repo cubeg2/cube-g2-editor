@@ -1,0 +1,17 @@
+.DS_Store
+.build/
+*.o
+*.d
+*.swp
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+.codegraph/
+node_modules/
+.module-snapshots/
+# Schematy Xcode generują się same i niosą numer wersji Xcode — na dwóch Makach z różnym Xcode
+# byłyby wiecznie brudne. Zawierają tylko stan domyślny.
+.swiftpm/xcode/xcshareddata/xcschemes/
+
+# Paczka testowa (Tools/build_app.sh)
+dist/

@@ -1,0 +1,16 @@
+--allman false
+--indent 4
+--self insert
+--disable redundantSelf
+--commas always
+--trimwhitespace always
+--semicolons never
+# SwiftFormat 0.63 włączył domyślnie rozwijanie jednolinijkowych ciał (`if x { y }`
+# → trzy linie). Repozytorium jest pisane w starszym stylu, więc te reguły są
+# wyłączone — inaczej każdy dotknięty plik puchnie o setki linii niezwiązanych
+# z zadaniem. Zdjęte 2026-09-18 przy komendzie 0x21.
+--disable wrapIfStatementBodies
+--disable wrapIfExpressionBodies
+--disable wrapLoopBodies
+--disable wrapFunctionBodies
+--disable wrapPropertyBodies

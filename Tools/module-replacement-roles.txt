@@ -1,0 +1,274 @@
+# Module replacement roles
+#
+# Why this file exists: a patch written years ago on the original hardware editor
+# should keep working here, on current Apple Silicon machines. Swapping one module
+# for a relative of it has to move the cables and the knob values to the places a
+# user expects, or the patch quietly falls apart on the first edit.
+#
+# A role is one thing a module can do that survives being swapped for another
+# module of the same family: a socket, a knob, or an output. When two modules
+# in a family both fill a role, a cable or a knob value moves across on a swap.
+#
+# Written in module and port names on purpose - the names are what a user sees
+# on the panel, and what makes an entry checkable against a running editor.
+# Tools/generate_module_replacement_db.py turns this file into Swift; it reads
+# port numbers from Sources/G2Core/ModuleDatabase.swift and never from anywhere
+# else, so a rename or a reordered port is caught here rather than silently
+# mapping a cable to the wrong socket.
+#
+# Syntax
+#   family <name>           starts a family; every member may replace every other
+#   members <Short> ...     module short names, in the order the menu offers them
+#   knob <role>: M.Knob ... knob values that move together
+#   in <role>: M.Socket ... input sockets; +Knob attaches a knob that travels
+#                           with the cable (a channel level following its input)
+#   out <role>: M.Socket .. output sockets
+#
+# A role may name the same module twice; that is how a mono pair folds into one
+# stereo channel. Order matters only in those roles, so entries stay in order.
+
+family Shaper
+members Clip Overdrive Saturate ShpExp WaveWrap ShpStatic Rect
+  in in: Clip.In Overdrive.In Saturate.In ShpExp.In WaveWrap.In ShpStatic.In Rect.In
+  in mod: Clip.Mod+ClipLevMod Overdrive.Mod+AmountMod Saturate.Mod+AmountMod ShpExp.Mod+AmountMod WaveWrap.Mod+AmountMod
+  out out: Clip.Out WaveWrap.Out Rect.Out Overdrive.Out Saturate.Out ShpExp.Out ShpStatic.Out
+  knob amount: Clip.ClipLev WaveWrap.Amount Overdrive.Amount Saturate.Amount ShpExp.Amount
+  knob active: Clip.Active WaveWrap.Active Rect.Active Overdrive.Active Saturate.Active ShpExp.Active ShpStatic.Active
+
+family Level
+members Constant ConstSwM ConstSwT LevAdd LevConv LevAmp LevMult LevMod EnvFollow NoiseGate CompLev CompSig MinMax ModAmt
+  in in: LevAdd.In LevConv.In LevAmp.In LevMult.In LevMod.In EnvFollow.In NoiseGate.In CompLev.In CompSig.A MinMax.A ModAmt.In
+  in b: CompSig.B MinMax.B
+  in mod: LevMult.Mod LevMod.Mod+ModDepth ModAmt.Mod+ModDepth
+  out out: Constant.Out ConstSwM.Out ConstSwT.Out LevAdd.Out LevConv.Out LevAmp.Out LevMult.Out LevMod.Out EnvFollow.Out NoiseGate.Out CompLev.Out CompSig.Out MinMax.Min ModAmt.Out
+  knob level: Constant.Level ConstSwT.Lev LevAdd.Level LevAmp.Gain LevMod.ModType CompLev.C ModAmt.ModDepth
+  knob bipuni: Constant.BipUni ConstSwM.BipUni ConstSwT.BipUni LevAdd.BipUni LevConv.InputType LevAmp.Type
+  knob attack: EnvFollow.Attack NoiseGate.Attack
+  knob release: EnvFollow.Release NoiseGate.Release
+
+family MIDI Send
+members CtrlSend PCSend NoteSend Automate
+  in send: CtrlSend.Send PCSend.Send NoteSend.Gate Automate.In
+  in value: CtrlSend.Value PCSend.Program NoteSend.Note
+  out send2: CtrlSend.Send PCSend.Send Automate.Out
+  knob ch: CtrlSend.Ch PCSend.Ch NoteSend.Ch Automate.Ch
+  knob ctrl: CtrlSend.Ctrl PCSend.Program NoteSend.Note Automate.Ctrl
+  knob val: CtrlSend.Val NoteSend.Vel Automate.Val
+
+family MIDI Receive
+members CtrlRcv NoteRcv
+  out rcv: CtrlRcv.Rcv NoteRcv.Gate
+  out val: CtrlRcv.Val NoteRcv.Vel
+  knob ch: CtrlRcv.Ch NoteRcv.Ch
+  knob ctrl: CtrlRcv.Ctrl NoteRcv.Note
+
+family Note
+members NoteQuant KeyQuant PartQuant NoteScaler Glide ZeroCnt PitchTrack
+  in in: NoteQuant.In KeyQuant.In PartQuant.In NoteScaler.In Glide.In ZeroCnt.In PitchTrack.In
+  out out: NoteQuant.Out KeyQuant.Out PartQuant.Out NoteScaler.Out Glide.Out ZeroCnt.Out PitchTrack.Pitch
+  knob range: NoteQuant.Range KeyQuant.Range PartQuant.Range NoteScaler.Range
+
+family Oscillator
+members OscA OscB OscC OscD OscPM OscShpA OscShpB OscDual OscNoise Noise MetNoise OscPerc DrumSynth OscString Operator OscMaster
+  in sync: OscB.Sync OscC.Sync OscPM.Sync OscShpA.Sync OscShpB.Sync OscDual.Sync
+  in pitch: OscA.Pitch OscB.Pitch OscC.Pitch OscD.Pitch OscPM.Pitch OscShpA.Pitch OscShpB.Pitch OscDual.Pitch OscString.Pitch OscPerc.Pitch DrumSynth.Pitch OscNoise.Pitch OscMaster.Pitch
+  in pitchvar: OscA.PitchVar+PitchMod OscB.PitchVar+PitchMod OscC.PitchVar+PitchMod OscPM.PitchVar+PitchVar OscShpA.PitchVar+PitchMod OscShpB.PitchVar+PitchMod OscDual.PitchVar+PitchMod OscString.PitchVar+PitchMod OscPerc.PitchVar+PitchMod OscNoise.PitchVar+PitchMod OscMaster.PitchVar+PitchMod
+  in shapemod: OscB.ShapeMod+ShapeMod OscShpA.ShapeMod+ShapeMod OscShpB.ShapeMod+ShapeMod OscDual.PW+PWMod
+  in fmmod: OscB.FmMod+FmAmount OscC.FmMod+FmAmount OscPM.PhaseMod+PhaseMod OscShpA.FmMod+FmAmount OscShpB.FmMod+FmAmount OscDual.Phase+PhaseMod
+  in trig: OscPerc.Trig DrumSynth.Trig
+  out out: OscA.Out OscB.Out OscC.Out OscD.Out OscPM.Out OscShpA.Out OscShpB.Out OscDual.Out Noise.Out OscString.Out OscPerc.Out DrumSynth.Out MetNoise.Out OscNoise.Out Operator.Out
+  knob freqcoarse: OscA.FreqCoarse OscB.FreqCoarse OscC.FreqCoarse OscD.FreqCoarse OscPM.FreqCoarse OscShpA.FreqCoarse OscShpB.FreqCoarse OscDual.FreqCoarse OscString.FreqCoarse OscPerc.FreqCoarse OscNoise.FreqCoarse OscMaster.FreqCoarse
+  knob freqmode: OscA.FreqMode OscB.FreqMode OscC.FreqMode OscD.FreqMode OscPM.FreqMode OscShpA.FreqMode OscShpB.FreqMode OscDual.FreqMode OscString.FreqMode OscPerc.FreqMode OscNoise.FreqMode
+  knob freqfine: OscA.FreqFine OscB.FreqFine OscC.FreqFine OscD.FreqFine OscPM.FreqFine OscShpA.FreqFine OscShpB.FreqFine OscDual.FreqFine OscString.FreqFine OscPerc.FreqFine OscNoise.FreqFine OscMaster.FreqFine
+  knob waveform: OscA.Waveform OscB.Waveform OscShpA.Waveform
+  knob fmmode: OscB.FmMode OscShpA.FmMode OscShpB.FmMode
+  knob kbt: OscA.Kbt OscB.Kbt OscC.Kbt OscD.Kbt OscPM.Kbt OscShpA.Kbt OscShpB.Kbt OscDual.Kbt OscString.Kbt OscPerc.Kbt OscNoise.Kbt OscMaster.Kbt
+  knob shape: OscB.Shape OscShpA.Shape OscShpB.Shape OscDual.SqrPW Noise.Color
+  knob active: OscA.Active OscB.Active OscC.Active OscD.Active OscPM.Active OscShpA.Active OscShpB.Active OscDual.Active Noise.Active OscString.Active OscPerc.Active OscNoise.Active MetNoise.Active
+
+family Keyboard
+members Keyboard MonoKey
+  out pitch: Keyboard.Pitch MonoKey.Pitch
+  out gate: Keyboard.Gate MonoKey.Gate
+  out lin: Keyboard.Lin MonoKey.Vel
+
+family Input
+members 2-In 4-In Fx-In
+  out outl: 2-In.OutL 2-In.OutR 4-In.Out1 4-In.Out2 4-In.Out3 4-In.Out4 Fx-In.OutL Fx-In.OutR
+  knob active: 2-In.Active 4-In.Active Fx-In.Active
+  knob pad: 2-In.Pad 4-In.Pad Fx-In.Pad
+
+family Output
+members 2-Out 4-Out
+  in inl: 2-Out.InL 2-Out.InR 4-Out.In1 4-Out.In2 4-Out.In3 4-Out.In4
+  knob active: 2-Out.Active 4-Out.Active
+  knob pad: 2-Out.Pad 4-Out.Pad
+
+family Envelope
+members EnvADSR EnvH EnvD EnvADR EnvAHD EnvADDSR EnvMulti ModAHD ModADSR
+  in am: EnvADDSR.AM EnvMulti.AM EnvADSR.AM EnvADR.AM EnvD.AM EnvH.AM ModADSR.AM ModAHD.AM EnvAHD.AM
+  in in: EnvADDSR.In EnvMulti.In EnvADSR.In EnvADR.In EnvD.In EnvH.In ModADSR.In ModAHD.In EnvAHD.In
+  in gate: EnvADDSR.Gate EnvMulti.Gate EnvADSR.Gate EnvADR.Gate EnvD.Trig EnvH.Trig ModADSR.Gate ModAHD.Trig EnvAHD.Trig
+  in attackmod: ModAHD.AttackMod ModADSR.AttackMod
+  in decaymod: ModAHD.DecayMod ModADSR.DecayMod
+  out env: EnvADDSR.Env EnvMulti.Env EnvADSR.Env EnvADR.Env EnvD.Env EnvH.Env ModADSR.Env ModAHD.Env EnvAHD.Env
+  out out: EnvADDSR.Out EnvMulti.Out EnvADSR.Out EnvADR.Out EnvD.Out EnvH.Out ModADSR.Out ModAHD.Out EnvAHD.Out
+  knob attack: EnvADDSR.Attack EnvMulti.Time1 EnvADSR.Attack EnvADR.Attack ModADSR.Attack EnvAHD.Attack ModAHD.Attack
+  knob decay: EnvADDSR.Decay1 EnvMulti.Time2 EnvADSR.Decay EnvADR.Release EnvD.Decay EnvH.Hold ModADSR.Decay EnvAHD.Decay ModAHD.Decay
+  knob level2: EnvADDSR.Level2 EnvMulti.Level2 EnvADSR.Sustain ModADSR.Sustain
+  knob release: EnvADDSR.Release EnvMulti.Time4 EnvADSR.Release ModADSR.Release
+  knob shape: EnvADDSR.Shape EnvMulti.Shape EnvADSR.Shape EnvADR.Shape EnvAHD.Shape
+  knob nr: EnvADDSR.NR EnvMulti.NR EnvADSR.NR EnvADR.NR EnvAHD.NR
+  knob outputtype: EnvADDSR.OutputType EnvMulti.OutputType EnvADSR.OutputType EnvADR.OutputType EnvD.OutputType EnvH.OutputType ModADSR.OutputType EnvAHD.OutputType ModAHD.OutputType
+  knob kb: EnvADDSR.KB EnvMulti.KB EnvADSR.KB EnvADR.KB ModADSR.KB EnvAHD.KB ModAHD.KB
+  knob attackmod2: ModADSR.AttackMod ModAHD.AttackMod
+  knob decaymod2: ModADSR.DecayMod ModAHD.DecayMod
+
+family Delay
+members DlySingleA DlySingleB DelayDual DelayQuad DlyEight DlyShiftReg DlyClock DelayA DelayB DlyStereo
+  in in: DlySingleA.In DlySingleB.In DelayDual.In DelayQuad.In DlyEight.In DlyShiftReg.In DlyClock.In DelayA.In DelayB.In DlyStereo.In
+  in time1: DlySingleB.Time+TimeMod DelayDual.Time1+Time1Mod DelayDual.Time2+Time2Mod DelayQuad.Time1+Time1Mod DelayQuad.Time2+Time2Mod DelayQuad.Time3+Time3Mod DelayQuad.Time4+Time4Mod
+  in clk: DlyShiftReg.Clk DlyClock.Clk
+  out out: DlySingleA.Out DlySingleB.Out DelayDual.Out1 DelayDual.Out2 DelayQuad.Out1 DelayQuad.Out2 DelayQuad.Out3 DelayQuad.Out4 DlyEight.Out1 DlyEight.Out2 DlyEight.Out3 DlyEight.Out4 DlyEight.Out5 DlyEight.Out6 DlyEight.Out7 DlyEight.Out8 DlyShiftReg.Out1 DlyShiftReg.Out2 DlyShiftReg.Out3 DlyShiftReg.Out4 DlyShiftReg.Out5 DlyShiftReg.Out6 DlyShiftReg.Out7 DlyShiftReg.Out8 DlyClock.Out DelayA.Out DelayB.Out DlyStereo.OutL DlyStereo.OutR
+  knob time: DlySingleA.Time DlySingleB.Time DelayDual.Time1 DelayDual.Time2 DelayQuad.Time1 DelayQuad.Time2 DelayQuad.Time3 DelayQuad.Time4 DlyEight.Time DlyClock.Delay DelayA.Time DelayB.Time DlyStereo.TimeLeft DlyStereo.TimeRight
+  knob fb: DelayA.FB DelayB.FB DlyStereo.FBLeft DlyStereo.FBRight
+  knob lp: DelayA.Filter DelayB.LP DelayB.HP DlyStereo.LP
+  knob drywet: DelayA.DryWet DelayB.DryWet DlyStereo.DryWet
+
+family Switch
+members SwOnOffM SwOnOffT Sw2-1M Sw2-1 Sw4-1 Sw8-1 Sw1-2M Sw1-2 Sw1-4 Sw1-8 ValSw2-1 ValSw1-2 WindSw Mux8-1 Mux1-8 Mux8-1X S&H T&H
+  in ctrl: ValSw2-1.Ctrl ValSw1-2.Ctrl WindSw.Ctrl Mux8-1.Ctrl Mux1-8.Ctrl Mux8-1X.Ctrl S&H.Ctrl T&H.Ctrl
+  in in: SwOnOffM.In SwOnOffT.In Sw2-1M.InOff Sw2-1M.InOn Sw2-1.In1 Sw2-1.In2 Sw4-1.In1 Sw4-1.In2 Sw4-1.In3 Sw4-1.In4 Sw8-1.In1 Sw8-1.In2 Sw8-1.In3 Sw8-1.In4 Sw8-1.In5 Sw8-1.In6 Sw8-1.In7 Sw8-1.In8 Sw1-2M.In Sw1-2.In Sw1-4.In Sw1-8.In ValSw2-1.In1 ValSw2-1.In2 ValSw1-2.Input WindSw.In Mux8-1.In1 Mux8-1.In2 Mux8-1.In3 Mux8-1.In4 Mux8-1.In5 Mux8-1.In6 Mux8-1.In7 Mux8-1.In8 Mux1-8.In Mux8-1X.In1 Mux8-1X.In2 Mux8-1X.In3 Mux8-1X.In4 Mux8-1X.In5 Mux8-1X.In6 Mux8-1X.In7 Mux8-1X.In8 S&H.In T&H.In
+  out ctrl2: SwOnOffM.Ctrl SwOnOffT.Ctrl Sw2-1M.Ctrl Sw2-1.Ctrl Sw4-1.Ctrl Sw8-1.Control Sw1-2M.Ctrl Sw1-2.Ctrl Sw1-4.Ctrl Sw1-8.Ctrl
+  out out: SwOnOffM.Out SwOnOffT.Out Sw2-1M.Out Sw2-1.Out Sw4-1.Out Sw8-1.Out Sw1-2M.OutOff Sw1-2M.OutOn Sw1-2.Out1 Sw1-2.Out2 Sw1-4.Out1 Sw1-4.Out2 Sw1-4.Out3 Sw1-4.Out4 Sw1-8.Out1 Sw1-8.Out2 Sw1-8.Out3 Sw1-8.Out4 Sw1-8.Out5 Sw1-8.Out6 Sw1-8.Out7 Sw1-8.Out8 ValSw2-1.Out ValSw1-2.OutOn ValSw1-2.OutOff WindSw.Out Mux8-1.Out Mux1-8.Out1 Mux1-8.Out2 Mux1-8.Out3 Mux1-8.Out4 Mux1-8.Out5 Mux1-8.Out6 Mux1-8.Out7 Mux1-8.Out8 Mux8-1X.Out S&H.Out T&H.Out
+  knob sel: SwOnOffT.On Sw2-1.Sel Sw4-1.Sel Sw8-1.Sel Sw1-2.Sel Sw1-4.Sel Sw1-8.Sel
+  knob val: ValSw2-1.Val ValSw1-2.Val WindSw.ValFrom WindSw.ValTo
+
+family Mixer
+members Mix1-1A Mix1-1S Mix2-1A Mix2-1B Mix4-1A Mix4-1B Mix4-1C Mix4-1S Mix8-1A Mix8-1B MixFader MixStereo Pan X-Fade Fade1-2 Fade2-1
+  in chain: Mix1-1A.Chain Mix1-1S.LChain Mix1-1S.RChain Mix2-1B.Chain Mix2-1A.Chain Mix4-1B.Chain Mix4-1C.Chain Mix4-1S.ChainL Mix4-1S.ChainR Mix8-1B.Chain MixFader.Chain
+  in in1: Mix1-1A.In+Lev+On Mix1-1S.InL+Lev+On Mix1-1S.InR+Lev+On Mix2-1B.In1+Lev1 Mix2-1B.In2+Lev2 Mix2-1A.In1+Lev1 Mix2-1A.In2+Lev2 Mix4-1B.In1+Lev1 Mix4-1B.In2+Lev2 Mix4-1B.In3+Lev3 Mix4-1B.In4+Lev4 Mix4-1C.In1+Lev1+On1 Mix4-1C.In2+Lev2+On2 Mix4-1C.In3+Lev3+On3 Mix4-1C.In4+Lev4+On4 Mix4-1A.In1 Mix4-1A.In2 Mix4-1A.In3 Mix4-1A.In4 Mix4-1S.In1L+Lev1+On1 Mix4-1S.In1R+Lev1+On1 Mix4-1S.In2L+Lev2+On2 Mix4-1S.In2R+Lev2+On2 Mix4-1S.In3L+Lev3+On3 Mix4-1S.In3R+Lev3+On3 Mix4-1S.In4L+Lev4+On4 Mix4-1S.In4R+Lev4+On4 Mix8-1A.In1 Mix8-1A.In2 Mix8-1A.In3 Mix8-1A.In4 Mix8-1A.In5 Mix8-1A.In6 Mix8-1A.In7 Mix8-1A.In8 Mix8-1B.In1+Lev1 Mix8-1B.In2+Lev2 Mix8-1B.In3+Lev3 Mix8-1B.In4+Lev4 Mix8-1B.In5+Lev5 Mix8-1B.In6+Lev6 Mix8-1B.In7+Lev7 Mix8-1B.In8+Lev8 MixFader.In1+Lev1+On1 MixFader.In2+Lev2+On2 MixFader.In3+Lev3+On3 MixFader.In4+Lev4+On4 MixFader.In5+Lev5+On5 MixFader.In6+Lev6+On6 MixFader.In7+Lev7+On7 MixFader.In8+Lev8+On8 MixStereo.In1+Lev1 MixStereo.In2+Lev2 MixStereo.In3+Lev3 MixStereo.In4+Lev4 MixStereo.In5+Lev5 MixStereo.In6+Lev6 Pan.In X-Fade.In1 X-Fade.In2 Fade1-2.In Fade2-1.In1 Fade2-1.In2
+  in mod: Pan.Mod Fade1-2.Mod Fade2-1.Mod X-Fade.Mod
+  out out: Mix1-1A.Out Mix1-1S.OutL Mix1-1S.OutR Mix2-1B.Out Mix2-1A.Out Mix4-1B.Out Mix4-1C.Out Mix4-1A.Out Mix4-1S.OutL Mix4-1S.OutR Mix8-1A.Out Mix8-1B.Out MixFader.Out MixStereo.OutL MixStereo.OutR Pan.OutL Pan.OutR X-Fade.Out Fade1-2.Out1 Fade1-2.Out2 Fade2-1.Out
+  knob explin: Mix1-1A.ExpLin Mix1-1S.ExpLin Mix2-1A.ExpLin Mix2-1B.ExpLin Mix4-1B.ExpLin Mix4-1C.ExpLin Mix8-1B.ExpLin MixFader.ExpLin Pan.LogLin X-Fade.LogLin
+  knob pad: Mix8-1A.Pad Mix8-1B.Pad MixFader.Pad
+  knob mixmod: Pan.PanMod Fade1-2.MixMod Fade2-1.MixMod X-Fade.MixMod
+  knob mix: Pan.Pan Fade1-2.Mix Fade2-1.Mix X-Fade.Mix
+
+family Filter
+members FltLP FltHP FltNord FltClassic FltMulti FltStatic FltPhase FltComb WahWah FltVoice Vocoder EqPeak Eq2Band Eq3Band
+  in in: FltLP.In FltHP.In FltNord.In FltClassic.In FltMulti.In FltStatic.In WahWah.In FltVoice.In Vocoder.In FltPhase.In FltComb.In Eq2Band.In Eq3Band.In EqPeak.In
+  in pitch: FltNord.Pitch FltClassic.Pitch FltMulti.Pitch FltPhase.Pitch FltComb.Pitch
+  in pitchvar: FltLP.Pitch+FreqMod FltHP.Pitch+FreqMod FltNord.PitchVar+PitchMod FltClassic.PitchVar+PitchMod FltMulti.PitchVar+PitchMod WahWah.Sweep+SweepMod FltVoice.FreqMod+FreqMod FltPhase.PitchVar+PitchMod FltComb.PitchVar+PitchMod
+  in fb: FltPhase.FB+FBMod FltComb.FB+FBMod
+  out out: FltLP.Out FltHP.Out FltNord.Out FltClassic.Out FltMulti.LP FltStatic.Out WahWah.Out FltVoice.Out Vocoder.Out FltPhase.Out FltComb.Out Eq2Band.Out Eq3Band.Out EqPeak.Out
+  knob freq: FltLP.Freq FltHP.Freq FltNord.Freq FltClassic.Freq FltMulti.Freq FltStatic.Freq WahWah.Sweep FltVoice.Freq FltPhase.Freq FltComb.Freq Eq3Band.MidFreq EqPeak.Freq
+  knob active: FltLP.Active FltHP.Active FltNord.Active FltClassic.Active FltMulti.Active FltStatic.Active WahWah.Active FltVoice.Active Vocoder.Band10 FltPhase.Active FltComb.Active Eq2Band.Active Eq3Band.Active EqPeak.Active
+  knob res: FltNord.Res FltClassic.Res FltMulti.Res FltVoice.Res FltStatic.Res
+  knob kbt: FltLP.Kbt FltHP.Kbt FltNord.Kbt FltClassic.Kbt FltMulti.Kbt FltPhase.Kbt FltComb.Kbt
+  knob level: FltPhase.Level FltComb.Lev Eq3Band.Level Eq2Band.Level EqPeak.Level
+  knob fb2: FltPhase.FB FltComb.FB
+  knob fbmod: FltPhase.FBMod FltComb.FBMod
+  knob type: FltPhase.Type FltComb.Type
+  knob hislope: Eq2Band.HiSlope Eq3Band.HiSlope
+  knob hifreq: Eq2Band.HiFreq Eq3Band.HiFreq
+  knob lofreq: Eq2Band.LoFreq Eq3Band.LoFreq
+
+family Effect
+members StChorus Digitizer Flanger FreqShift Reverb module150 Phaser PShift Scratch
+  in in: StChorus.In Digitizer.In Flanger.In FreqShift.In Reverb.InL Reverb.InR module150.in0 module150.in1 Phaser.In PShift.In Scratch.In
+  in mod: Scratch.Mod+RatioMod PShift.Pitch+ShiftMod FreqShift.Shift+ShiftMod Digitizer.Rate+RateMod
+  out out: StChorus.OutL StChorus.OutR Digitizer.Out Flanger.Out FreqShift.Dn FreqShift.Up Reverb.OutL Reverb.OutR module150.out1 module150.out0 Phaser.Out PShift.Out Scratch.Out
+  knob active: StChorus.Active Digitizer.Active Flanger.Active Reverb.Active module150.knob6 Phaser.Active PShift.Active Scratch.Active FreqShift.Active
+  knob rate: Flanger.Rate Phaser.Freq
+  knob range: Flanger.Range
+
+family LFO
+members LfoA LfoB LfoC LfoShpA ClkGen
+  in rate: LfoA.Rate LfoB.Rate LfoShpA.Rate LfoC.Rate
+  in rst: LfoB.Rst LfoShpA.Rst
+  in ratevar: LfoA.RateVar+RateMod LfoB.RateVar+RateMod LfoShpA.RateVar+RateMod
+  out out: LfoA.Out LfoB.Out LfoShpA.Out LfoC.Out
+  out sync: LfoB.Sync LfoShpA.Snc
+  knob rate2: LfoA.Rate LfoB.Rate LfoShpA.Rate LfoC.Rate
+  knob range: LfoA.Range LfoB.Range LfoShpA.Range LfoC.Range
+  knob polymono: LfoA.PolyMono LfoB.PolyMono LfoShpA.PolyMono LfoC.PolyMono
+  knob kbt: LfoA.Kbt LfoB.Kbt LfoShpA.Kbt
+  knob active: LfoA.Active LfoB.Active LfoShpA.Active LfoC.Active
+  knob outputtype: LfoA.OutputType LfoB.OutputType LfoShpA.OutputType LfoC.OutputType
+
+family Random
+members RandomA RandomB RndClkA RndClkB RndTrig RndPattern
+  in rate: RandomA.Rate RandomB.Rate
+  in ratevar: RandomB.RateVar+RateMod
+  in clk: RndClkA.Clk RndTrig.Clk RndClkB.Clk RndPattern.Clk
+  in rst: RndClkA.Rst RndTrig.Rst RndClkB.Rst RndPattern.Rst
+  in seed: RndClkA.Seed RndTrig.Seed RndClkB.Seed RndPattern.A RndPattern.B
+  in step: RndClkB.Step+StepProbMod RndPattern.StepProb+StepProbMod
+  out out: RandomA.Out RandomB.Out RndClkA.Out RndTrig.Out RndClkB.Out RndPattern.Out
+  knob edge: RandomA.Edge RandomB.Edge
+  knob stepprob: RandomA.StepProb RandomB.StepProb RndClkA.StepProb RndClkB.StepProb RndPattern.StepProb
+  knob stepprob2: RndTrig.StepProb
+  knob outputtype: RandomA.OutputType RandomB.OutputType RndClkA.OutputType RndClkB.OutputType RndPattern.OutputType
+  knob polymono: RandomA.PolyMono RandomB.PolyMono RndClkA.PolyMono RndTrig.PolyMono RndClkB.PolyMono
+  knob active: RandomA.Active RandomB.Active RndClkA.Active RndTrig.Active RndClkB.Active RndPattern.Active
+  knob rate2: RandomA.Rate RandomB.Rate
+  knob range: RandomA.Range RandomB.Range
+
+family Sequencer
+members SeqEvent SeqVal SeqLev SeqNote SeqCtr
+  in clk: SeqEvent.Clk SeqVal.Clk SeqLev.Clk SeqNote.Clk
+  in rst: SeqEvent.Rst SeqVal.Rst SeqLev.Rst SeqNote.Rst
+  in loop: SeqEvent.Loop SeqVal.Loop SeqLev.Loop SeqNote.Loop
+  in park: SeqEvent.Park SeqVal.Park SeqLev.Park SeqNote.Park
+  in val: SeqEvent.Trig1 SeqVal.Val SeqLev.Val SeqNote.Note SeqCtr.Val
+  in trig: SeqEvent.Trig2 SeqVal.Trig SeqLev.Trig SeqNote.Trig SeqCtr.Trig
+  out link: SeqEvent.Link SeqVal.Link SeqLev.Link SeqNote.Link
+  out val2: SeqEvent.Trig1 SeqVal.Val SeqLev.Val SeqNote.Note SeqCtr.Val
+  out trig2: SeqEvent.Trig2 SeqVal.Trig SeqLev.Trig SeqNote.Trig SeqCtr.Trig
+  knob loop2: SeqEvent.Loop SeqVal.Loop SeqLev.Loop SeqNote.Loop
+  knob length: SeqEvent.Length SeqVal.Length SeqLev.Length SeqNote.Length
+  knob bipuni: SeqVal.BipUni SeqLev.BipUni SeqCtr.BipUni
+  knob seq1step1: SeqEvent.Seq1Step1 SeqVal.Seq1Step1 SeqLev.Seq1Step1 SeqNote.Seq1Step1 SeqCtr.Seq1Step1
+  knob seq1step2: SeqEvent.Seq1Step2 SeqVal.Seq1Step2 SeqLev.Seq1Step2 SeqNote.Seq1Step2 SeqCtr.Seq1Step2
+  knob seq1step3: SeqEvent.Seq1Step3 SeqVal.Seq1Step3 SeqLev.Seq1Step3 SeqNote.Seq1Step3 SeqCtr.Seq1Step3
+  knob seq1step4: SeqEvent.Seq1Step4 SeqVal.Seq1Step4 SeqLev.Seq1Step4 SeqNote.Seq1Step4 SeqCtr.Seq1Step4
+  knob seq1step5: SeqEvent.Seq1Step5 SeqVal.Seq1Step5 SeqLev.Seq1Step5 SeqNote.Seq1Step5 SeqCtr.Seq1Step5
+  knob seq1step6: SeqEvent.Seq1Step6 SeqVal.Seq1Step6 SeqLev.Seq1Step6 SeqNote.Seq1Step6 SeqCtr.Seq1Step6
+  knob seq1step7: SeqEvent.Seq1Step7 SeqVal.Seq1Step7 SeqLev.Seq1Step7 SeqNote.Seq1Step7 SeqCtr.Seq1Step7
+  knob seq1step8: SeqEvent.Seq1Step8 SeqVal.Seq1Step8 SeqLev.Seq1Step8 SeqNote.Seq1Step8 SeqCtr.Seq1Step8
+  knob seq1step9: SeqEvent.Seq1Step9 SeqVal.Seq1Step9 SeqLev.Seq1Step9 SeqNote.Seq1Step9 SeqCtr.Seq1Step9
+  knob seq1step10: SeqEvent.Seq1Step10 SeqVal.Seq1Step10 SeqLev.Seq1Step10 SeqNote.Seq1Step10 SeqCtr.Seq1Step10
+  knob seq1step11: SeqEvent.Seq1Step11 SeqVal.Seq1Step11 SeqLev.Seq1Step11 SeqNote.Seq1Step11 SeqCtr.Seq1Step11
+  knob seq1step12: SeqEvent.Seq1Step12 SeqVal.Seq1Step12 SeqLev.Seq1Step12 SeqNote.Seq1Step12 SeqCtr.Seq1Step12
+  knob seq1step13: SeqEvent.Seq1Step13 SeqVal.Seq1Step13 SeqLev.Seq1Step13 SeqNote.Seq1Step13 SeqCtr.Seq1Step13
+  knob seq1step14: SeqEvent.Seq1Step14 SeqVal.Seq1Step14 SeqLev.Seq1Step14 SeqNote.Seq1Step14 SeqCtr.Seq1Step14
+  knob seq1step15: SeqEvent.Seq1Step15 SeqVal.Seq1Step15 SeqLev.Seq1Step15 SeqNote.Seq1Step15 SeqCtr.Seq1Step15
+  knob seq1step16: SeqEvent.Seq1Step16 SeqVal.Seq1Step16 SeqLev.Seq1Step16 SeqNote.Seq1Step16 SeqCtr.Seq1Step16
+  knob seq2step1: SeqEvent.Seq2Step1 SeqVal.Seq2Step1 SeqLev.Seq2Step1 SeqNote.Seq2Step1 SeqCtr.Seq2Step1
+  knob seq2step2: SeqEvent.Seq2Step2 SeqVal.Seq2Step2 SeqLev.Seq2Step2 SeqNote.Seq2Step2 SeqCtr.Seq2Step2
+  knob seq2step3: SeqEvent.Seq2Step3 SeqVal.Seq2Step3 SeqLev.Seq2Step3 SeqNote.Seq2Step3 SeqCtr.Seq2Step3
+  knob seq2step4: SeqEvent.Seq2Step4 SeqVal.Seq2Step4 SeqLev.Seq2Step4 SeqNote.Seq2Step4 SeqCtr.Seq2Step4
+  knob seq2step5: SeqEvent.Seq2Step5 SeqVal.Seq2Step5 SeqLev.Seq2Step5 SeqNote.Seq2Step5 SeqCtr.Seq2Step5
+  knob seq2step6: SeqEvent.Seq2Step6 SeqVal.Seq2Step6 SeqLev.Seq2Step6 SeqNote.Seq2Step6 SeqCtr.Seq2Step6
+  knob seq2step7: SeqEvent.Seq2Step7 SeqVal.Seq2Step7 SeqLev.Seq2Step7 SeqNote.Seq2Step7 SeqCtr.Seq2Step7
+  knob seq2step8: SeqEvent.Seq2Step8 SeqVal.Seq2Step8 SeqLev.Seq2Step8 SeqNote.Seq2Step8 SeqCtr.Seq2Step8
+  knob seq2step9: SeqEvent.Seq2Step9 SeqVal.Seq2Step9 SeqLev.Seq2Step9 SeqNote.Seq2Step9 SeqCtr.Seq2Step9
+  knob seq2step10: SeqEvent.Seq2Step10 SeqVal.Seq2Step10 SeqLev.Seq2Step10 SeqNote.Seq2Step10 SeqCtr.Seq2Step10
+  knob seq2step11: SeqEvent.Seq2Step11 SeqVal.Seq2Step11 SeqLev.Seq2Step11 SeqNote.Seq2Step11 SeqCtr.Seq2Step11
+  knob seq2step12: SeqEvent.Seq2Step12 SeqVal.Seq2Step12 SeqLev.Seq2Step12 SeqNote.Seq2Step12 SeqCtr.Seq2Step12
+  knob seq2step13: SeqEvent.Seq2Step13 SeqVal.Seq2Step13 SeqLev.Seq2Step13 SeqNote.Seq2Step13 SeqCtr.Seq2Step13
+  knob seq2step14: SeqEvent.Seq2Step14 SeqVal.Seq2Step14 SeqLev.Seq2Step14 SeqNote.Seq2Step14 SeqCtr.Seq2Step14
+  knob seq2step15: SeqEvent.Seq2Step15 SeqVal.Seq2Step15 SeqLev.Seq2Step15 SeqNote.Seq2Step15 SeqCtr.Seq2Step15
+  knob seq2step16: SeqEvent.Seq2Step16 SeqVal.Seq2Step16 SeqLev.Seq2Step16 SeqNote.Seq2Step16 SeqCtr.Seq2Step16
+  knob tg: SeqEvent.TG2 SeqVal.TG SeqLev.TG SeqNote.TG SeqCtr.TG
+
+family Logic
+members Gate Invert FlipFlop ClkDiv Pulse Delay 8Counter BinCounter ADConv DAConv
+  in clk: FlipFlop.Clk ClkDiv.Clk 8Counter.Clk BinCounter.Clk
+  in rst: FlipFlop.Rst ClkDiv.Rst 8Counter.Rst BinCounter.Rst
+  in time: Pulse.Time+TimeMod Delay.TimeMod+TimeMod
+  in in: Gate.In1_2 Gate.In1_1 Gate.In2_2 Gate.In2_1 Invert.In2 Invert.In1 FlipFlop.In Pulse.In Delay.In DAConv.D0 DAConv.D1 DAConv.D2 DAConv.D3 DAConv.D4 DAConv.D5 DAConv.D6 DAConv.D7
+  out out: Gate.Out1 Gate.Out2 Invert.Out1 Invert.Out2 FlipFlop.Q FlipFlop.NotQ ClkDiv.Out Pulse.Out Delay.Out 8Counter.Out1 8Counter.Out2 8Counter.Out3 8Counter.Out4 8Counter.Out5 8Counter.Out6 8Counter.Out7 8Counter.Out8 BinCounter.Out001 BinCounter.Out002 BinCounter.Out004 BinCounter.Out008 BinCounter.Out016 BinCounter.Out032 BinCounter.Out064 BinCounter.Out128 ADConv.D0 ADConv.D1 ADConv.D2 ADConv.D3 ADConv.D4 ADConv.D5 ADConv.D6 ADConv.D7 DAConv.Out
+  knob time2: Pulse.Time Delay.Time ClkDiv.Divider
+  knob range: Pulse.Range Delay.Range

@@ -1,0 +1,51 @@
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+
+# SwiftFormat jest jedynym źródłem prawdy dla mechanicznego układu kodu.
+disabled_rules:
+  - opening_brace
+  - switch_case_alignment
+  - trailing_comma
+  - todo
+  - inclusive_language
+  - optional_data_string_conversion
+  - for_where
+  # Tabele opisujące moduły zawierają celowo długie dane w jednym wierszu.
+  # SwiftFormat nie narzuca limitu szerokości, więc ten sygnał byłby wyłącznie szumem.
+  - line_length
+
+# Projekt świadomie używa krótkich nazw dla współrzędnych i parametrów matematycznych.
+identifier_name:
+  min_length:
+    warning: 1
+    error: 1
+  excluded:
+    - X_SCALE
+    - Q
+    - Q_shape
+    - Q_gc
+
+# PatchCanvasView pozostaje dużym, centralnym widokiem do czasu etapowego podziału.
+# Limity są powyżej stanu zastanego, aby nowe przekroczenia były widoczne.
+file_length:
+  warning: 7000
+  error: 8000
+type_body_length:
+  warning: 5000
+  error: 5500
+function_body_length:
+  warning: 3000
+  error: 3500
+cyclomatic_complexity:
+  warning: 320
+  error: 400
+function_parameter_count:
+  warning: 9
+  error: 10
+large_tuple:
+  warning: 9
+  error: 10
