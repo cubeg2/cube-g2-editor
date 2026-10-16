@@ -353,10 +353,15 @@ final class PluginBridgeTests: XCTestCase {
         XCTAssertEqual(sequencer["bipolar"] as? Bool, true)
         XCTAssertEqual((sequencer["steps"] as? [Int])?.count, 16)
 
+        // Wiadomości jednego pociągnięcia przychodzą w odstępach, jak przy prawdziwym
+        // rysowaniu — każda trafia w inny obieg pętli zdarzeń (na wolnym CI GitHuba
+        // pierwsza kratka wpadała do osobnego kroku Undo, 2026-10-16).
         try plugin.send(["type": "seq_draw", "slot": "A", "gesture": "begin", "values": [[1, 90, 0, 10]]])
+        try await waitUntil { self.state.slots[0].voiceModules.last?.parameters[0] == 10 }
         try plugin.send(["type": "seq_draw", "slot": "A", "gesture": "move", "values": [[1, 90, 1, 20], [1, 90, 2, 30]]])
-        try plugin.send(["type": "seq_draw", "slot": "A", "gesture": "end", "values": [[1, 90, 34, 1]]])
         try await waitUntil { self.state.slots[0].voiceModules.last?.parameters[2] == 30 }
+        try plugin.send(["type": "seq_draw", "slot": "A", "gesture": "end", "values": [[1, 90, 34, 1]]])
+        try await waitUntil { self.state.undoManager.canUndo }
         XCTAssertEqual(state.slots[0].voiceModules.last?.parameters[34], 0, "only steps and length can be drawn")
         state.undoManager.undo()
         XCTAssertEqual(Array(state.slots[0].voiceModules.last?.parameters[0 ..< 3] ?? []), [64, 64, 64],

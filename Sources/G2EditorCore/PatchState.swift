@@ -335,6 +335,12 @@ public final class PatchState {
     /// Wartości, dla których w tym geście zarejestrowano już undo.
     private var gestureRegistered: Set<ParameterKey> = []
     private var morphGestureRegistered: Set<MorphKey> = []
+    /// Cofnięcia zebrane w trakcie gestu — trafiają do historii RAZEM, przy jego końcu.
+    /// `UndoManager` skleja w jeden krok tylko to, co przyszło w jednym obiegu pętli
+    /// zdarzeń, a pociągnięcie ołówkiem z wtyczki przychodzi w kilku wiadomościach:
+    /// każda nowa kratka była osobnym ⌘Z (wykrył to test na CI GitHuba, 2026-10-16).
+    private var gestureUndos: [(PatchState) -> Void] = []
+    private var gestureActionName = ""
 
     /// Wywoływane po każdej ZMIENIONEJ wartości parametru (nie trybu) — bezpośrednia edycja
     /// I undo/redo, bo oba przechodzą przez `applyParameter`. `PatchState` nic nie wie o
@@ -435,6 +441,7 @@ public final class PatchState {
     /// Otwiera serię zmian jednego gestu: wszystkie zmiany tej samej wartości skleją się
     /// w JEDEN wpis undo. Bez tego cofnięcie jednego ruchu gałką wymagałoby setek ⌘Z.
     public func beginParameterGesture() {
+        flushGestureUndos()
         gestureActive = true
         gestureRegistered.removeAll()
         morphGestureRegistered.removeAll()
@@ -442,9 +449,34 @@ public final class PatchState {
 
     /// Zamyka serię — następna zmiana będzie znów osobnym wpisem undo.
     public func endParameterGesture() {
+        flushGestureUndos()
         gestureActive = false
         gestureRegistered.removeAll()
         morphGestureRegistered.removeAll()
+    }
+
+    /// Wpis undo dla jednej zmiany. W trakcie gestu liczy się tylko pierwsza zmiana danej
+    /// wartości (`first`) i czeka na koniec gestu; poza gestem idzie od razu.
+    private func registerUndo(_ actionName: String, first: Bool, _ undo: @escaping (PatchState) -> Void) {
+        guard gestureActive else {
+            undoManager.registerUndo(withTarget: self, handler: undo)
+            undoManager.setActionName(actionName)
+            return
+        }
+        guard first else { return }
+        gestureUndos.append(undo)
+        gestureActionName = actionName
+    }
+
+    /// Cały gest jako JEDEN wpis: cofnięcie przywraca wartości w odwrotnej kolejności.
+    private func flushGestureUndos() {
+        guard !gestureUndos.isEmpty else { return }
+        let undos = gestureUndos
+        gestureUndos.removeAll()
+        undoManager.registerUndo(withTarget: self) { target in
+            for undo in undos.reversed() { undo(target) }
+        }
+        undoManager.setActionName(gestureActionName)
     }
 
     /// Aktualizuje wartość parametru modułu i publikuje zmianę (odświeża canvas).
@@ -506,12 +538,11 @@ public final class PatchState {
                                    isMode: isMode, isVoice: area == .voice)
             // W trakcie gestu rejestrujemy tylko pierwszą zmianę danej wartości —
             // undo wraca wtedy do stanu sprzed całego ruchu.
-            if !gestureActive || gestureRegistered.insert(key).inserted {
-                undoManager.registerUndo(withTarget: self) { target in
-                    target.applyParameter(slot: slot, moduleID: moduleID, index: index,
-                                          value: old, area: area, isMode: isMode, undoable: true)
-                }
-                undoManager.setActionName(isMode ? "Change Mode" : "Change Parameter")
+            registerUndo(isMode ? "Change Mode" : "Change Parameter",
+                         first: !gestureActive || gestureRegistered.insert(key).inserted)
+            { target in
+                target.applyParameter(slot: slot, moduleID: moduleID, index: index,
+                                      value: old, area: area, isMode: isMode, undoable: true)
             }
         }
 
@@ -544,12 +575,9 @@ public final class PatchState {
         }
         let key = ParameterKey(slot: slot, moduleID: moduleID, index: index,
                                isMode: false, isVoice: area == .voice)
-        if !gestureActive || gestureRegistered.insert(key).inserted {
-            undoManager.registerUndo(withTarget: self) { target in
-                target.setParameterInVariations(slot: slot, moduleID: moduleID, index: index,
-                                                area: area, values: before)
-            }
-            undoManager.setActionName("Change Parameter")
+        registerUndo("Change Parameter", first: !gestureActive || gestureRegistered.insert(key).inserted) { target in
+            target.setParameterInVariations(slot: slot, moduleID: moduleID, index: index,
+                                            area: area, values: before)
         }
         for variation in values.indices where before[variation] != values[variation] {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: index, value: values[variation],
@@ -842,12 +870,9 @@ public final class PatchState {
 
         let key = MorphKey(slot: slot, location: location, moduleID: moduleID,
                            paramIndex: paramIndex, morph: morph)
-        if !gestureActive || morphGestureRegistered.insert(key).inserted {
-            undoManager.registerUndo(withTarget: self) { target in
-                target.setMorphRange(location: location, moduleID: moduleID,
-                                     paramIndex: paramIndex, morph: morph, range: old)
-            }
-            undoManager.setActionName("Change Morph Range")
+        registerUndo("Change Morph Range", first: !gestureActive || morphGestureRegistered.insert(key).inserted) { target in
+            target.setMorphRange(location: location, moduleID: moduleID,
+                                 paramIndex: paramIndex, morph: morph, range: old)
         }
         onMorphRangeChange?(slot, location, moduleID, paramIndex, morph, clamped, variation)
     }
@@ -911,11 +936,8 @@ public final class PatchState {
         slots[slot].setMorphDial(morph, in: variation, value: clamped)
         let key = MorphKey(slot: slot, location: 2, moduleID: Self.morphSettingsModule,
                            paramIndex: morph, morph: morph)
-        if !gestureActive || morphGestureRegistered.insert(key).inserted {
-            undoManager.registerUndo(withTarget: self) { target in
-                target.setMorphDial(morph, value: old, slot: slot)
-            }
-            undoManager.setActionName("Change Morph")
+        registerUndo("Change Morph", first: !gestureActive || morphGestureRegistered.insert(key).inserted) { target in
+            target.setMorphDial(morph, value: old, slot: slot)
         }
         onPatchSettingChange?(slot, Self.morphSettingsModule, morph, clamped, variation)
     }
@@ -968,11 +990,10 @@ public final class PatchState {
 
         let key = MorphKey(slot: slot, location: 2, moduleID: setting.module,
                            paramIndex: setting.param, morph: -1)
-        if !gestureActive || morphGestureRegistered.insert(key).inserted {
-            undoManager.registerUndo(withTarget: self) { target in
-                target.setPatchSetting(setting, value: old, slot: slot)
-            }
-            undoManager.setActionName("Change \(setting.label)")
+        registerUndo("Change \(setting.label)",
+                     first: !gestureActive || morphGestureRegistered.insert(key).inserted)
+        { target in
+            target.setPatchSetting(setting, value: old, slot: slot)
         }
         onPatchSettingChange?(slot, setting.module, setting.param, clamped, variation)
     }
