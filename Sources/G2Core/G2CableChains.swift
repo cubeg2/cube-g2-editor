@@ -79,6 +79,39 @@ public extension G2Patch {
         return chain
     }
 
+    // MARK: - Jedno wyjście na wejście
+
+    /// Czy wpięcie `cable` dałoby wejściu (albo łańcuchowi wejść, w który wpada)
+    /// drugie wyjście. Instrukcja: „An input can be connected to only one output
+    /// and optionally share that output with other inputs." Oryginalny edytor
+    /// takiego kabla nie wepnie, więc nasz też nie (#142).
+    /// `cable` nie musi jeszcze być w patchu: łańcuch rośnie od niego.
+    func cableWouldJoinTwoOutputs(_ cable: G2Cable, in area: PatchArea) -> Bool {
+        Self.distinctOutputs(of: cableChain(containing: cable, in: area)) > 1
+    }
+
+    /// Łańcuchy, w które wpięte są co najmniej dwa różne wyjścia. Plik z zewnątrz
+    /// może taki mieć — `PatchValidator` go wskazuje, nic nie kasujemy.
+    func chainsWithSeveralOutputs(in area: PatchArea) -> [[G2Cable]] {
+        let all = cables(in: area)
+        var found: [[G2Cable]] = []
+        var handled = Set<Int>()
+
+        for (index, cable) in all.enumerated() where !handled.contains(index) {
+            let chain = cableChain(containing: cable, in: area)
+            for member in chain {
+                if let i = all.firstIndex(where: { $0.connectsSameAs(member) }) { handled.insert(i) }
+            }
+            if Self.distinctOutputs(of: chain) > 1 { found.append(chain) }
+        }
+        return found
+    }
+
+    /// Jedno wyjście wolno rozgałęzić, więc liczą się różne wyjścia, nie kable.
+    private static func distinctOutputs(of chain: [G2Cable]) -> Int {
+        Set(chain.filter(\.sourceIsOutput).map(\.sourceConnector)).count
+    }
+
     // MARK: - Disconnect / Break / Delete
 
     /// „Disconnect" — wyjmuje z łańcucha gniazdo docelowe tego kabla i **zszywa

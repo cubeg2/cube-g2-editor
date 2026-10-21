@@ -37,6 +37,7 @@ public enum PatchIssueKind: String, CaseIterable {
     case cableLinkTypeContradictsModule
     case duplicateCable
     case cableToItself
+    case inputWithSeveralOutputs
 }
 
 /// Pojedyncze znalezisko. `message` jest po angielsku, bo trafi do UI aplikacji.
@@ -62,6 +63,26 @@ public enum PatchValidator {
         PatchArea.allCases.flatMap { area in
             moduleIssues(patch.modules(in: area), area: area)
                 + cableIssues(patch.cables(in: area), modules: patch.modules(in: area), area: area)
+                + sourceIssues(patch, area: area)
+        }
+    }
+
+    /// Wejście (albo łańcuch wejść) z dwoma wyjściami naraz. Edytor takiego kabla
+    /// nie wepnie, tak jak oryginalny; plik z zewnątrz może go jednak mieć (#142).
+    private static func sourceIssues(_ patch: G2Patch, area: PatchArea) -> [PatchIssue] {
+        patch.chainsWithSeveralOutputs(in: area).map { chain in
+            let outputs = Set(chain.filter(\.sourceIsOutput).map(\.sourceConnector))
+                .sorted { ($0.moduleID, $0.index) < ($1.moduleID, $1.index) }
+                .map { "\($0.moduleID):\($0.index)" }
+            let inputs = Set(chain.flatMap { [$0.sourceConnector, $0.destinationConnector] })
+                .filter { !$0.isOutput }
+                .sorted { ($0.moduleID, $0.index) < ($1.moduleID, $1.index) }
+                .map { "\($0.moduleID):\($0.index)" }
+            return PatchIssue(
+                kind: .inputWithSeveralOutputs, severity: .error, area: area,
+                message: "Inputs \(inputs.joined(separator: ", ")) are fed by \(outputs.count) outputs "
+                    + "(\(outputs.joined(separator: ", "))); an input takes only one output."
+            )
         }
     }
 

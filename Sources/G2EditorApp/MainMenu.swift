@@ -221,9 +221,15 @@ struct MainMenuCommands: Commands {
 
             Divider()
 
-            Button("Download To Slot…") {}
-                .keyboardShortcut("d", modifiers: [.command])
-                .disabled(true) // Faza 2
+            // Cały patch slotu z focusem jeszcze raz do G2. Bez okna wyboru slotu z oryginału:
+            // u nas slot edytora i urządzenia to ta sama liczba. To też droga ratunkowa po
+            // patchu, którego G2 nie przyjął (#143) — poprawiona notatka sama do Norda nie jedzie.
+            Button("Download To Slot") {
+                guard let state, let device else { return }
+                Task { await device.send(state, onlyFocusedSlot: true) }
+            }
+            .keyboardShortcut("d", modifiers: [.command])
+            .disabled(state == nil || device?.status != .connected)
         }
 
         // Performance — Clavia menu + Slot switching

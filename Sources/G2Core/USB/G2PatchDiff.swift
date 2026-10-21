@@ -32,11 +32,15 @@ public struct G2PatchDiff {
     /// Moduły, które zostają, ale przesunęły się w siatce — do wysłania `0x34`.
     /// Przesunięcie jednego modułu spycha sąsiadów, więc lista bywa dłuższa niż jeden.
     public var modulesToMove: [G2Module] = []
+    /// Moduły, które zostają, ale zmieniły uprate po zmianie kabli — do wysłania `0x2A`.
+    /// Idą po kablach, jak w oryginale: najpierw połączenie, potem jego skutek.
+    public var modulesToUprate: [G2Module] = []
 
     public var isEmpty: Bool {
         cablesToDelete.isEmpty && modulesToDelete.isEmpty
             && modulesToAdd.isEmpty && cablesToAdd.isEmpty
             && modulesToRename.isEmpty && modulesToRecolor.isEmpty && modulesToMove.isEmpty
+            && modulesToUprate.isEmpty
     }
 
     /// Tożsamością modułu jest para (obszar, id) **wraz z typem**: podmiana modułu
@@ -68,9 +72,9 @@ public struct G2PatchDiff {
             diff.modulesToDelete += removed
             diff.modulesToAdd += added
 
-            // Moduł, który przetrwał (to samo id i typ), ale ma inną etykietę, kolor albo
-            // pozycję. Moduł dopiero co dodany pomijamy — Module New niesie wszystkie
-            // trzy rzeczy w sobie.
+            // Moduł, który przetrwał (to samo id i typ), ale ma inną etykietę, kolor,
+            // pozycję albo uprate. Moduł dopiero co dodany pomijamy — Module New niesie
+            // to wszystko w sobie.
             let oldByID = Dictionary(oldModules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for module in newModules where !rebuilt.contains(module.id) {
                 guard let before = oldByID[module.id] else { continue }
@@ -79,6 +83,7 @@ public struct G2PatchDiff {
                 if before.column != module.column || before.row != module.row {
                     diff.modulesToMove.append(module)
                 }
+                if before.uprate != module.uprate { diff.modulesToUprate.append(module) }
             }
             diff.cablesToAdd += newCables.filter { cable in
                 rebuilt.contains(cable.fromModule) || rebuilt.contains(cable.toModule)

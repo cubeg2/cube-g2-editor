@@ -429,6 +429,7 @@ struct ContentView: View {
 
                 canvasArea
                     .overlay { TransferProgressStrip(device: device) }
+                    .overlay(alignment: .top) { UploadFailureBar(device: device) }
             }
         }
         // Skróty jednoklawiszowe z instrukcji (1–8, A–D, V, F, R, F5–F8) — patrz
@@ -1145,6 +1146,44 @@ private struct TransferProgressStrip: View {
             .environment(\.colorScheme, .dark)
             .shadow(radius: 6)
             .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Nord nie przyjął wysłanego patcha (#143). Do 2026-10-20 mówiła o tym tylko czerwona
+/// kropka, gasnąca po 2 s, a slot milczał dalej. Pasek zostaje, dopóki slot nie zostanie
+/// potwierdzony (następna udana wysyłka) albo użytkownik go nie zamknie. Wygląd jak pasek
+/// błędu w panelu Banks — ten sam rodzaj wiadomości.
+private struct UploadFailureBar: View {
+    let device: DeviceConnection
+
+    var body: some View {
+        if let message = device.uploadFailure {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button {
+                    device.dismissUploadFailure()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Dismiss")
+            }
+            .font(.system(size: 11))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: 560)
+            // Kryjące tło pod pomarańczowym odcieniem — pasek leży na kanwie z modułami.
+            .background {
+                RoundedRectangle(cornerRadius: 6).fill(.background)
+                RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12))
+            }
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange.opacity(0.5)))
+            .padding(.top, 8)
         }
     }
 }

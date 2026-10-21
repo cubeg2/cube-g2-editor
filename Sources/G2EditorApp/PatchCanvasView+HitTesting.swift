@@ -401,7 +401,7 @@ extension PatchCanvasView {
         // Kabel wejście→wejście sam z siebie niczego nie przenosi — instrukcja (str. 70)
         // każe rysować takie połączenia na biało, dopóki łańcuch nie dostanie wyjścia.
         // Kolor źródła wraca do niego w `PatchState.addCable`.
-        let color = from.isOutput ? cableColorFrom(signalType: from.signalType) : .white
+        let color = from.isOutput ? renderedCableColor(for: from) : .white
         // linkType w formacie G2: 1 gdy źródło jest wyjściem, 0 dla kabla
         // wejście-wejście (BVerhue g2_mess.pas:6005 — decyzja po rodzaju konektora).
         let cable = G2Cable(fromModule: from.moduleID, fromConnector: from.connIndex,
@@ -415,6 +415,8 @@ extension PatchCanvasView {
                 $0.toModule == cable.toModule && $0.toConnector == cable.toConnector
         }
         guard !alreadyExists else { return }
+        // Jedno wejście (i cały jego łańcuch) bierze tylko jedno wyjście — jak w oryginale.
+        guard !patch.cableWouldJoinTwoOutputs(cable, in: area) else { return }
 
         onAddCable?(cable)
     }
@@ -429,9 +431,14 @@ extension PatchCanvasView {
         }
     }
 
-    /// Udostępnia rendererowi dobór koloru bez rozszerzania dostępu do logiki interakcji.
-    func renderedCableColor(for signalType: BVSignalType) -> CableColor {
-        cableColorFrom(signalType: signalType)
+    /// Kolor kabla z gniazda. Dwukolorowe wyjście świeci tak, jak teraz liczy moduł:
+    /// niebiesko (żółto) bez uprate, czerwono (pomarańczowo) z nim.
+    func renderedCableColor(for endpoint: ConnectorEndpoint) -> CableColor {
+        guard endpoint.isOutput,
+              let module = modules.first(where: { $0.id == endpoint.moduleID }),
+              let color = module.cableColor(forOutput: endpoint.connIndex)
+        else { return cableColorFrom(signalType: endpoint.signalType) }
+        return color
     }
 
     // MARK: - Hover hit detection

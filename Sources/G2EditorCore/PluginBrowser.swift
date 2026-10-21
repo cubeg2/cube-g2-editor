@@ -90,6 +90,7 @@ public enum PluginBrowser {
             throw CocoaError(.fileReadCorruptFile)
         }
         patch.fillMissingParameters()
+        patch.recomputeUprates()
         if patch.name.isEmpty {
             patch.name = String(url.deletingPathExtension().lastPathComponent.prefix(G2PatchName.maxLength))
         }

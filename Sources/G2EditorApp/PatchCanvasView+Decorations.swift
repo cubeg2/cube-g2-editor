@@ -35,13 +35,13 @@ extension PatchCanvasView {
 
         // Rubber-band: nowy kabel
         if let drag = connectorDrag {
-            let color = renderedCableColor(for: drag.source.signalType)
+            let color = renderedCableColor(for: drag.source)
             drawCable(ctx, from: drag.source.center, to: drag.tipPt, color: color, shakeX: 0)
         }
 
         // Rubber-band: repatch (od kotwicy do kursora)
         if let drag = repatchDrag {
-            let color = renderedCableColor(for: drag.anchor.signalType)
+            let color = renderedCableColor(for: drag.anchor)
             drawCable(ctx, from: drag.anchor.center, to: drag.tipPt, color: color, shakeX: 0)
         }
     }

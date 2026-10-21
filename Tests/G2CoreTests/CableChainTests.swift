@@ -123,6 +123,49 @@ final class CableChainTests: XCTestCase {
 
         XCTAssertEqual(patch.voiceCables[0].color, .white)
     }
+
+    // MARK: - Jedno wyjście na wejście (#142)
+
+    /// Drugie wyjście w to samo wejście — oryginalny edytor odmawia, instrukcja
+    /// mówi „an input can be connected to only one output".
+    func testSecondOutputIntoOneInputIsRefused() {
+        var patch = G2Patch()
+        patch.voiceCables = [fromOutput(1, 0, to: 3, 0)]
+
+        XCTAssertTrue(patch.cableWouldJoinTwoOutputs(fromOutput(2, 0, to: 3, 0), in: .voice))
+    }
+
+    /// Kabel wejście→wejście, który zszyłby dwa łańcuchy z różnymi wyjściami.
+    func testInputChainJoiningTwoOutputsIsRefused() {
+        var patch = G2Patch()
+        patch.voiceCables = [fromOutput(1, 0, to: 3, 0), fromOutput(2, 0, to: 4, 0)]
+
+        XCTAssertTrue(patch.cableWouldJoinTwoOutputs(fromInput(3, 0, to: 4, 0), in: .voice))
+    }
+
+    /// To, co instrukcja pozwala: jedno wyjście w wiele wejść, szereg wejść z jednym
+    /// źródłem, a nawet to samo wyjście dwiema drogami w jeden łańcuch.
+    func testSharingOneOutputIsAllowed() {
+        var patch = G2Patch()
+        patch.voiceCables = [fromOutput(1, 0, to: 3, 0), fromInput(3, 0, to: 4, 0)]
+
+        XCTAssertFalse(patch.cableWouldJoinTwoOutputs(fromOutput(1, 0, to: 5, 0), in: .voice))
+        XCTAssertFalse(patch.cableWouldJoinTwoOutputs(fromInput(4, 0, to: 6, 0), in: .voice))
+        XCTAssertFalse(patch.cableWouldJoinTwoOutputs(fromOutput(1, 0, to: 4, 0), in: .voice))
+        // Inne wejście tego samego modułu to inne gniazdo — osobny łańcuch.
+        XCTAssertFalse(patch.cableWouldJoinTwoOutputs(fromOutput(2, 0, to: 3, 1), in: .voice))
+    }
+
+    /// Plik z zewnątrz może już mieć taki łańcuch — wtedy go wskazujemy, nie kasujemy.
+    func testChainsWithSeveralOutputsAreFound() {
+        var patch = G2Patch()
+        patch.voiceCables = [fromOutput(1, 0, to: 3, 0), fromOutput(2, 0, to: 4, 0),
+                             fromInput(3, 0, to: 4, 0), fromOutput(1, 0, to: 7, 0)]
+
+        let chains = patch.chainsWithSeveralOutputs(in: .voice)
+        XCTAssertEqual(chains.count, 1)
+        XCTAssertEqual(chains.first?.count, 3)
+    }
 }
 
 @MainActor

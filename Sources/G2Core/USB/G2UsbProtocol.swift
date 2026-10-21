@@ -238,6 +238,8 @@ public enum G2UsbProtocol {
     /// Module Name (WriteStream) (`Initialize(0x33, …)`) w oryginalnym edytorze Clavii
     /// i `g2ools/g2ctl.py` (`g2SendSetModuleLabel = 0x33`).
     private static let subModuleName: UInt8 = 0x33
+    /// Module AB Code — uprate jednego modułu na żywo (patrz `setModuleUprateMolecule`).
+    private static let subModuleUprate: UInt8 = 0x2A
     private static let subWriteCable: UInt8 = 0x50
     private static let subDeleteCable: UInt8 = 0x51
     private static let subDeleteModule: UInt8 = 0x32
@@ -978,6 +980,19 @@ public enum G2UsbProtocol {
     public static func setModuleColorMolecule(_ module: G2Module) -> [UInt8] {
         let locationByte: UInt8 = module.area == .voice ? 1 : 0
         return [subModuleColor, locationByte, UInt8(module.id), module.color]
+    }
+
+    /// SUB_COMMAND (0x2A, Module AB Code) — **uprate jednego modułu na żywo**: obszar,
+    /// numer modułu, `1` = częstotliwość audio, `0` = sterowania. Nord sam tego nie liczy;
+    /// bez tej komendy moduł dopięty kablem audio grał dalej z częstotliwością sterowania.
+    ///
+    /// Źródła: oryginalny edytor (Module AB Code (WriteStream): `Initialize(0x2a)`,
+    /// obszar, moduł, wartość; wysyłany przez Patch Data (GenerateBandwidthChangeMolecules)),
+    /// G2-Edit `eMsgCmdSetModuleUpRate` (`SUB_COMMAND_SET_MODULE_UPRATE = 0x2a`)
+    /// i BVerhue `AddSetUprateMessage` (`S_SET_UPRATE = $2A`).
+    public static func setModuleUprateMolecule(_ module: G2Module) -> [UInt8] {
+        let locationByte: UInt8 = module.area == .voice ? 1 : 0
+        return [subModuleUprate, locationByte, UInt8(module.id), module.uprate ? 1 : 0]
     }
 
     /// SUB_COMMAND (0x21, Patch Header Dump) — **opis patcha na żywo**: liczba głosów,

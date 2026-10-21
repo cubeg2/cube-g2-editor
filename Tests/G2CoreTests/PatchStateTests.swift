@@ -733,6 +733,48 @@ final class PatchStateTests: XCTestCase {
         return url
     }
 
+    /// Plik jak z bety 0.1: ModADSR za filtrem z wyzerowanym uprate (oryginał ma tu 1).
+    private func fileWithStaleUprate(performance: Bool) throws -> URL {
+        let fixture = try Data(contentsOf: fixtureURL("simplesynth001-20240802.pch2"))
+        var patch = try XCTUnwrap(try PatchParser.parse(data: fixture).first)
+        XCTAssertTrue(patch.voiceModules[2].uprate, "w oryginale ModADSR ma uprate")
+        patch.voiceModules[2].uprate = false
+        let data = performance
+            ? try PatchParser.saveAll(originalData: PatchParser.emptyPerformanceFile,
+                                      patches: [patch, G2Patch(), G2Patch(), G2Patch()])
+            : try PatchParser.saveAll(originalData: fixture, patches: [patch])
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stale-uprate-\(UUID().uuidString).\(performance ? "prf2" : "pch2")")
+        try data.write(to: url)
+        return url
+    }
+
+    /// Patche zapisane przed naprawą #141 miały uprate 0. Przy otwieraniu pliku edytor
+    /// po cichu przelicza flagi — bez pytania i bez gwiazdki „niezapisane zmiany".
+    func testOpeningPatchFileSilentlyFixesStaleUprate() throws {
+        let url = try fileWithStaleUprate(performance: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let state = makeState()
+
+        state.load(url: url)
+
+        XCTAssertNil(state.errorMessage)
+        XCTAssertTrue(state.slots[0].voiceModules[2].uprate)
+        XCTAssertFalse(state.hasUnsavedChanges)
+    }
+
+    func testOpeningPerformanceFileSilentlyFixesStaleUprate() throws {
+        let url = try fileWithStaleUprate(performance: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let state = makeState()
+
+        state.load(url: url)
+
+        XCTAssertNil(state.errorMessage)
+        XCTAssertTrue(state.slots[0].voiceModules[2].uprate)
+        XCTAssertFalse(state.hasUnsavedChanges)
+    }
+
     private func temporaryCopy(of name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("g2-slot-\(UUID().uuidString).pch2")

@@ -1444,6 +1444,9 @@ public actor G2MidiManager {
     /// z tymi ze schowka. Tak samo robi Patch Data (GetNewModulesMolecules). Nazw nie
     /// dosyłamy: molekuła `AddModule` ma je w sobie.
     ///
+    /// Zaraz po kablach idzie **uprate** (`0x2A`) modułów, które zmiana kabli przełączyła
+    /// między częstotliwością audio i sterowania — to już rusza brzmienie.
+    ///
     /// Na końcu idą zmiany, które nie ruszają brzmienia: **nazwa** modułu (`0x33`),
     /// **kolor** (`0x31`) i **pozycja** (`0x34`), każda własną komendą — moduł zostaje
     /// w slocie i gra dalej.
@@ -1487,6 +1490,7 @@ public actor G2MidiManager {
             try await send(diff.modulesToDelete.map(G2UsbProtocol.deleteModuleMolecule), "DeleteModule")
             try await send(diff.modulesToAdd.map(G2UsbProtocol.addModuleMolecule), "AddModule")
             try await send(diff.cablesToAdd.map(G2UsbProtocol.writeCableMolecule), "WriteCable")
+            try await send(diff.modulesToUprate.map(G2UsbProtocol.setModuleUprateMolecule), "ModuleUprate")
             try await send(diff.modulesToRename.map(G2UsbProtocol.setModuleNameMolecule), "ModuleName")
             try await send(diff.modulesToRecolor.map(G2UsbProtocol.setModuleColorMolecule), "ModuleColor")
             try await send(diff.modulesToMove.map(G2UsbProtocol.setModulePositionMolecule), "ModuleMove")
@@ -1742,6 +1746,16 @@ public actor G2MidiManager {
             // (zmierzone 2026-10-15). Bajt odpowiedzi musi mieć flagę odpowiedzi.
             if !response.isSynthInitiated, let accepting, let subCommand = response.subCommand,
                accepting.contains(subCommand)
+            {
+                return response
+            }
+            // Odmowa przychodzi BEZ flagi odpowiedzi. Zmierzone 2026-10-20 (Virtual G2,
+            // fw 1.62): patch z notatką (Textpad) ponad ~1024 znaki, `0x37` do
+            // slotu A → `01 00 01 7E 03` (bajt odpowiedzi 0x00 = „synth sam z siebie", slot 0).
+            // Rozdane jako powiadomienie przepadało, a wysyłka czekała pełne 10 s na
+            // potwierdzenie, które nie mogło już przyjść → [[Docs/context/bug-history]] #143.
+            if let accepting, accepting.contains(G2UsbProtocol.subResponseError),
+               response.subCommand == G2UsbProtocol.subResponseError
             {
                 return response
             }

@@ -179,6 +179,20 @@ public final class DeviceConnection {
     /// `status` na `.error`, a panel chował wtedy listę za mylącym „No G2 connected”.
     public private(set) var bankLoadError: String?
 
+    /// Dlaczego ostatnia wysyłka patcha do slotu się nie udała — kanwa pokazuje to na
+    /// pasku, dopóki slot nie zostanie potwierdzony. Sam `status = .error` nie wystarczał:
+    /// `tick` po 2 s przestawia go z powrotem na `.connected`, więc użytkownik widział
+    /// najwyżej mignięcie czerwonej kropki, a slot milczał dalej → [[Docs/context/bug-history]] #143.
+    public private(set) var uploadFailure: String?
+
+    /// Sloty, których ostatniej wysyłki całości urządzenie NIE potwierdziło (odmowa `0x7E`
+    /// albo cisza). Co w nich leży, nie wiadomo — Nord podbija numer sesji nawet patchowi,
+    /// którego nie zbudował — więc różnica liczona wobec lustra `patches[]` byłaby
+    /// zgadywaniem. Zamiast niej każda kolejna zmiana struktury wysyła slot od nowa
+    /// w całości, a gałki do takiego slotu nie idą. Wartość: bajty `.pch2`, na których
+    /// slot był budowany (baza ponownej wysyłki).
+    private var unconfirmedSlots: [Int: Data?] = [:]
+
     /// Log surowych bajtów USB na konsolę. Domyślnie WYŁĄCZONY: `print` wykonuje się
     /// wewnątrz aktora USB, więc przy ruchu gałki (dziesiątki ramek/s) kosztuje na tym
     /// samym torze, którym lecą komendy. Włączany ręcznie, gdy trzeba zobaczyć transport.
@@ -230,7 +244,7 @@ public final class DeviceConnection {
     /// do Norda nie docierają.
     public var onDeviceLost: (() -> Void)?
 
-    private let manager = G2MidiManager()
+    private let manager: G2MidiManager
     private var autoConnectTask: Task<Void, Never>?
     private var notificationTask: Task<Void, Never>?
     /// Ruch gałki na froncie Norda, jeszcze nieoddany aplikacji — patrz `queueParameter`.
@@ -260,7 +274,20 @@ public final class DeviceConnection {
                                 fileData: Data?, slotFiles: [Data?], fileName: String, firstSlot: Int,
                                 headerSent: Bool)?
 
-    public init() {}
+    public init() {
+        manager = G2MidiManager()
+    }
+
+    /// Testy: most nad aktorem z transportem w pamięci, od razu „połączony" — bez
+    /// handshake'u, który wymaga urządzenia.
+    init(connectedTo manager: G2MidiManager) {
+        self.manager = manager
+        status = .connected
+    }
+
+    func awaitStructureSyncForTesting() async {
+        await structureSyncTask?.value
+    }
 
     // MARK: - Samoczynne łączenie
 
@@ -303,6 +330,7 @@ public final class DeviceConnection {
                 deviceIdentity = nil
                 isVirtualDevice = false
                 resetClock()
+                confirmSlots(0 ..< G2UsbProtocol.maxSlots)
                 status = .searching
                 onDeviceLost?()
             }
@@ -409,6 +437,7 @@ public final class DeviceConnection {
         synthSettings = nil
         synthSettingsRaw = nil
         resetClock()
+        confirmSlots(0 ..< G2UsbProtocol.maxSlots)
         status = .searching
     }
 
@@ -814,6 +843,7 @@ public final class DeviceConnection {
                 do {
                     let patches = try await self.manager.reloadAllPatches()
                     self.clearVisuals()
+                    self.confirmSlots(0 ..< G2UsbProtocol.maxSlots)
                     self.onDevicePatchesReloaded?(patches)
                     // Widok idzie na slot, który ma focus NA URZĄDZENIU. Bez tego edytor po
                     // przejęciu zawartości Norda zostawałby na slocie A, choć na froncie
@@ -834,6 +864,7 @@ public final class DeviceConnection {
                 // Nowy patch to inny zestaw modułów, więc dotychczasowe odczyty wskaźników
                 // wskazują już na cudze moduły — do czasu następnego pakietu lepiej nic.
                 if slot == meterSlot { clearVisuals() }
+                confirmSlots([slot])
                 onDevicePatchReloaded?(slot, patch)
             } catch {
                 status = .error(error.localizedDescription)
@@ -959,8 +990,20 @@ public final class DeviceConnection {
                 try await manager.sendPatch(named, toSlot: UInt8(slot),
                                             sectionStream: stream.isEmpty ? nil : stream)
                 self.activeSlot = slot
+                confirmSlots([slot])
             } catch {
-                status = .error(error.localizedDescription)
+                // Bez potwierdzenia nie ma też włączenia slotu niżej — i słusznie, bo nie
+                // wiadomo, co w nim gra. Ale użytkownik musi to zobaczyć, a slot nie może
+                // dostawać zmian na żywo, jakby wszystko było w porządku.
+                unconfirmedSlots[slot] = slotFiles.indices.contains(offset) ? slotFiles[offset] : nil
+                uploadFailure = "Slot \(Self.slotLabels[slot]): the G2 did not accept this patch, so the slot "
+                    + "is silent. One known cause: a patch note (Textpad) longer than about 1000 characters. "
+                    + "After fixing it, use Patch ▸ Download To Slot — a change to modules or cables also "
+                    + "sends the patch again."
+                // Bez `status = .error`, tak jak przy `bankLoadError`: odrzucony patch to nie
+                // zerwane połączenie, a błąd blokował na 2 s (do `tick`) każdą wysyłkę —
+                // także tę z poprawionym patchem. Zerwany kabel i tak wykryje `tick`.
+                print("[G2] upload to slot \(slot) failed: \(error.localizedDescription)")
                 return
             }
         }
@@ -1069,6 +1112,7 @@ public final class DeviceConnection {
             devicePerformanceSection = header
             devicePerformanceName = state.performanceName
             applyClock(from: state.performance)
+            confirmSlots(0 ..< G2UsbProtocol.maxSlots)
             let target = min(max(state.selectedSlot, 0), G2UsbProtocol.maxSlots - 1)
             activeSlot = target
             try await manager.selectSlot(UInt8(target))
@@ -1408,6 +1452,26 @@ public final class DeviceConnection {
         bankLoadError = nil
     }
 
+    public func dismissUploadFailure() {
+        uploadFailure = nil
+    }
+
+    /// Czy slot ma w Nordzie potwierdzoną zawartość — tylko wtedy wolno wysyłać do niego
+    /// zmiany na żywo (patrz `unconfirmedSlots`).
+    public func isSlotConfirmed(_ slot: Int) -> Bool {
+        unconfirmedSlots[slot] == nil
+    }
+
+    /// Urządzenie potwierdziło zawartość slotów (udana wysyłka) albo sami ją od niego
+    /// odczytaliśmy — w obu razach lustro znów mówi prawdę. Pasek błędu znika, gdy nie
+    /// zostaje już żaden niepotwierdzony slot.
+    private func confirmSlots(_ slots: some Sequence<Int>) {
+        for slot in slots {
+            unconfirmedSlots[slot] = nil
+        }
+        if unconfirmedSlots.isEmpty { uploadFailure = nil }
+    }
+
     // MARK: - Bank Upload (kopia banków na dysk)
 
     /// Postęp kopii banków — z tego okno Bank Upload rysuje pasek. `nil`, gdy nic nie trwa.
@@ -1725,7 +1789,8 @@ public final class DeviceConnection {
     /// `variation` to wariacja AKTYWNA patcha, nie zero — bez tego komenda dociera do
     /// urządzenia (i zostaje zapisana), ale nie słychać jej, bo Nord gra inną wariację.
     public func sendParameterLive(slot: Int, area: PatchArea, moduleID: Int, paramIndex: Int, value: Int, variation: Int) {
-        guard status == .connected, slot == activeSlot else { return }
+        // Niepotwierdzony slot: wartość zostaje w edytorze i pojedzie z całym patchem.
+        guard status == .connected, slot == activeSlot, isSlotConfirmed(slot) else { return }
         let targetSlot = UInt8(slot)
         Task {
             do {
@@ -1743,7 +1808,7 @@ public final class DeviceConnection {
 
     /// Wszystkie parametry jednej gałki Patch Adjustera — jedną ramką, jak w oryginale.
     public func sendParametersLive(slot: Int, changes: [G2ParameterChange], variation: Int) {
-        guard status == .connected, slot == activeSlot, !changes.isEmpty else { return }
+        guard status == .connected, slot == activeSlot, isSlotConfirmed(slot), !changes.isEmpty else { return }
         let targetSlot = UInt8(slot)
         Task {
             do {
@@ -1977,8 +2042,20 @@ public final class DeviceConnection {
     ///
     /// Zmiany idą w kolejności zgłoszeń, jedna po drugiej: dwa zadania naraz liczyłyby
     /// różnicę wobec tego samego stanu urządzenia i drugie wysłałoby ją po raz drugi.
+    ///
+    /// Slot, którego ostatniej wysyłki Nord nie potwierdził, dostaje zamiast różnicy
+    /// **cały patch od nowa** — różnica wobec nieznanej zawartości nie ma sensu, a poprawka
+    /// patcha ma sama przywrócić dźwięk (#143).
     public func syncStructure(slot: Int, patch: G2Patch) {
         guard status == .connected, !isSending, slot == activeSlot else { return }
+        if let file = unconfirmedSlots[slot] {
+            let previous = structureSyncTask
+            structureSyncTask = Task { [weak self] in
+                await previous?.value
+                await self?.upload(patches: [patch], activeSlot: slot, slotFiles: [file], firstSlot: slot)
+            }
+            return
+        }
         // Po każdej komendzie strukturalnej Nord ogłasza nowy numer sesji slotu (0x38).
         // To echo NASZEJ zmiany — bez karencji edytor odczytałby z powrotem patch, który
         // sam przed chwilą zmienił, i skasował przy tym historię undo.

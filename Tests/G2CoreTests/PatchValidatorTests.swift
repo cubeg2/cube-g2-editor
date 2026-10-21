@@ -66,8 +66,9 @@ final class PatchValidatorTests: XCTestCase {
 
     func testConnectorOutOfRangeIsReported() throws {
         var patch = try cleanPatch()
-        // 9 nie istnieje w OscB ani jako wejście (5), ani jako wyjście (1).
-        patch.add(cable: G2Cable(fromModule: 1, fromConnector: 9, toModule: 2, toConnector: 0,
+        // 9 nie istnieje w OscB ani jako wejście (5), ani jako wyjście (1). Cel to wolne
+        // InR — w zajętym InL byłoby też drugie wyjście na jedno wejście.
+        patch.add(cable: G2Cable(fromModule: 1, fromConnector: 9, toModule: 2, toConnector: 1,
                                  color: .red, area: .voice, sourceIsOutput: true))
         XCTAssertEqual(kinds(patch), [.cableConnectorOutOfRange])
     }
@@ -77,6 +78,16 @@ final class PatchValidatorTests: XCTestCase {
         patch.add(cable: G2Cable(fromModule: 1, fromConnector: 0, toModule: 2, toConnector: 0,
                                  color: .blue, area: .voice, sourceIsOutput: true))
         XCTAssertEqual(kinds(patch), [.duplicateCable])
+    }
+
+    /// Dwa wyjścia w jedno wejście (#142): plik zostaje taki, jaki jest, ale raport go wskazuje.
+    func testInputWithTwoOutputsIsReported() throws {
+        var patch = try cleanPatch()
+        try patch.add(module: module(3, type: oscB))
+        patch.add(cable: G2Cable(fromModule: 3, fromConnector: 0, toModule: 2, toConnector: 0,
+                                 color: .red, area: .voice, sourceIsOutput: true))
+        XCTAssertEqual(kinds(patch), [.inputWithSeveralOutputs])
+        XCTAssertEqual(patch.voiceCables.count, 2)
     }
 
     func testDuplicateModuleIDIsReported() throws {

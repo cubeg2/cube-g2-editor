@@ -2456,8 +2456,14 @@ public final class PatchState {
     /// Jedno miejsce, z którego struktura widocznego slotu jedzie do urządzenia.
     /// Wołane na końcu każdej operacji zmieniającej moduły albo kable — po zapisie
     /// do modelu, żeby most dostał stan już zmieniony.
+    ///
+    /// Tu też, jak w oryginale po każdej zmianie kabli, przeliczamy uprate: Nord go
+    /// nie liczy, a bez niego obwiednia dopięta do piły grała z aliasingiem.
     private func structureChanged(slot: Int) {
         guard slots.indices.contains(slot) else { return }
+        var patch = slots[slot]
+        patch.recomputeUprates()
+        if patch != slots[slot] { slots[slot] = patch }
         onLiveStructureChange?(slot, slots[slot])
     }
 
@@ -3258,6 +3264,7 @@ public final class PatchState {
             slots = fourSlots(parsed.patches.map { patch in
                 var patch = patch
                 patch.fillMissingParameters()
+                patch.recomputeUprates()
                 return patch
             })
             selectedSlot = 0
@@ -3311,6 +3318,9 @@ public final class PatchState {
             let data = try Data(contentsOf: url)
             guard var patch = try PatchParser.parseFile(data: data).patches.first else { return }
             patch.fillMissingParameters()
+            // Pliki z bety 0.1 mają uprate 0 tam, gdzie oryginał ma 1 (bug-history #141).
+            // Poprawiamy po cichu, zanim slot zostanie oznaczony jako zapisany.
+            patch.recomputeUprates()
             // `.pch2` nie niesie nazwy patcha — u oryginału slot nazywa się jak plik. To samo
             // robi już wysyłka do Norda (`performUpload`), a w `.prf2` nazwę trzyma sekcja 0x11.
             if patch.name.isEmpty {
