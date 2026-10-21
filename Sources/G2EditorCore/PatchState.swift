@@ -1630,13 +1630,16 @@ public final class PatchState {
         audition(individual)
     }
 
-    /// Kratka zapalona w oknie mutatora. Dopóki nikt w nie nie kliknął, gra ta wariacja,
-    /// którą pokazuje górny pasek — świeżo otwarte okno ma więc zapaloną tę samą kratkę
-    /// co belka, bez czekania na pierwsze przełączenie wariacji.
+    /// Kratka zapalona w oknie mutatora — to, co gra oglądany slot. Gra wariację: zapalona
+    /// ta sama kratka co w górnym pasku, także w świeżo otwartym oknie. Gra bufor
+    /// odsłuchu: kratka, z której ten dźwięk przyszedł.
+    ///
+    /// `mutatorFocus` jest jeden na cały edytor, nie na slot, więc o wariacji decyduje
+    /// sam slot — inaczej po przejściu z A na B świeciła kratka wariacji ze slotu A (#145).
     public var mutatorHighlight: G2MutatorBox? {
-        if let mutatorFocus { return mutatorFocus }
         let variation = patch.activeVariation
-        return (0 ... 7).contains(variation) ? G2MutatorBox(.variations, variation) : nil
+        if (0 ... 7).contains(variation) { return G2MutatorBox(.variations, variation) }
+        return mutatorFocus
     }
 
     /// Czy patch gra w tej chwili z bufora mutatora — wtedy żaden przycisk wariacji

@@ -992,6 +992,12 @@ public final class DeviceConnection {
                 self.activeSlot = slot
                 confirmSlots([slot])
             } catch {
+                // Zerwane łącze (#146) to nie odmowa Norda. `.error` zatrzymuje `send` przed
+                // uznaniem patcha za wysłany — po ponownym połączeniu `tick` dośle go sam.
+                if case .error = await manager.state {
+                    status = .error(error.localizedDescription)
+                    return
+                }
                 // Bez potwierdzenia nie ma też włączenia slotu niżej — i słusznie, bo nie
                 // wiadomo, co w nim gra. Ale użytkownik musi to zobaczyć, a slot nie może
                 // dostawać zmian na żywo, jakby wszystko było w porządku.

@@ -94,6 +94,12 @@ public actor G2MidiManager {
         drainOnlyWhenOrphaned = enabled
     }
 
+    /// Furtka **diagnostyczna** (`USBProbe --stress --wait500ms`): krótsze czekanie na dane
+    /// z 0x82, jak przed 2026-10-21. Aplikacja tego nie woła (#146).
+    public func setExtendedReadTries(_ tries: Int) {
+        extendedReadTries = max(1, tries)
+    }
+
     /// Furtka dla testów: podstawia transport bez `connect()`, z regułą emulatora albo Norda.
     func attachTransportForTesting(_ transport: G2Transport, emulatorRules: Bool = true) {
         self.transport = transport
@@ -124,6 +130,22 @@ public actor G2MidiManager {
     private var log: (@Sendable (String) -> Void)?
     private var notify: (@Sendable (G2Notification) -> Void)?
     private var logNotifications = false
+    /// Czarna skrzynka (#146): pakiety odebrane po cichu (powiadomienia, ~40/s — w logu by
+    /// go zalały) i przerwy między nimi. Do logu trafia tylko przy awarii (`dumpFlightRecorder`),
+    /// bo właśnie chwili PRZED ciszą Norda nie było w żadnym logu.
+    private var flightRecorder: [String] = []
+    /// Ile prób po ~100 ms czekamy na dane zapowiedziane na 0x81: 5 s, jak oryginał
+    /// (`CUSBManager::RxData`). Do 2026-10-21 było 0,5 s — porównanie: `USBProbe --stress --wait500ms`.
+    private var extendedReadTries = 50
+    /// Puste odczyty 0x81 od ostatniego pakietu — jeden to ~100 ms ciszy urządzenia.
+    private var quietEmptyPolls = 0
+    private static let flightRecorderCapacity = 600
+    private let flightStamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
     /// Czy strumień wizualny (VU 0x3A, diody 0x39) ma w ogóle docierać do aplikacji.
     private var visualStreamEnabled = true
     /// Ostatnia wysyłka do aplikacji, **osobno dla każdego strumienia** (wskaźniki `0x3A`,
@@ -1560,6 +1582,65 @@ public actor G2MidiManager {
         }
     }
 
+    // MARK: - Diagnostyka martwego kanału 0x82 (#146)
+
+    private func recordQuiet(_ line: String) {
+        flushQuietEmptyPolls()
+        flightRecorder.append("\(flightStamp.string(from: Date())) \(line)")
+        if flightRecorder.count > Self.flightRecorderCapacity {
+            flightRecorder.removeFirst(flightRecorder.count - Self.flightRecorderCapacity)
+        }
+    }
+
+    private func flushQuietEmptyPolls() {
+        guard quietEmptyPolls > 0 else { return }
+        flightRecorder.append("\(flightStamp.string(from: Date())) … \(quietEmptyPolls) empty polls "
+            + "(~\(quietEmptyPolls * 100) ms of silence)")
+        quietEmptyPolls = 0
+    }
+
+    /// Przepisuje czarną skrzynkę do logu i ją opróżnia — kolejna awaria w serii pokaże
+    /// tylko to, co przyszło od poprzedniej.
+    private func dumpFlightRecorder(_ reason: String) {
+        flushQuietEmptyPolls()
+        guard !flightRecorder.isEmpty else { return }
+        log?("    ┌ \(reason) — background traffic before it (\(flightRecorder.count) lines):")
+        for line in flightRecorder {
+            log?("    │ \(line)")
+        }
+        log?("    └ end of background traffic")
+        flightRecorder.removeAll()
+    }
+
+    /// Brak potwierdzenia: czy w 0x82 nie leży payload, którego zapowiedź zginęła? Taki
+    /// payload blokuje Norda (pułapka z #53), a od #91 sprzątamy 0x82 tylko po rozjeździe —
+    /// więc nikt by go nie zabrał. Jeden odczyt, zapisany w logu: jeśli coś przyjdzie, mamy
+    /// przyczynę ciszy; jeśli nie, zgubiona zapowiedź odpada.
+    private func probeUnannouncedData() async throws {
+        let orphan = try await bulkRead(endpoint: G2UsbProtocol.endpointExtended,
+                                        maxLength: G2UsbProtocol.extendedMessageSize,
+                                        tries: 1, pacingSleep: false)
+        if orphan.isEmpty {
+            log?("    ~ probe: nothing waiting on 0x82 without an announcement")
+        } else {
+            log?("    ~ probe: 0x82 held \(orphan.count)B with no announcement — an orphan was blocking the G2")
+            extendedOrphanSuspected = true
+        }
+    }
+
+    /// Zapowiedź bez danych: wina po stronie Maca (zablokowany kanał odbioru) czy Norda?
+    /// `clear_halt` zeruje stan kanału po obu stronach. Jeśli zapowiedziane dane przyjdą
+    /// po nim — wystarczy to zamiast resetu; jeśli nie — milczy sam Nord.
+    private func probeSilentDataChannel(announcedLength: Int) async throws {
+        guard let transport else { return }
+        let cleared = transport.clearHalt(endpoint: G2UsbProtocol.endpointExtended)
+        log?("    ~ probe: clear_halt 0x82 → \(cleared) (\(Self.libusbErrorName(cleared)))")
+        let late = try await bulkRead(endpoint: G2UsbProtocol.endpointExtended,
+                                      maxLength: max(announcedLength, G2UsbProtocol.extendedMessageSize),
+                                      pacingSleep: false)
+        log?("    ~ probe: after clear_halt 0x82 gave \(late.count)B of the announced \(announcedLength)B")
+    }
+
     private func drainPendingExtended() async throws {
         let orphan = try await bulkRead(
             endpoint: G2UsbProtocol.endpointExtended,
@@ -1817,6 +1898,8 @@ public actor G2MidiManager {
         // taki komunikat kosztuje setki ms i wypychał OK poza okno.
         guard let response = try await awaitResponse(timeout: timeout, accepting: accepting) else {
             log?("    ! \(label): no acknowledgement within \(timeout)s")
+            dumpFlightRecorder("missing acknowledgement")
+            try await probeUnannouncedData()
             return nil
         }
         if response.subCommand == G2UsbProtocol.subResponseError {
@@ -1923,12 +2006,26 @@ public actor G2MidiManager {
             // NIE wolno zostawić punktu anulowania: przerwanie tutaj osierociłoby payload
             // i zablokowało urządzenie (patrz `drainPendingExtended`). Tempo i tak nadaje
             // 100 ms timeout samego libusb, więc pętla nie kręci się w miejscu.
-            let extended = try await bulkRead(
+            var extended = try await bulkRead(
                 endpoint: G2UsbProtocol.endpointExtended,
                 maxLength: max(announcedLength, G2UsbProtocol.extendedMessageSize),
+                tries: extendedReadTries,
                 pacingSleep: false,
                 quiet: quiet
             )
+            // Odczyt zamknięty TIMEOUT-em oddaje początek komunikatu — reszta przychodzi
+            // w następnym odczycie i należy do tego samego komunikatu.
+            while !extended.isEmpty, extended.count < announcedLength {
+                let rest = try await bulkRead(
+                    endpoint: G2UsbProtocol.endpointExtended,
+                    maxLength: max(announcedLength, G2UsbProtocol.extendedMessageSize),
+                    tries: extendedReadTries,
+                    pacingSleep: false,
+                    quiet: quiet
+                )
+                if rest.isEmpty { break }
+                extended += rest
+            }
             // Rozjazd zapowiedzi z danymi NIE może zrywać połączenia. Dwa strumienie
             // (LED 0x39 i VU 0x3A) zapowiadają się na 0x81 i płyną przez 0x82, więc gdy
             // ktoś (diagnostyka, przerwany odbiór) zabierze jeden pakiet z pary, kolejne
@@ -1939,6 +2036,22 @@ public actor G2MidiManager {
             guard extended.count == announcedLength else {
                 extendedOrphanSuspected = true
                 log?("    ! stream mismatch: \(extended.count)B instead of the announced \(announcedLength)B — packet skipped")
+                // Zapowiedź bez ANI BAJTU danych to na Nordzie martwy kanał 0x82, nie zgubiony
+                // pakiet: w logu testera (G2 Engine, 2026-10-21 11:23:41) i u nas (G2 37,
+                // 07:54:31) od tej chwili żadna odpowiedź z 0x82 już nie przyszła, a każda
+                // komenda kończyła się brakiem potwierdzenia — wczytany patch zostawał na
+                // ekranie, a Nord grał poprzedni. Zrywamy łącze jak przy wyjętym kablu: `tick`
+                // połączy się od nowa (z resetem USB, jak G2-Edit po `gotBadConnectionIndication`)
+                // i dośle zawartość ekranu → [[Docs/context/bug-history]] #146. Emulator bywa
+                // wolniejszy niż nasze okno odczytu, więc jego to nie dotyczy.
+                dumpFlightRecorder("stream mismatch")
+                if extended.isEmpty, !isEmulator {
+                    try await probeSilentDataChannel(announcedLength: announcedLength)
+                    log?("    ! the G2 stopped sending on 0x82 — dropping the link to reconnect")
+                    closeDevice()
+                    state = .error("The G2 stopped answering — reconnecting")
+                    throw G2UsbError.transferFailed("the G2 stopped sending data")
+                }
                 // Resynchronizacja MUSI być tutaj, a nie tylko w `finishCommandLane`: pętla
                 // nasłuchu nie przechodzi przez tor komend, więc przesunięcie o jeden pakiet
                 // zostawało w kolejce do najbliższej komendy — a każda komenda po drodze
@@ -2002,10 +2115,23 @@ public actor G2MidiManager {
                 if result != LIBUSB_ERROR_TIMEOUT.rawValue || waited >= 100 { break }
                 await Task.yield()
             }
-            if result == 0, actualLength > 0 {
+            // Dane, które przyszły, są nasze — także gdy libusb oddaje je z TIMEOUT-em. Na macOS
+            // pakiet potrafi dojść dokładnie w chwili, gdy okno 100 ms się zamyka: wynik to
+            // TIMEOUT, a w buforze komplet 16 B. Do 2026-10-21 wyrzucaliśmy je — test na Nordzie
+            // (`USBProbe --stress`) złapał tak dwa potwierdzenia w 25 min. Zgubiona tą drogą
+            // ZAPOWIEDŹ zostawia dane w 0x82 i Nord przestaje odpowiadać (#146). Oryginał tego
+            // nie zna, bo odczytu przerwań nigdy nie przerywa (`CUSBManager::HandleInterrupt`).
+            if result == 0 || result == LIBUSB_ERROR_TIMEOUT.rawValue, actualLength > 0 {
                 let bytes = Array(buffer.prefix(Int(actualLength)))
-                if !quiet { log?("    RX 0x\(String(endpoint, radix: 16)) \(actualLength)B: \(hex(bytes))") }
+                let line = "RX 0x\(String(endpoint, radix: 16)) \(actualLength)B: \(hex(bytes))"
+                if quiet { recordQuiet(line) } else { log?("    \(line)") }
+                if result != 0 {
+                    log?("    ~ RX 0x\(String(endpoint, radix: 16)) \(actualLength)B arrived with TIMEOUT — kept")
+                }
                 return bytes
+            }
+            if quiet, result == LIBUSB_ERROR_TIMEOUT.rawValue, endpoint == G2UsbProtocol.endpointInterrupt {
+                quietEmptyPolls += 1
             }
             if result == LIBUSB_ERROR_NO_DEVICE.rawValue {
                 throw G2UsbError.transferFailed("device disconnected")

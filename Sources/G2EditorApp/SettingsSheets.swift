@@ -248,6 +248,39 @@ private struct SupportPrompt: View {
         TopBarButton(content: .text("Support on Ko-fi"), isOn: true, tint: .green) {
             NSWorkspace.shared.open(SplashWindow.kofiURL)
         }
+        .supportPulse(.green)
+    }
+}
+
+/// Zachęta do kawy (prośba użytkownika 2026-10-22): po pokazaniu przycisku rozchodzi
+/// się od niego kilka razy poświata w jego kolorze, potem stoi spokojnie — mruga, ale
+/// nie przeszkadza w pracy. Każde ponowne pokazanie strony mruga od nowa.
+private struct SupportPulse: ViewModifier {
+    let color: Color
+    @State private var trigger = 0
+
+    func body(content: Content) -> some View {
+        content
+            .keyframeAnimator(initialValue: 0.0, trigger: trigger) { view, glow in
+                view
+                    .shadow(color: color.opacity(0.9 * glow), radius: 9 * glow)
+                    .scaleEffect(1 + 0.05 * glow)
+            } keyframes: { _ in
+                CubicKeyframe(0, duration: 0.6) // chwila na otwarcie okna
+                CubicKeyframe(1, duration: 0.45)
+                CubicKeyframe(0, duration: 0.65)
+                CubicKeyframe(1, duration: 0.45)
+                CubicKeyframe(0, duration: 0.65)
+                CubicKeyframe(1, duration: 0.45)
+                CubicKeyframe(0, duration: 0.8)
+            }
+            .onAppear { trigger += 1 }
+    }
+}
+
+extension View {
+    func supportPulse(_ color: Color) -> some View {
+        modifier(SupportPulse(color: color))
     }
 }
 
@@ -321,14 +354,23 @@ struct GeneralSettingsTab: View {
 // MARK: - Updates
 
 /// Sprawdzanie aktualizacji (`AppUpdates`): numer wersji, przycisk i przełącznik
-/// sprawdzania przy starcie.
+/// sprawdzania przy starcie, pod nimi historia zmian wszystkich wersji (prośba
+/// użytkownika 2026-10-22: widać też, co poprawiła poprzednia wersja).
 struct UpdatesSettingsTab: View {
     @AppStorage(AppUpdates.autoKey) private var checkAutomatically = true
     @AppStorage(AppUpdates.lastCheckedKey) private var lastChecked = 0.0
 
+    /// Z paczki aplikacji (`Resources/ReleaseNotes.md`); ta sama treść idzie w opis
+    /// wydania na GitHubie, więc okno aktualizacji pokazuje też starsze wersje.
+    private static let releaseNotes: AttributedString = {
+        let text = Bundle.app.url(forResource: "ReleaseNotes", withExtension: "md")
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+        return UpdateView.notes(text)
+    }()
+
     var body: some View {
         SettingsPage {
-            CardsWithSupport {
+            VStack(alignment: .leading, spacing: cardSpacing) {
                 Grid(horizontalSpacing: cardSpacing, verticalSpacing: cardSpacing) {
                     GridRow {
                         SettingsCard(title: "Version", width: cardWidth(3)) {
@@ -353,6 +395,18 @@ struct UpdatesSettingsTab: View {
                         }
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
+                SettingsCard(title: "What's New", width: pageInnerWidth) {
+                    ScrollView {
+                        Text(Self.releaseNotes)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.trailing, 8)
+                    }
+                    .frame(height: 150)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                SupportPrompt(compact: true).padding(.top, 4)
             }
         }
     }

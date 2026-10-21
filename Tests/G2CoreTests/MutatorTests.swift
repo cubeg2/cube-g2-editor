@@ -1170,6 +1170,32 @@ final class MutatorTests: XCTestCase {
         XCTAssertEqual(state.mutatorHighlight, state.mutatorFocus)
     }
 
+    /// Zgłoszenie użytkownika 2026-10-21 (#145): performance z kilkoma slotami, w A
+    /// wariacja 2, przejście do B, który gra wariację 1 — belka pokazywała 1, a mutator
+    /// dalej zapalał kratkę ze slotu A. Podświetlenie ma iść za oglądanym slotem.
+    func testHighlightFollowsTheSelectedSlot() throws {
+        let patch = try fixturePatch()
+        let state = PatchState()
+        state.undoManager.groupsByEvent = false
+        state.slots = [patch, patch]
+
+        undoStep(on: state) { state.selectVariation(1) }
+        XCTAssertEqual(state.mutatorHighlight, G2MutatorBox(.variations, 1))
+
+        state.selectedSlot = 1
+        XCTAssertEqual(state.patch.activeVariation, 0)
+        XCTAssertEqual(state.mutatorHighlight, G2MutatorBox(.variations, 0))
+
+        // Slot A przesłuchuje dziecko — po powrocie do A kratka dziecka znów świeci.
+        state.selectedSlot = 0
+        undoStep(on: state) { state.mutatorMutate() }
+        let child = try XCTUnwrap(state.mutatorFocus)
+        state.selectedSlot = 1
+        XCTAssertEqual(state.mutatorHighlight, G2MutatorBox(.variations, 0))
+        state.selectedSlot = 0
+        XCTAssertEqual(state.mutatorHighlight, child)
+    }
+
     /// Każde przesłuchanie to **jeden zrzut całego bufora** do zestawu 9 — i tyle.
     /// Żadnych pojedynczych `0x40`, `0x43` ani ustawień obszaru 2 osobno, i żadnych
     /// „tylko różnic": zrzut niesie komplet, więc zgubiona paczka naprawia się sama

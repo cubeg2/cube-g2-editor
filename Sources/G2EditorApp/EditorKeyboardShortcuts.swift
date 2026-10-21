@@ -130,8 +130,8 @@ final class SingleKeyMonitorNSView: NSView {
         if event.modifierFlags.contains(.capsLock), MusicalTyping.claims(keyCode: event.keyCode) {
             return event
         }
-        // Pisanie w polu i nawigacja po liście mają pierwszeństwo — patrz `KeyEventScope`.
-        if KeyEventScope.belongsToAnotherControl(in: window) { return event }
+        // Pisanie w polu ma pierwszeństwo; zaznaczona lista już nie — patrz `KeyEventScope.isTyping`.
+        if KeyEventScope.isTyping(in: window) { return event }
         guard let characters = event.charactersIgnoringModifiers?.lowercased() else { return event }
         return handler?(characters, event.keyCode) == true ? nil : event
     }

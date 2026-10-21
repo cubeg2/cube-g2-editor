@@ -9,6 +9,7 @@
 //   swift run USBProbe --loadfile x.pch2 --slot D  # wgranie pliku JEDNĄ komendą (0x37)
 //   swift run USBProbe --loadperf x.prf2          # CAŁY performance (4 sloty) jedną komendą (0x1A)
 //   swift run USBProbe --verifyfile x.prf2      # czy w slotach Norda leży to, co w pliku
+//   swift run USBProbe --stress 15 x.prf2 katalog/  # pętla: performance, wariacje, .pch2, kable (#146)
 //   swift run USBProbe --sendtest-slot D        # roundtrip zapisu slotu (molekuła po molekule)
 //   swift run USBProbe --structtest-slot D      # zmiany strukturalne na żywo: skasuj moduł i dołóż go z powrotem
 //   swift run USBProbe --metatest-slot D        # nazwa/kolor/pozycja modułu + kolor kabla (0x33/0x31/0x34/0x50)
@@ -650,6 +651,66 @@ let sendPayload: [UInt8]? = {
     return bytes
 }()
 
+/// `--stress <minuty> <plik.prf2> <katalog z .pch2> [--wait500ms]` — #146: to, co robił tester
+/// Kymeia i my 2026-10-21, w pętli, aż Nord zgubi kanał 0x82 albo minie czas. Obieg:
+/// performance jedną komendą, wariacje i nuty, kilka `.pch2` jak „Like the original editor”
+/// (A z pliku, B–D puste), edycja kabli w slocie A. NADPISUJE bieżące sloty Norda (banków
+/// nie). Log z godzinami: `~/Library/Logs/G2Editor/stress-500ms.log` albo `stress-5s.log`;
+/// `--wait500ms` wraca do czekania na dane z 0x82 sprzed 2026-10-21 (0,5 s zamiast 5 s).
+struct StressPlan {
+    let minutes: Double
+    let performance: URL
+    let patchFiles: [URL]
+}
+
+let stressPlan: StressPlan? = {
+    guard let index = args.firstIndex(of: "--stress"), index + 3 < args.count,
+          let minutes = Double(args[index + 1]) else { return nil }
+    let folder = URL(fileURLWithPath: args[index + 3])
+    let files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
+        .filter { $0.pathExtension.lowercased() == "pch2" }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    guard !files.isEmpty else {
+        fputs("--stress: brak plików .pch2 w \(folder.path)\n", stderr)
+        exit(1)
+    }
+    return StressPlan(minutes: minutes, performance: URL(fileURLWithPath: args[index + 2]), patchFiles: files)
+}()
+
+/// Log `--stress`: każda linia z godziną, prosto do pliku — sonda nie ma pierścienia edytora.
+final class StressLog: @unchecked Sendable {
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    private var missingAcks = 0
+    private var mismatches = 0
+
+    init(url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        handle = try FileHandle(forWritingTo: url)
+    }
+
+    func write(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if line.contains("no acknowledgement") { missingAcks += 1 }
+        if line.contains("stream mismatch") { mismatches += 1 }
+        handle.write(Data("\(stamp.string(from: Date())) \(line)\n".utf8))
+    }
+
+    var counts: (missingAcks: Int, mismatches: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (missingAcks, mismatches)
+    }
+}
+
 let logCollector = LogCollector()
 var sendReport: SendReport?
 var exitStatus: Int32 = 0
@@ -914,6 +975,147 @@ do {
         print(mismatches == 0
             ? "\n✅ Wszystkie \(fromFile.count) slot(ów) na urządzeniu zgodne z plikiem."
             : "\n❌ Rozjechanych slotów: \(mismatches) z \(fromFile.count).")
+    } else if let plan = stressPlan {
+        let wait5s = !args.contains("--wait500ms")
+        if !wait5s { await manager.setExtendedReadTries(5) }
+        let logURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/G2Editor/stress-\(wait5s ? "5s" : "500ms").log")
+        let log = try StressLog(url: logURL)
+        await manager.setLog { log.write($0) }
+
+        let perfData = try Data(contentsOf: plan.performance)
+        let perfPatches = try PatchParser.parseFile(data: perfData).patches
+        let perfName = plan.performance.deletingPathExtension().lastPathComponent
+        let perfHeader = try PatchParser.performanceSectionStream(fileData: perfData)
+        let perfKnobs = try PatchParser.performanceKnobMapStream(fileData: perfData)
+        let perfStreams = try (0 ..< G2UsbProtocol.maxSlots).map {
+            try PatchParser.slotSectionStream(fileData: perfData, slot: $0)
+        }
+        let emptyStream = try PatchParser.slotSectionStream(fileData: PatchParser.emptyPatchFile, slot: 0)
+        let emptyPatch = try PatchParser.parseFile(data: PatchParser.emptyPatchFile).patches.first ?? G2Patch()
+
+        print("\n--- STRESS: \(plan.minutes) min, czekanie na 0x82: \(wait5s ? "5 s (jak oryginał)" : "0,5 s (jak edytor)") ---")
+        print("Performance: \(plan.performance.lastPathComponent) · plików .pch2: \(plan.patchFiles.count)")
+        print("Log: \(logURL.path)")
+
+        func pause(_ low: Double, _ high: Double) async {
+            try? await Task.sleep(nanoseconds: UInt64(Double.random(in: low ... high) * 1_000_000_000))
+        }
+        func linkDropped() async -> Bool {
+            if case .error = await manager.state { return true }
+            return false
+        }
+        /// Jeden krok; błąd komendy nie przerywa testu — przerywa dopiero zerwane łącze.
+        func step(_ label: String, _ body: () async throws -> Void) async -> Bool {
+            log.write("=== STRESS: \(label) ===")
+            do {
+                try await body()
+            } catch {
+                log.write("    ! stress step failed: \(error.localizedDescription)")
+            }
+            return await !linkDropped()
+        }
+        func note() async {
+            let key = UInt8.random(in: 48 ... 72)
+            try? await manager.playNote(key, on: true)
+            await pause(0.2, 0.6)
+            try? await manager.playNote(key, on: false)
+        }
+
+        let started = Date()
+        let deadline = started.addingTimeInterval(plan.minutes * 60)
+        var performanceMode: Bool?
+        var fileIndex = 0
+        var round = 0
+        var alive = true
+        while alive, Date() < deadline {
+            round += 1
+            alive = await step("round \(round): performance \(perfName)") {
+                if performanceMode != true {
+                    try await manager.setPerformanceMode(true)
+                    performanceMode = true
+                }
+                _ = try await manager.sendCompletePerformanceDump(
+                    name: perfName, headerSection: perfHeader, slotStreams: perfStreams,
+                    knobMapSection: perfKnobs, patches: perfPatches
+                )
+            }
+            for _ in 0 ..< 8 where alive {
+                let slot = UInt8.random(in: 0 ..< UInt8(G2UsbProtocol.maxSlots))
+                let variation = Int.random(in: 0 ... 7)
+                alive = await step("variation \(variation + 1) slot \(slot)") {
+                    try await manager.selectVariation(slot: slot, variation: variation)
+                }
+                await note()
+                await pause(0.5, 2.0)
+            }
+            for _ in 0 ..< 3 where alive {
+                let file = plan.patchFiles[fileIndex % plan.patchFiles.count]
+                fileIndex += 1
+                alive = await step("file \(file.lastPathComponent)") {
+                    let data = try Data(contentsOf: file)
+                    let patches = try PatchParser.parseFile(data: data).patches.map { patch in
+                        var patch = patch
+                        patch.fillMissingParameters()
+                        return patch
+                    }
+                    guard let patch = patches.first else { return }
+                    let current = try PatchParser.saveAll(originalData: data, patches: [patch])
+                    let stream = try PatchParser.slotSectionStream(fileData: current, slot: 0)
+                    if performanceMode != false {
+                        try await manager.setPerformanceMode(false)
+                        performanceMode = false
+                    }
+                    try await manager.sendPatch(patch, toSlot: 0, sectionStream: stream)
+                    for slot in 1 ..< UInt8(G2UsbProtocol.maxSlots) {
+                        try await manager.sendPatch(emptyPatch, toSlot: slot, sectionStream: emptyStream)
+                    }
+                    try await manager.setSlotSelection([true, false, false, false],
+                                                       keyboard: [true, false, false, false])
+                    try await manager.selectSlot(0)
+                }
+                for _ in 0 ..< 3 where alive {
+                    await note()
+                    await pause(0.3, 1.5)
+                }
+            }
+            for _ in 0 ..< 4 where alive {
+                let original = await manager.patches[0]
+                guard !original.voiceCables.isEmpty else { break }
+                var edited = original
+                edited.voiceCables.removeLast()
+                alive = await step("cable off slot A") { _ = try await manager.syncPatch(edited, toSlot: 0) }
+                await pause(0.5, 2.0)
+                if alive {
+                    alive = await step("cable back slot A") { _ = try await manager.syncPatch(original, toSlot: 0) }
+                    await pause(0.5, 2.0)
+                }
+            }
+            let counts = log.counts
+            let minutes = Date().timeIntervalSince(started) / 60
+            print("  obieg \(round) (\(String(format: "%.1f", minutes)) min): brakujących ACK \(counts.missingAcks), "
+                + "rozjazdów \(counts.mismatches)")
+        }
+
+        let counts = log.counts
+        let minutes = String(format: "%.1f", Date().timeIntervalSince(started) / 60)
+        if alive {
+            print("\n✅ \(minutes) min, \(round) obiegów bez zerwania łącza (brakujących ACK \(counts.missingAcks), "
+                + "rozjazdów \(counts.mismatches)).")
+        } else {
+            print("\n⚠️ ZŁAPANE po \(minutes) min (obieg \(round)): Nord przestał oddawać dane z 0x82 — łącze zerwane.")
+            log.write("=== STRESS: link dropped — reconnecting (USB reset), as the editor would ===")
+            do {
+                try await manager.connect(readPatches: true)
+                try await manager.selectSlot(0)
+                log.write("=== STRESS: reconnect OK ===")
+                print("✅ Ponowne połączenie z resetem USB przywróciło Norda (odczyt slotów i potwierdzenie przeszły).")
+            } catch {
+                log.write("=== STRESS: reconnect FAILED: \(error.localizedDescription) ===")
+                print("❌ Ponowne połączenie NIE przywróciło Norda: \(error.localizedDescription)")
+                exitStatus = 2
+            }
+        }
     } else if let path = performanceDumpPath {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let parsed = try PatchParser.parseFile(data: data)

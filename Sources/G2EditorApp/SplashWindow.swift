@@ -63,6 +63,7 @@ struct SplashCard: View {
     static let width: CGFloat = 760
     /// Kolor tła karty. Kontury w białym logo mają dokładnie ten kolor — oddzielają litery.
     static let background = Color(red: 0.102, green: 0.102, blue: 0.102)
+    static let kofiBlue = Color(red: 0.16, green: 0.67, blue: 0.94)
     let logo: NSImage
     let onClose: () -> Void
 
@@ -102,9 +103,10 @@ struct SplashCard: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 7)
-                        .background(Capsule().fill(Color(red: 0.16, green: 0.67, blue: 0.94)))
+                        .background(Capsule().fill(SplashCard.kofiBlue))
                 }
                 .buttonStyle(.plain)
+                .supportPulse(SplashCard.kofiBlue)
             }
             .padding(.horizontal, 90)
             .padding(.top, 22)

@@ -233,12 +233,14 @@ struct UpdateView: View {
     }
 
     /// Opis wydania z GitHuba to Markdown. Pogrubienia i linki zostają; nagłówki „##”
-    /// stają się pogrubionym wierszem (pełnego Markdownu `Text` nie rysuje).
+    /// stają się pogrubionym wierszem, a „- ” kropką listy (pełnego Markdownu `Text`
+    /// nie rysuje).
     static func notes(_ markdown: String) -> AttributedString {
         let text = markdown.isEmpty ? "No release notes." : markdown
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n")
             .split(separator: "\n", omittingEmptySubsequences: false)
         let cleaned = lines.map { line -> String in
+            if line.hasPrefix("- ") { return "•  " + line.dropFirst(2) }
             let heading = line.drop { $0 == "#" }
             guard heading.count < line.count else { return String(line) }
             return "**\(heading.trimmingCharacters(in: .whitespaces))**"
