@@ -7,11 +7,11 @@ Cube G2 Editor keeps the familiar layout and workflow of the original G2 editor,
 so patches look and behave the way G2 players know them, and runs natively on
 current Macs.
 
-> **Public beta 0.1.** It is developed and tested on a real G2, but it is still
+> **Public beta 0.1.1.** It is developed and tested on a real G2, but it is still
 > beta software that sends patches to your synth. **Back up your banks first**
 > (Synth ▸ Download Banks from G2…).
 >
-> This is the very first version. Please try everything you do with your G2 and
+> This is an early beta. Please try everything you do with your G2 and
 > report what doesn't work, looks wrong or feels awkward — see
 > [Feedback and bug reports](#feedback-and-bug-reports).
 
