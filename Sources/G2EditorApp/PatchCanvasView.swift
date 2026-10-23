@@ -571,6 +571,17 @@ struct SelectorPickerState: Identifiable {
     /// Pozycja listy jest z niego wyliczana na nowo przy każdej zmianie zoomu.
     let canvasRect: CGRect
     let selectedValue: Int
+    /// Wartości przycisku panelu (ButtonFlat, LevelShift, typ wyjścia) otwartego prawym
+    /// klawiszem. Niepuste = lista rysuje się jako ten sam przycisk powielony w dół,
+    /// a nie jako ekran ani menu.
+    var panelOptions: [String] = []
+    /// Lista kwadratowych przycisków rozmiaru Power („P+", „B") zamiast podłużnych
+    /// ButtonFlat — inny promień, margines i kerning napisu.
+    var panelPowerSized: Bool = false
+    /// Pełne nazwy wartości do dymka. Na kwadracikach mieści się jedna litera albo
+    /// litera ze znakiem, więc „B" bez podpowiedzi nie mówi nic — dymek rozwija je do
+    /// `Bip`/`Pos`/`Neg` i `Pos`/`PosInv`/… Puste = dymek pokazuje samą etykietę.
+    var panelTooltips: [String] = []
 }
 
 /// Stan menu podmiany otwartego z kolorowego przycisku w nagłówku modułu.
@@ -638,6 +649,11 @@ struct PatchCanvasView: View {
     @State var connectorDrag: ConnectorDragState?
     @State var repatchDrag: RepatchDragState?
     @State var moduleDrag: ModuleDragState?
+    /// Chwytane moduły wyjechały poza kanwę i lecą jako blok na listę Blocks — reszta gestu
+    /// należy do systemowego przeciągania (`startBlockExportIfOutside`).
+    @State var exportingBlock = false
+    /// Widok AppKit nad kanwą, który rozpoczyna to przeciąganie.
+    @State var dragSource = CanvasDragSource()
     /// Multi-select — przechowalnią jest `selection`, tu zostaje sama nazwa, żeby
     /// kilkadziesiąt miejsc w rozszerzeniach kanwy nie musiało o tym wiedzieć.
     var selectedModuleIDs: Set<Int> {
@@ -662,6 +678,8 @@ struct PatchCanvasView: View {
     /// go czyta, więc każde podbicie ją odświeża.
     @State var rasterGeneration = 0
     @State private var rasterZoomCommit: Task<Void, Never>?
+    /// Przeciągany Building Block nad kanwą — `BlockDropGhost`.
+    @State private var blockHover: BlockDropHover?
 
     // Slider tooltip (pokazuje się po kliknięciu ▲/▼ lub przeciąganiu)
     @State var seqSliderTooltip: (readout: SliderReadout, x: CGFloat, y: CGFloat)?
@@ -702,6 +720,12 @@ struct PatchCanvasView: View {
 
     /// Kontrolka, której dotyczą strzałki — patrz `PatchCanvasView+KeyNavigation.swift`.
     @State var focusedParam: ParameterFocus?
+    /// Dymek wartości po strzałkach ↑↓ — patrz `PatchCanvasView+ValueEntry.swift`.
+    @State var keyHint: ParamHoverHit?
+    @State var keyHintTask: Task<Void, Never>?
+    /// Pole wpisywania wartości gałki (dwuklik albo „Enter Value…").
+    @State var valueEntry: ValueEntryState?
+    @State var valueEntryText: String = ""
     // Edycja nazwy modułu (double-click na pasek nagłówka)
     @State var editingModuleID: Int?
     @State var editingText: String = ""
@@ -730,6 +754,9 @@ struct PatchCanvasView: View {
     var onAddModuleAt: ((_ typeID: Int, _ column: Int, _ row: Int) -> Void)?
     /// Wklej moduły ze schowka (⌘V) — wywołuje G2PatchDocument.pasteModules
     var onPasteModules: ((_ content: G2ClipboardContent) -> Void)?
+    /// Building Block upuszczony na kanwę — zwraca numery nowych modułów tego obszaru,
+    /// które zostają zaznaczone (zbędny osprzęt bloku kasuje się wtedy jednym Delete).
+    var onInsertBlock: ((_ url: URL, _ column: Int, _ row: Int) -> Set<Int>)?
     /// Polecenia menu pod prawym przyciskiem, których kanwa nie wykona sama —
     /// przypisania gałek i CC, operacje na kablach, „Paste Params" (patrz
     /// `PatchCanvasCommands`). Puste w trybie podglądu.
@@ -836,6 +863,8 @@ struct PatchCanvasView: View {
                 if editingModuleID != nil {
                     commitNameEdit()
                 }
+                // Kliknięcie obok pola wartości zamyka je bez zmian, jak Esc.
+                valueEntry = nil
                 if let module = modules.reversed().first(where: { candidate in
                     let rect = PatchLayout.moduleRect(
                         candidate,
@@ -937,7 +966,9 @@ struct PatchCanvasView: View {
             // 20×/s; kanwa modułów i menu kontekstowe zostają nietknięte.
             LiveIndicatorLayer(patch: patch, area: area, zoom: zoom, slot: slot,
                                canvasSize: canvasSize, device: device, panelShading: panelShading,
-                               glow: knobStyle.glow)
+                               glow: knobStyle.glow,
+                               draggedModuleIDs: draggedModuleIDs,
+                               dragOffset: moduleDrag?.dragOffset ?? .zero)
 
             // Kable leżą NAD świecącymi wskaźnikami i diodami — kabel wychodzi z modułu,
             // więc zasłania to, co pod nim, tak jak zgaszony wskaźnik na kanwie modułów.
@@ -1077,61 +1108,109 @@ struct PatchCanvasView: View {
         // Ghost preview (czarna ramka o canvas-zoom rozmiarze) renderowany dodatkowo
         // w SwiftUI — macOS skaluje OS drag image niezależnie i nie da się tego pewnie wyłączyć.
         // isPreviewMode: pomijamy NSViewRepresentable — ImageRenderer nie obsługuje AppKit views.
-        .overlay(
-            Group {
-                if !isPreviewMode {
-                    DropTargetRepresentable(
-                        zoom: zoom,
-                        rowOffset: rowOffset,
-                        onDropModule: onAddModuleAt,
-                        onDropParameterPageKnob: { knob, point in
-                            guard let hit = findHoverHit(at: point), !hit.usesModes else { return false }
-                            onParameterPageKnobDrop?(knob, hit.moduleID, hit.paramIndex)
-                            return true
-                        },
-                        // Kwadracik z palety (Tools ▸ Colors) upuszczony na panel modułu.
-                        onDropModuleColor: { color, point in
-                            guard let id = findModuleBody(at: point)?.moduleID else { return false }
-                            onColorModule?(id, color)
-                            return true
-                        }
-                    )
-                }
-            }
-        )
+        .overlay(dropTargetOverlayView)
+        .overlay(blockGhostOverlayView)
         // Zoom-do-kursora (pinch, ⌘scroll) + SPACE-drag pan ("rączka") — patrz
         // CanvasZoomPanNSView w PatchCanvasInteractionBridge.swift.
         .overlay(zoomPanOverlayView)
         .overlay(selectionOverlayView)
         .overlay(overlayLabelsView)
         .overlay(parameterFocusOverlay)
+        // Pole wpisywania wartości leży nad ramką focusu, nie pod nią.
+        .overlay(valueEntryOverlay)
         .overlay(arrowKeysOverlayView)
+        // Prawy klawisz na przycisku wielostanowym — lista wartości zamiast
+        // przewijania w kółko (życzenie z forum #5205).
+        .overlay(rightClickOverlayView)
         // ⌥+scroll nad SeqNote — scrolluje zakres widocznych nut (bez ingerencji w pan canvasu)
-        .overlay(
-            Group {
-                if !isPreviewMode {
-                    SeqScrollHandlerRepresentable(zoom, rowOffset, modules) { moduleID, steps in
-                        let zl = seqNoteZoomLevel[moduleID] ?? 1
-                        let octaves = [3, 2, 1][max(0, min(2, zl))]
-                        // Jeśli nie ma jeszcze offset → oblicz auto-center jako punkt startowy
-                        let curLo: Int
-                        if let existing = seqNoteScrollOffset[moduleID] {
-                            curLo = existing
-                        } else if let m = modules.first(where: { $0.id == moduleID }),
-                                  let uid = ModuleUIDatabase.shared.uiDef(forID: m.typeID)
-                        {
-                            let nk = uid.seqNoteKnobs
-                            let np = nk.map { k in k.codeRef < m.parameters.count ? m.parameters[k.codeRef] : 60 }
-                            let (lo, _) = noteViewRange(params: np, zoomLevel: zl)
-                            curLo = lo
-                        } else {
-                            curLo = 48 // C3 fallback
-                        }
-                        seqNoteScrollOffset[moduleID] = max(0, min(127 - octaves * 12, curLo + steps))
-                    }
+        .overlay(seqScrollOverlayView)
+    }
+
+    /// Moduły, które właśnie jadą pod myszą (chwycony + reszta zaznaczenia).
+    private var draggedModuleIDs: Set<Int> {
+        guard let drag = moduleDrag else { return [] }
+        return Set([drag.moduleID] + drag.extraModules.map(\.id))
+    }
+
+    /// Upuszczanie modułów, gałek ze stron parametrów, kolorów i Building Blocks.
+    @ViewBuilder
+    private var dropTargetOverlayView: some View {
+        if !isPreviewMode {
+            DropTargetRepresentable(
+                zoom: zoom,
+                rowOffset: rowOffset,
+                onDropModule: onAddModuleAt,
+                onDropParameterPageKnob: { knob, point in
+                    guard let hit = findHoverHit(at: point), !hit.usesModes else { return false }
+                    onParameterPageKnobDrop?(knob, hit.moduleID, hit.paramIndex)
+                    return true
+                },
+                // Kwadracik z palety (Tools ▸ Colors) upuszczony na panel modułu.
+                onDropModuleColor: { color, point in
+                    guard let id = findModuleBody(at: point)?.moduleID else { return false }
+                    onColorModule?(id, color)
+                    return true
+                },
+                onDropBlock: { url, column, row in
+                    guard let ids = onInsertBlock?(url, column, row), !ids.isEmpty else { return false }
+                    selectedModuleIDs = ids
+                    activeModuleID = nil
+                    return true
+                },
+                onBlockHover: { blockHover = $0 },
+                dragSource: dragSource
+            )
+        }
+    }
+
+    /// Duch przeciąganego Building Blocku (miernik DSP jedzie w obrazku wiersza listy).
+    @ViewBuilder
+    private var blockGhostOverlayView: some View {
+        if let hover = blockHover, let block = BuildingBlockDragData.block(at: hover.url) {
+            BlockDropGhost(block: block, hover: hover, area: area, rowOffset: rowOffset, zoom: zoom)
+        }
+    }
+
+    /// Prawy klawisz na przycisku wielostanowym i dwuklik gałki (pole wartości).
+    @ViewBuilder
+    private var rightClickOverlayView: some View {
+        if !isPreviewMode {
+            CanvasRightClickRepresentable(zoom: zoom, onRightClick: { point in
+                handleButtonRightClick(at: point)
+            }, onDoubleClick: { point in
+                // Dwuklik w otwartym polu zaznacza słowo — to sprawa pola.
+                guard valueEntry == nil, let hit = findKnob(at: point) else { return false }
+                beginValueEntry(moduleID: hit.moduleID, paramIndex: hit.paramIndex)
+                return true
+            })
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// ⌥+scroll nad SeqNote — przewija zakres widocznych nut.
+    @ViewBuilder
+    private var seqScrollOverlayView: some View {
+        if !isPreviewMode {
+            SeqScrollHandlerRepresentable(zoom, rowOffset, modules) { moduleID, steps in
+                let zl = seqNoteZoomLevel[moduleID] ?? 1
+                let octaves = [3, 2, 1][max(0, min(2, zl))]
+                // Jeśli nie ma jeszcze offset → oblicz auto-center jako punkt startowy
+                let curLo: Int
+                if let existing = seqNoteScrollOffset[moduleID] {
+                    curLo = existing
+                } else if let m = modules.first(where: { $0.id == moduleID }),
+                          let uid = ModuleUIDatabase.shared.uiDef(forID: m.typeID)
+                {
+                    let nk = uid.seqNoteKnobs
+                    let np = nk.map { k in k.codeRef < m.parameters.count ? m.parameters[k.codeRef] : 60 }
+                    let (lo, _) = noteViewRange(params: np, zoomLevel: zl)
+                    curLo = lo
+                } else {
+                    curLo = 48 // C3 fallback
                 }
+                seqNoteScrollOffset[moduleID] = max(0, min(127 - octaves * 12, curLo + steps))
             }
-        )
+        }
     }
 
     /// Animowane ramki zaznaczonych modułów, w osobnej warstwie nad głównym Canvasem.
@@ -1168,7 +1247,7 @@ struct PatchCanvasView: View {
         if !isPreviewMode, let controller = zoomPanController {
             CanvasZoomPanRepresentable(
                 zoom: zoom,
-                isEditingText: editingModuleID != nil,
+                isEditingText: editingModuleID != nil || valueEntry != nil,
                 controller: controller,
                 onZoomChange: { onZoomChange?($0) }
             )

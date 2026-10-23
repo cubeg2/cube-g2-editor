@@ -43,11 +43,16 @@ extension G2ClipboardContent {
     ///
     /// Jedno miejsce dla obu dróg kopiowania: menu pod prawym przyciskiem nad modułem
     /// i pozycja Edit ▸ Copy w menu głównym.
-    static func make(modules: [G2Module], cables: [G2Cable], ids: Set<Int>) -> G2ClipboardContent? {
+    /// `labels` — sekcja 0x5B obszaru: podpisy kopiowanych modułów jadą z nimi.
+    static func make(modules: [G2Module], cables: [G2Cable], ids: Set<Int>,
+                     labels: G2ModuleLabelSection? = nil) -> G2ClipboardContent?
+    {
         let picked = modules.filter { ids.contains($0.id) }
         guard !picked.isEmpty else { return nil }
 
         let inner = cables.filter { ids.contains($0.fromModule) && ids.contains($0.toModule) }
+        let labelData = Dictionary((labels?.entries ?? []).map { ($0.moduleID, $0.content) },
+                                   uniquingKeysWith: { first, _ in first })
         return G2ClipboardContent(
             modules: picked.map { module in
                 ClipModule(typeID: module.typeID,
@@ -58,7 +63,8 @@ extension G2ClipboardContent {
                            modes: module.modes,
                            label: module.label,
                            color: module.color,
-                           originalID: module.id)
+                           originalID: module.id,
+                           labelData: labelData[module.id])
             },
             cables: inner.map { cable in
                 ClipCable(fromModule: cable.fromModule,

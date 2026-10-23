@@ -15,6 +15,13 @@ extension PatchCanvasView {
 
             Divider()
 
+            // To samo pole co dwuklik na gałce — tu, żeby dało się je znaleźć bez zgadywania.
+            if hit.isKnob {
+                Button("Enter Value…") {
+                    beginValueEntry(moduleID: hit.moduleID, paramIndex: hit.paramIndex)
+                }
+            }
+
             Button("Default Value") {
                 guard let value = defaultValue(for: hit) else { return }
                 onParameterChange?(hit.moduleID, hit.paramIndex, value)
@@ -64,15 +71,15 @@ extension PatchCanvasView {
                                                                  paramIndex: hit.paramIndex))
         } label: {
             Text(assigned
-                ? "✓ Morph Assign (\(Self.morphName(focusedMorph)))"
-                : "Morph Assign (\(Self.morphName(focusedMorph)))")
+                ? "✓ Morph Assign (\(morphName(focusedMorph)))"
+                : "Morph Assign (\(morphName(focusedMorph)))")
         }
         .disabled(onMorphRangeChange == nil)
     }
 
     /// Nazwa morfu z focusem — ta sama, którą pokazuje pasek morfów.
-    static func morphName(_ morph: Int) -> String {
-        G2Morph.names.indices.contains(morph) ? G2Morph.names[morph] : "Morph \(morph + 1)"
+    func morphName(_ morph: Int) -> String {
+        patch.morphName(morph)
     }
 
     /// Zakres, który dostaje świeżo przypisany parametr — patrz komentarz nad
@@ -209,6 +216,13 @@ extension PatchCanvasView {
             }
             .disabled(!G2ClipboardContent.hasModulesOnPasteboard)
 
+            Button("Save Selection as Block…") {
+                var ids = selectedModuleIDs
+                if ids.isEmpty, let id = activeModuleID { ids = [id] }
+                commands.saveModulesAsBlock?(ids)
+            }
+            .disabled(selectedModuleIDs.isEmpty && activeModuleID == nil)
+
             Divider()
 
             insertModuleMenu()
@@ -218,6 +232,9 @@ extension PatchCanvasView {
             Button("Select All") { selectedModuleIDs = Set(modules.map(\.id)) }
 
             Divider()
+
+            Button("Disconnect All Cables") { commands.disconnectAllCables?() }
+                .disabled((commands.totalCableCount?() ?? 0) == 0)
 
             Button("Delete Unused Cables") { commands.deleteUnusedCables?() }
                 .disabled((commands.unusedCableCount?() ?? 0) == 0)

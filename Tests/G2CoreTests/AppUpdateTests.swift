@@ -59,6 +59,34 @@ final class AppUpdateTests: XCTestCase {
         XCTAssertEqual(release.pageURL.absoluteString, "https://github.com/r/2")
     }
 
+    /// Download pobiera sam plik DMG, a nie otwiera strony wydania (zgłoszenie użytkownika
+    /// 2026-10-22: na stronie DMG ginie pod „Assets”).
+    func testDownloadPointsAtTheDMGAsset() {
+        let json = """
+        [
+          {"tag_name": "v0.1.2", "body": "", "html_url": "https://github.com/r/2", "draft": false,
+           "assets": [
+             {"name": "notes.txt", "browser_download_url": "https://github.com/r/download/notes.txt"},
+             {"name": "Cube-G2-Editor-0.1.2-beta.dmg",
+              "browser_download_url": "https://github.com/r/download/Cube-G2-Editor-0.1.2-beta.dmg"}
+           ]},
+          {"tag_name": "v0.1.1", "body": "", "html_url": "https://github.com/r/1", "draft": false}
+        ]
+        """
+        guard case let .found(release) = UpdateCheck.newest(fromReleasesJSON: Data(json.utf8)) else {
+            return XCTFail("expected a release")
+        }
+        XCTAssertEqual(release.downloadURL.absoluteString,
+                       "https://github.com/r/download/Cube-G2-Editor-0.1.2-beta.dmg")
+
+        // Wydanie bez DMG (jeszcze się wgrywa) — zostaje strona wydania.
+        let withoutDMG = #"[{"tag_name": "v0.1.3", "body": "", "html_url": "https://github.com/r/3", "assets": []}]"#
+        guard case let .found(pending) = UpdateCheck.newest(fromReleasesJSON: Data(withoutDMG.utf8)) else {
+            return XCTFail("expected a release")
+        }
+        XCTAssertEqual(pending.downloadURL.absoluteString, "https://github.com/r/3")
+    }
+
     func testEmptyAndBrokenResponses() {
         XCTAssertEqual(UpdateCheck.newest(fromReleasesJSON: Data("[]".utf8)), .noReleases)
         XCTAssertEqual(UpdateCheck.newest(fromReleasesJSON: Data(#"{"message": "Not Found"}"#.utf8)), .failed)

@@ -219,11 +219,15 @@ struct SlotBarView: View {
     /// dopóki go nie ma, przycisk jest wyszarzony. Szablon wchodzi do slotu Z FOCUSEM,
     /// więc przycisk najpierw daje focus swojemu — i jedzie do Norda jak Open To
     /// (do 2026-09-25 zostawał tylko na ekranie).
+    ///
+    /// Niezapisana praca ginęła tu bez słowa, więc Init pyta tak samo jak „Open To"
+    /// — z własnym przełącznikiem w Settings. Anulowane pytanie nie rusza nawet focusu.
     private var initButtons: some View {
         HStack(spacing: 3) {
             ForEach(InitPatchLibrary.slots, id: \.self) { template in
                 let saved = InitPatchLibrary.exists(template)
                 TopBarButton(content: .text("Init \(template)"), isEnabled: saved) {
+                    guard UnsavedChangesGuard.shared.confirmDiscard(initPatchInto: slot) else { return }
                     focusing { state.recallInitPatch(slot: template) }
                     guard state.errorMessage == nil else { return }
                     Task { await device.send(state, onlyFocusedSlot: true) }

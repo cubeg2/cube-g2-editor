@@ -7,23 +7,23 @@ import G2Core
 @testable import G2EditorCore
 import XCTest
 
+/// Kabel wyjście→wejście.
+private func fromOutput(_ from: Int, _ fromConn: Int, to: Int, _ toConn: Int,
+                        color: CableColor = .red) -> G2Cable
+{
+    G2Cable(fromModule: from, fromConnector: fromConn, toModule: to, toConnector: toConn,
+            color: color, area: .voice, sourceIsOutput: true)
+}
+
+/// Kabel wejście→wejście (szereg).
+private func fromInput(_ from: Int, _ fromConn: Int, to: Int, _ toConn: Int,
+                       color: CableColor = .white) -> G2Cable
+{
+    G2Cable(fromModule: from, fromConnector: fromConn, toModule: to, toConnector: toConn,
+            color: color, area: .voice, sourceIsOutput: false)
+}
+
 final class CableChainTests: XCTestCase {
-    /// Kabel wyjście→wejście.
-    private func fromOutput(_ from: Int, _ fromConn: Int, to: Int, _ toConn: Int,
-                            color: CableColor = .red) -> G2Cable
-    {
-        G2Cable(fromModule: from, fromConnector: fromConn, toModule: to, toConnector: toConn,
-                color: color, area: .voice, sourceIsOutput: true)
-    }
-
-    /// Kabel wejście→wejście (szereg).
-    private func fromInput(_ from: Int, _ fromConn: Int, to: Int, _ toConn: Int,
-                           color: CableColor = .white) -> G2Cable
-    {
-        G2Cable(fromModule: from, fromConnector: fromConn, toModule: to, toConnector: toConn,
-                color: color, area: .voice, sourceIsOutput: false)
-    }
-
     // MARK: - Zasięg łańcucha
 
     /// Szereg out1 → in1 → in2 to JEDEN łańcuch: rozrost idzie przez wejścia.
@@ -232,5 +232,96 @@ final class CableCommandStateTests: XCTestCase {
 
     func testUnusedCableCountReportsTheDeadChain() {
         XCTAssertEqual(makeState().unusedCableCount(area: .voice), 1)
+    }
+
+    // MARK: - Disconnect Cables ▸ (kable zaznaczenia) i Disconnect All Cables
+
+    /// Moduły 1 (źródło spoza grupy) → 2 → 3 w szeregu, 2 → 4 z wyjścia;
+    /// zaznaczone są 2 i 3.
+    private func groupPatch() -> G2Patch {
+        var patch = G2Patch()
+        patch.voiceCables = [
+            fromOutput(1, 0, to: 2, 0),
+            fromInput(2, 0, to: 3, 0, color: .red),
+            fromOutput(2, 0, to: 4, 0),
+        ]
+        return patch
+    }
+
+    func testDisconnectAllCablesOfSelectionLeavesTheRest() {
+        var patch = groupPatch()
+        patch.voiceCables.append(fromOutput(5, 0, to: 6, 0))
+
+        patch.disconnectCables(of: [2, 3], scope: .all, in: .voice)
+
+        XCTAssertEqual(patch.voiceCables.count, 1)
+        XCTAssertEqual(patch.voiceCables[0].fromModule, 5)
+    }
+
+    /// Szereg zewnętrzne wejście → wejście grupy → zewnętrzne wejście zszywa się
+    /// ze źródłem, jak przy zwykłym „Disconnect".
+    func testDisconnectAllRewiresAChainPassingThroughTheSelection() {
+        var patch = G2Patch()
+        patch.voiceCables = [fromOutput(1, 0, to: 2, 0), fromInput(2, 0, to: 3, 0, color: .red)]
+
+        patch.disconnectCables(of: [2], scope: .all, in: .voice)
+
+        XCTAssertEqual(patch.voiceCables.count, 1)
+        XCTAssertEqual(patch.voiceCables[0].fromModule, 1)
+        XCTAssertEqual(patch.voiceCables[0].toModule, 3)
+        XCTAssertFalse(patch.isCableUnused(patch.voiceCables[0], in: .voice))
+    }
+
+    func testDisconnectInsideSelectionKeepsCablesToTheRest() {
+        var patch = groupPatch()
+
+        patch.disconnectCables(of: [2, 3], scope: .insideSelection, in: .voice)
+
+        XCTAssertEqual(patch.voiceCables.count, 2)
+        XCTAssertFalse(patch.voiceCables.contains { $0.fromModule == 2 && $0.toModule == 3 })
+    }
+
+    /// „To Rest of Patch" zostawia okablowanie w środku grupy; szereg, który stracił
+    /// źródło, bieleje.
+    func testDisconnectToRestOfPatchKeepsTheGroupWiredInside() {
+        var patch = groupPatch()
+
+        patch.disconnectCables(of: [2, 3], scope: .toRestOfPatch, in: .voice)
+
+        XCTAssertEqual(patch.voiceCables.count, 1)
+        let inside = patch.voiceCables[0]
+        XCTAssertEqual(inside.fromModule, 2)
+        XCTAssertEqual(inside.toModule, 3)
+        XCTAssertEqual(inside.color, .white)
+    }
+
+    func testDisconnectModuleCablesIsOneUndoStep() {
+        let state = makeState()
+        state.slots = [groupPatch()]
+        let before = state.patch.voiceCables
+        XCTAssertEqual(state.cableCount(ofModules: [2, 3], scope: .all, area: .voice), 3)
+
+        undoStep(on: state) { state.disconnectCables(ofModules: [2, 3], scope: .all, area: .voice) }
+        XCTAssertTrue(state.patch.voiceCables.isEmpty)
+        state.undoManager.undo()
+
+        XCTAssertEqual(state.patch.voiceCables, before)
+    }
+
+    func testDisconnectAllCablesClearsVoiceAndFXInOneUndoStep() {
+        let state = makeState()
+        state.slots[0].fxCables = [
+            G2Cable(fromModule: 1, fromConnector: 0, toModule: 2, toConnector: 0,
+                    color: .red, area: .fx, sourceIsOutput: true),
+        ]
+        let before = state.patch
+        XCTAssertEqual(state.totalCableCount, 3)
+
+        undoStep(on: state) { state.disconnectAllCables() }
+        XCTAssertEqual(state.totalCableCount, 0)
+        state.undoManager.undo()
+
+        XCTAssertEqual(state.patch.voiceCables, before.voiceCables)
+        XCTAssertEqual(state.patch.fxCables, before.fxCables)
     }
 }

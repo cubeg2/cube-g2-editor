@@ -608,7 +608,9 @@ public struct G2Patch: Equatable {
         deleteModules(moduleIDs: [moduleID], in: area)
     }
 
-    /// Usuwa grupę modułów i wszystkie kable podłączone do któregokolwiek z nich.
+    /// Usuwa grupę modułów i wszystkie kable podłączone do któregokolwiek z nich — razem
+    /// z ich gałkami, CC, morfami i dodatkowymi danymi (0x5B). Bez tego przypisania zostawały
+    /// pod numerem skasowanego modułu i przejmował je następny moduł o tym numerze.
     public mutating func deleteModules(moduleIDs: Set<Int>, in area: PatchArea) {
         guard !moduleIDs.isEmpty else { return }
         if area == .voice {
@@ -617,6 +619,25 @@ public struct G2Patch: Equatable {
         } else {
             fxModules.removeAll { moduleIDs.contains($0.id) }
             fxCables.removeAll { moduleIDs.contains($0.fromModule) || moduleIDs.contains($0.toModule) }
+        }
+        let location = area.rawValue
+        for knob in knobAssignments.indices
+            where knobAssignments[knob].map({ $0.location == location && moduleIDs.contains($0.moduleID) }) == true
+        {
+            knobAssignments[knob] = nil
+        }
+        for cc in midiControllerAssignments.indices
+            where midiControllerAssignments[cc]
+            .map({ $0.location == location && moduleIDs.contains($0.moduleID) }) == true
+        {
+            midiControllerAssignments[cc] = nil
+        }
+        for variation in morphAssignments.indices {
+            morphAssignments[variation].removeAll { $0.location == location && moduleIDs.contains($0.moduleID) }
+        }
+        if var labels = moduleLabels(in: area), labels.entries.contains(where: { moduleIDs.contains($0.moduleID) }) {
+            labels.entries.removeAll { moduleIDs.contains($0.moduleID) }
+            moduleCustomData[area.rawValue] = labels.raw
         }
     }
 

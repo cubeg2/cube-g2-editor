@@ -220,12 +220,19 @@ private struct SendToDeviceBar: View {
 private struct SupportPrompt: View {
     var compact = false
 
+    /// Druga linijka (prośba użytkownika 2026-10-23).
+    private static let thanks = "Building this editor has cost me a lot of time and money \u{2014} "
+        + "I\u{2019}ll be truly grateful for any support."
+
     var body: some View {
         if compact {
             HStack(spacing: 10) {
                 Image(systemName: "cup.and.saucer").foregroundStyle(.secondary)
-                Text("Cube G2 Editor is free and open source. If it helps your music, you can buy me a coffee.")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cube G2 Editor is free and open source. If it helps your music, you can buy me a coffee.")
+                    Text(Self.thanks)
+                }
+                .foregroundStyle(.secondary)
                 button
             }
             .frame(maxWidth: .infinity)
@@ -237,6 +244,8 @@ private struct SupportPrompt: View {
                 Text("Cube G2 Editor is free and open source.")
                     .font(.headline)
                 Text("If it helps your music, you can buy me a coffee.")
+                    .foregroundStyle(.secondary)
+                Text(Self.thanks)
                     .foregroundStyle(.secondary)
                 button.padding(.top, 4)
             }
@@ -252,29 +261,24 @@ private struct SupportPrompt: View {
     }
 }
 
-/// Zachęta do kawy (prośba użytkownika 2026-10-22): po pokazaniu przycisku rozchodzi
-/// się od niego kilka razy poświata w jego kolorze, potem stoi spokojnie — mruga, ale
-/// nie przeszkadza w pracy. Każde ponowne pokazanie strony mruga od nowa.
+/// Zachęta do kawy: od przycisku rozchodzi się poświata w jego kolorze — **bez końca**
+/// (prośba użytkownika 2026-10-23; do tego dnia trzy błyski po otwarciu strony i spokój).
+/// Przerwa między błyskami dłuższa od samego błysku, żeby przycisk przyciągał wzrok,
+/// a nie migał.
 private struct SupportPulse: ViewModifier {
     let color: Color
-    @State private var trigger = 0
 
     func body(content: Content) -> some View {
         content
-            .keyframeAnimator(initialValue: 0.0, trigger: trigger) { view, glow in
+            .keyframeAnimator(initialValue: 0.0, repeating: true) { view, glow in
                 view
                     .shadow(color: color.opacity(0.9 * glow), radius: 9 * glow)
                     .scaleEffect(1 + 0.05 * glow)
             } keyframes: { _ in
-                CubicKeyframe(0, duration: 0.6) // chwila na otwarcie okna
                 CubicKeyframe(1, duration: 0.45)
                 CubicKeyframe(0, duration: 0.65)
-                CubicKeyframe(1, duration: 0.45)
-                CubicKeyframe(0, duration: 0.65)
-                CubicKeyframe(1, duration: 0.45)
-                CubicKeyframe(0, duration: 0.8)
+                CubicKeyframe(0, duration: 1.1)
             }
-            .onAppear { trigger += 1 }
     }
 }
 
@@ -287,13 +291,15 @@ extension View {
 /// Karty u góry w swojej naturalnej wysokości, kawa na środku wolnego miejsca pod
 /// nimi — strona zajmuje całą (stałą) wysokość okna.
 private struct CardsWithSupport<Content: View>: View {
+    /// Jedna linijka kawy zamiast bloku — gdy karty zajmują prawie całą stronę (General).
+    var compactSupport = false
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             content.fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            SupportPrompt()
+            SupportPrompt(compact: compactSupport)
             Spacer(minLength: 0)
         }
         .frame(height: SettingsWindow.pageHeight - 40)
@@ -306,10 +312,11 @@ struct GeneralSettingsTab: View {
     @AppStorage(KnobControl.storageKey) private var knobControl = KnobControl.vertical.rawValue
     @AppStorage(SilentSlotClick.storageKey) private var silentSlotClick = SilentSlotClick.addToPlaying.rawValue
     @AppStorage(UnsavedChangesGuard.askOnReplaceKey) private var askOnReplace = true
+    @AppStorage(UnsavedChangesGuard.askOnInitPatchKey) private var askOnInitPatch = true
 
     var body: some View {
         SettingsPage {
-            CardsWithSupport {
+            CardsWithSupport(compactSupport: true) {
                 Grid(horizontalSpacing: cardSpacing, verticalSpacing: cardSpacing) {
                     GridRow {
                         SettingsCard(title: "Knobs", width: cardWidth(3)) {
@@ -338,15 +345,59 @@ struct GeneralSettingsTab: View {
                                          options: SilentSlotClick.allCases.map { ($0.rawValue, $0.title) })
                         }
                         SettingsCard(title: "Unsaved Changes",
-                                     caption: "When off, Open and New replace an edited patch without asking "
-                                         + "and the changes are lost. Quitting the editor always asks.",
+                                     caption: "When off, an edited patch is replaced without asking and the "
+                                         + "changes are lost. Quitting the editor always asks.",
                                      width: cardWidth(3))
                         {
                             Toggle("Ask to save before opening another patch", isOn: $askOnReplace)
+                            Toggle("Ask to save before Init 1 / Init 2", isOn: $askOnInitPatch)
                         }
+                    }
+                    GridRow {
+                        SettingsCard(title: "Folders",
+                                     caption: "Both show up in the Patches drawer (Disk and Blocks). "
+                                         + "Drag a block from the Blocks list onto the patch to insert it.",
+                                     width: pageInnerWidth)
+                        {
+                            FolderChoice(title: "Patches", library: .patches)
+                            FolderChoice(title: "Building Blocks", library: .blocks)
+                        }
+                        .gridCellColumns(3)
                     }
                 }
             }
+        }
+    }
+}
+
+/// Jeden folder biblioteki: nazwa, ścieżka i przycisk wyboru.
+private struct FolderChoice: View {
+    let title: String
+    let library: DiskBankLibrary
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .frame(width: 120, alignment: .leading)
+            Text(library.folder.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? "Not chosen")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(library.folder?.path ?? "")
+            Spacer(minLength: 8)
+            TopBarButton(content: .text("Choose…"), fixedWidth: 90, action: choose)
+        }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.directoryURL = library.folder
+        if panel.runModal() == .OK, let url = panel.url {
+            library.setFolder(url)
         }
     }
 }

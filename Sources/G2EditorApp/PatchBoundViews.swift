@@ -154,6 +154,9 @@ struct CanvasPane: View {
             onPasteModules: { content in
                 state.pasteModules(content, area: area)
             },
+            onInsertBlock: { url, column, row in
+                BuildingBlockInsert.insert(url, into: state, area: area, column: column, row: row)
+            },
             commands: commands,
             zoomPanController: controller,
             onZoomChange: { viewState.zoom = $0 }
@@ -214,10 +217,21 @@ struct CanvasPane: View {
             },
             deleteUnusedCables: { state.deleteUnusedCables(area: area) },
             unusedCableCount: { state.unusedCableCount(area: area) },
+            disconnectModuleCables: { moduleIDs, scope in
+                state.disconnectCables(ofModules: moduleIDs, scope: scope, area: area)
+            },
+            moduleCableCount: { moduleIDs, scope in
+                state.cableCount(ofModules: moduleIDs, scope: scope, area: area)
+            },
+            disconnectAllCables: { state.disconnectAllCables() },
+            totalCableCount: { state.totalCableCount },
             pasteParams: { moduleIDs in
                 guard let content = G2ClipboardContent.readFromPasteboard() else { return }
                 state.pasteParameters(content, into: moduleIDs, area: area)
             },
+            moduleLabels: { state.patch.moduleLabels(in: area) },
+            saveModulesAsBlock: { BuildingBlockSave.save(from: state, area: area, moduleIDs: $0) },
+            blockFromModules: { state.patch.block(from: area, moduleIDs: $0) },
             deleteUnusedModules: { state.deleteUnusedModules(area: area) },
             unusedModuleCount: { state.unusedModuleIDs(area: area).count }
         )

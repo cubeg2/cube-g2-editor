@@ -1298,51 +1298,9 @@ extension PatchCanvasView {
         for btn in ui.buttonsFlat {
             let value = btn.codeRef < module.parameters.count
                 ? module.parameters[btn.codeRef] : 0
-
-            // OscB (typeID:7): "On" (CodeRef:2) styka się z etykietą "KBT" —
-            // wyrównaj jego prawą krawędź z przyciskiem "FM Lin" (CodeRef:10) poniżej.
-            var btnXPt = btn.xPt
-            if module.typeID == 7, btn.codeRef == 2,
-               let fmLin = ui.buttonsFlat.first(where: { $0.codeRef == 10 })
-            {
-                btnXPt = fmLin.xPt + fmLin.widthPt - btn.widthPt
-            }
-
-            let x = rect.minX + btnXPt
-            // Wyrównaj Y do pobliskiego RadioButton (±3 pt) — np. "0dB" w 2-In
-            let alignedYPt = flatButtonYPt(module: module, button: btn, ui: ui)
-            var y = rect.minY + alignedYPt
-            // OscD: przycisk trybu "Semi/Freq/Fac/Part" (CodeRef:3) ma w źródle YPos o
-            // 1 Gen1px niższy start niż sąsiedni ekran "+0 +0" (TextField MasterRef:0), ale
-            // jest też wyższy (buttonFlatHeight 7 vs textFieldHeight 6.5) — razem wypadał
-            // wyraźnie niżej niż środek ekranu. Wyrównaj do WSPÓLNEGO środka.
-            if module.typeID == 96, btn.codeRef == 3,
-               let field = ui.textFields.first(where: { $0.masterRef == 0 })
-            {
-                let fieldCenterY = field.yPt + UIMetrics.textFieldHeight / 2
-                y = rect.minY + fieldCenterY - UIMetrics.buttonFlatHeight / 2
-            } else if let field = ui.textFields.first(where: {
-                // Ekran stojący W TYM SAMYM RZĘDZIE tuż PO PRAWEJ stronie przycisku
-                // (LfoC: „Rate Lo" + ekran „0.64Hz"). W danych Gen1 oba widżety mają
-                // inne wysokości niż nasze stałe, więc same YPos rozjeżdżają ich środki
-                // o ~0,8pt — w oryginale stoją równo. Ta sama korekta co OscD wyżej.
-                abs($0.yPt - btn.yPt) < 1.5
-                    && $0.xPt >= btn.xPt + btn.widthPt - 1.0
-                    && $0.xPt <= btn.xPt + btn.widthPt + 6.0
-            }) {
-                let fieldCenterY = field.yPt + UIMetrics.textFieldHeight / 2
-                y = rect.minY + fieldCenterY - UIMetrics.buttonFlatHeight / 2
-            }
-            if module.typeID == 180, [18, 20].contains(btn.codeRef) {
-                // Nadpisz ogólne wyrównanie do pobliskiego pola: dolne przyciski
-                // Operatora należą do przesuniętego rzędu L/R-Depth.
-                y = rect.minY + flatButtonYPt(module: module, button: btn, ui: ui)
-            }
-            // Wąskie ButtonFlat (np. T/G w SeqEvent) → rozmiar jak step-button
-            let isStepSized = btn.widthPt < UIMetrics.buttonFlatHeight
-            let w = isStepSized ? UIMetrics.seqFaderWidth : max(btn.widthPt, 8)
-            let h: CGFloat = isStepSized ? UIMetrics.seqFaderWidth : UIMetrics.buttonFlatHeight
-            let btnRect = CGRect(x: x, y: y, width: w, height: h)
+            let btnRect = flatButtonRect(btn, module: module, ui: ui, in: rect)
+            let y = btnRect.minY
+            let h = btnRect.height
 
             // Przycisk ikonowy (brak opcji tekstowych, ale ma ikony — np. Loop/Run)
             if btn.options.isEmpty {
@@ -3245,6 +3203,19 @@ extension PatchCanvasView {
         return CGRect(x: x, y: y, width: s, height: s)
     }
 
+    /// Typ wyjścia LevelShift (BVerhue `prtPosNegInvBipInv`) — „+" to wprost,
+    /// „\u{2212}" odwrócone. Wspólne dla przycisku i dla listy pod prawym klawiszem.
+    static func levelShiftLabel(_ value: Int) -> String {
+        switch value % 6 {
+        case 0: "P+"
+        case 1: "P\u{2212}" // P−
+        case 2: "N+"
+        case 3: "N\u{2212}" // N−
+        case 4: "B+"
+        default: "B\u{2212}" // B−
+        }
+    }
+
     private func drawBVLevelShifts(_ ctx: GraphicsContext, module: G2Module, rect: CGRect) {
         guard let ui = ModuleUIDatabase.shared.uiDef(forID: module.typeID) else { return }
         guard !ui.levelShifts.isEmpty else { return }
@@ -3252,16 +3223,7 @@ extension PatchCanvasView {
         for ls in ui.levelShifts {
             let innerRect = levelShiftRect(ls, moduleTypeID: module.typeID, in: rect)
             let value = ls.codeRef < module.parameters.count ? module.parameters[ls.codeRef] : 0
-            let shortLabel = switch value % 6 {
-            case 0: "P+"
-            case 1: "P\u{2212}" // P−
-            case 2: "N+"
-            case 3: "N\u{2212}" // N−
-            case 4: "B+"
-            default: "B\u{2212}" // B−
-            }
-
-            drawPowerSizedLabelButton(ctx, in: innerRect, label: shortLabel)
+            drawPowerSizedLabelButton(ctx, in: innerRect, label: Self.levelShiftLabel(value))
         }
     }
 
@@ -3274,24 +3236,33 @@ extension PatchCanvasView {
     /// sam jak w pozostałych przyciskach (KB/Gate), a nie gruba czarna obwódka
     /// Power — ta ostatnia na małym, niepodświetlanym przycisku wyglądała znacznie
     /// grubiej niż ramki sąsiednich przycisków (zgłoszone przez użytkownika).
-    func drawPowerSizedLabelButton(_ ctx: GraphicsContext, in innerRect: CGRect, label: String) {
-        let margin = UIMetrics.socketOuterMargin
+    ///
+    /// `fill`/`textColor`/`scale` odstają od domyślnych tylko na rozwiniętej liście
+    /// wartości (prawy klawisz): pozycja niewybrana jest szara, a wiersz listy rysuje
+    /// się w skali canvasu, więc margines, promień, obrys i font muszą iść za zoomem.
+    func drawPowerSizedLabelButton(_ ctx: GraphicsContext, in innerRect: CGRect, label: String,
+                                   fill: Color = UIColor.buttonActive,
+                                   textColor: Color = .white,
+                                   scale: CGFloat = 1)
+    {
+        let margin = UIMetrics.socketOuterMargin * scale
         let outerRect = innerRect.insetBy(dx: -margin, dy: -margin)
-        let corner = UIMetrics.socketCornerRadius + margin
+        let corner = UIMetrics.socketCornerRadius * scale + margin
         PanelFace.raised(ctx, outerRect, cornerRadius: corner,
-                         fill: UIColor.buttonActive, border: .black.opacity(0.4), shaded: panelShading)
+                         fill: fill, border: .black.opacity(0.4),
+                         lineWidth: 0.4 * scale, shaded: panelShading)
         // Kerning ujemny ściąga znak +/− bliżej litery (para w pełnym rozstawie nie
         // mieści się w ~5.6pt boksie). Doliczany jest jednak także PO ostatnim znaku,
         // więc pudełko tekstu kończy się o `kerning` wcześniej niż same litery —
         // wyśrodkowanie pudełka wypychało napis o pół kerna w prawo i „+"/„−" dotykał
         // prawej krawędzi przycisku. Cofnięcie o tę połowę stawia litery w jego osi.
         // Napis jednoznakowy (OutputType) nie ma czego ściągać — stoi w czystej osi.
-        let kerning: CGFloat = label.count > 1 ? -0.4 : 0
+        let kerning: CGFloat = label.count > 1 ? -0.4 * scale : 0
         ctx.draw(
             Text(label)
-                .font(.system(size: UIFont.buttonLabel, weight: .bold))
+                .font(.system(size: UIFont.buttonLabel * scale, weight: .bold))
                 .kerning(kerning)
-                .foregroundColor(.white),
+                .foregroundColor(textColor),
             at: CGPoint(x: innerRect.midX + kerning / 2, y: innerRect.midY),
             anchor: .center
         )

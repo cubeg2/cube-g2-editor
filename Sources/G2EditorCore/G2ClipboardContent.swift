@@ -13,10 +13,13 @@ public struct G2ClipboardContent: Codable {
         public var color: UInt8
         /// Oryginalne ID jest potrzebne do remapowania końców kabli przy wklejaniu.
         public var originalID: Int
+        /// Treść wpisu modułu z sekcji 0x5B (własne podpisy parametrów, widok SeqNote);
+        /// `nil`, gdy moduł go nie ma. Schowek sprzed 2026-10-23 tego pola nie zna — opcjonalne.
+        public var labelData: [UInt8]?
 
         public init(typeID: Int, column: Int, row: Int, parameters: [Int],
                     parameterVariations: [[Int]], modes: [Int], label: String,
-                    color: UInt8, originalID: Int)
+                    color: UInt8, originalID: Int, labelData: [UInt8]? = nil)
         {
             self.typeID = typeID
             self.column = column
@@ -27,6 +30,7 @@ public struct G2ClipboardContent: Codable {
             self.label = label
             self.color = color
             self.originalID = originalID
+            self.labelData = labelData
         }
     }
 

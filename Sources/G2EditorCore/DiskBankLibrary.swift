@@ -162,6 +162,9 @@ public final class DiskBankLibrary {
 
     public private(set) var isScanning = false
 
+    /// Plik podświetlony na liście — świeżo zapisany blok, żeby było widać, gdzie wylądował.
+    public var highlightedFile: URL?
+
     /// Pokazuj tylko patche tej kategorii (`G2PatchCategory`); `nil` = wszystkie pliki.
     /// Performance kategorii nie mają, więc przy włączonym filtrze znikają. Nie jest
     /// zapamiętywany — po ponownym uruchomieniu lista bez filtra nie wygląda na „zgubioną".
@@ -206,7 +209,7 @@ public final class DiskBankLibrary {
     /// zawsze.
     public var sortOrder: DiskBankSort {
         didSet {
-            defaults.set(sortOrder.rawValue, forKey: Self.sortKey)
+            defaults.set(sortOrder.rawValue, forKey: keys.sort)
             // Nowy klucz zaczyna od swojego domyślnego kierunku — jak kolumna w Finderze.
             if sortOrder != oldValue, sortReversed {
                 sortReversed = false
@@ -220,7 +223,7 @@ public final class DiskBankLibrary {
     /// Zapamiętany razem z kolejnością.
     public var sortReversed: Bool {
         didSet {
-            defaults.set(sortReversed, forKey: Self.reversedKey)
+            defaults.set(sortReversed, forKey: keys.reversed)
             rebuildTree()
         }
     }
@@ -228,14 +231,14 @@ public final class DiskBankLibrary {
     /// Folder, po którym użytkownik chodził — ścieżka względem `folder`, pusta = katalog
     /// główny. Zapamiętana, żeby po ponownym uruchomieniu wrócić tam, gdzie się skończyło.
     public var currentPath: String {
-        didSet { defaults.set(currentPath, forKey: Self.pathKey) }
+        didSet { defaults.set(currentPath, forKey: keys.path) }
     }
 
     private let defaults: UserDefaults
+    /// Klucze w `UserDefaults` — osobne dla każdej biblioteki, żeby folder patchy
+    /// i folder Building Blocks pamiętały się niezależnie.
+    private let keys: (folder: String, sort: String, reversed: String, path: String)
     private nonisolated static let folderKey = "g2_disk_bank_folder"
-    private static let sortKey = "g2_disk_bank_sort"
-    private static let reversedKey = "g2_disk_bank_sort_reversed"
-    private static let pathKey = "g2_disk_bank_path"
     /// Ile plików wchodzi do listy. Bezpiecznik na katalog wskazany przez pomyłkę
     /// (cały dysk), nie sposób na krótszą listę — po liście i tak chodzi się folderami
     /// i szuka po nazwie. Musi mieścić prawdziwą bibliotekę z sieci: sam pakiet
@@ -245,13 +248,17 @@ public final class DiskBankLibrary {
 
     private let scanLimit: Int
 
-    public init(defaults: UserDefaults = .standard, scanLimit: Int = DiskBankLibrary.scanLimit) {
+    /// `keyPrefix` rozdziela zapamiętane ustawienia bibliotek; domyślny to folder patchy.
+    public init(defaults: UserDefaults = .standard, scanLimit: Int = DiskBankLibrary.scanLimit,
+                keyPrefix: String = "g2_disk_bank")
+    {
         self.defaults = defaults
         self.scanLimit = scanLimit
-        sortOrder = defaults.string(forKey: Self.sortKey).flatMap(DiskBankSort.init) ?? .name
-        sortReversed = defaults.bool(forKey: Self.reversedKey)
-        currentPath = defaults.string(forKey: Self.pathKey) ?? ""
-        if let path = defaults.string(forKey: Self.folderKey), !path.isEmpty {
+        keys = (keyPrefix + "_folder", keyPrefix + "_sort", keyPrefix + "_sort_reversed", keyPrefix + "_path")
+        sortOrder = defaults.string(forKey: keys.sort).flatMap(DiskBankSort.init) ?? .name
+        sortReversed = defaults.bool(forKey: keys.reversed)
+        currentPath = defaults.string(forKey: keys.path) ?? ""
+        if let path = defaults.string(forKey: keys.folder), !path.isEmpty {
             folder = URL(fileURLWithPath: path, isDirectory: true)
         }
     }
@@ -265,7 +272,7 @@ public final class DiskBankLibrary {
     public func setFolder(_ url: URL) {
         folder = url
         currentPath = ""
-        defaults.set(url.path, forKey: Self.folderKey)
+        defaults.set(url.path, forKey: keys.folder)
         Task { await scan() }
     }
 
@@ -274,7 +281,7 @@ public final class DiskBankLibrary {
         currentPath = ""
         items = []
         message = nil
-        defaults.removeObject(forKey: Self.folderKey)
+        defaults.removeObject(forKey: keys.folder)
     }
 
     /// Przegląda folder rekurencyjnie. Skan idzie poza głównym wątkiem — katalog

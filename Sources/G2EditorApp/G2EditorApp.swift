@@ -28,6 +28,7 @@ enum AppFonts {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_: Notification) {
+        takeOverOpenDocuments()
         AppFonts.register()
         FilePanels.installEditShortcuts()
         SettingsWindow.applyAppearance(UserDefaults.standard.string(forKey: AppAppearance.storageKey) ?? "")
@@ -75,6 +76,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if PluginHost.isBackground { PluginHost.showEditor() }
         return true
     }
+
+    /// Podwójny klik w Finderze, „Open With”, plik upuszczony na ikonę w Docku. Przy STARCIE
+    /// z pliku idzie tędy, a SwiftUI otwiera przy tym jedyne okno edytora (plik czeka
+    /// w `FinderOpen`, aż okno się podłączy). Edytor trzyma jeden dokument, więc z kilku
+    /// plików otwiera się pierwszy.
+    func application(_: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        FinderOpen.shared.open(url)
+    }
+
+    /// Plik z Findera przy DZIAŁAJĄCYM edytorze: SwiftUI otwierał dla niego drugie okno
+    /// edytora, z własnym stanem i własnym połączeniem z Nordem (sprawdzone 2026-10-23;
+    /// `handlesExternalEvents` tego nie zatrzymał). Po starcie przejmujemy więc samo
+    /// zdarzenie „otwórz dokumenty”, zanim zobaczy je SwiftUI. Wcześniej nie wolno: przy
+    /// starcie z pliku nie powstałoby wtedy żadne okno i edytor by się zamknął.
+    private func takeOverOpenDocuments() {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(openDocuments(_:withReply:)),
+            forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEOpenDocuments)
+        )
+    }
+
+    @objc private func openDocuments(_ event: NSAppleEventDescriptor, withReply _: NSAppleEventDescriptor) {
+        guard let files = event.paramDescriptor(forKeyword: keyDirectObject), files.numberOfItems > 0,
+              let url = files.atIndex(1)?.fileURLValue ?? files.fileURLValue
+        else { return }
+        // Zdarzenia Apple przychodzą na głównym wątku.
+        MainActor.assumeIsolated { FinderOpen.shared.open(url) }
+    }
+}
+
+/// Pliki z Findera (`AppDelegate`, plik upuszczony na okno edytora) idą tą samą drogą co
+/// File ▸ Open: pytanie o zapis, wczytanie, wysyłka do Norda. `.pch2` upuszczony na okno
+/// też się OTWIERA (decyzja użytkownika 2026-10-23) — jako blok wstawia go lista Blocks
+/// i File ▸ Insert Patch File…. Plik podany przy starcie przychodzi, zanim okno ma stan —
+/// czeka wtedy w `pending`, aż `RootView` się podłączy.
+@MainActor
+final class FinderOpen {
+    static let shared = FinderOpen()
+
+    /// Pliki przeciągnięte z Findera; `nil`, gdy przeciąga się coś innego (moduł, blok z listy).
+    nonisolated static func files(on pasteboard: NSPasteboard) -> [URL]? {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                          options: [.urlReadingFileURLsOnly: true]) as? [URL]
+        return urls?.isEmpty == false ? urls : nil
+    }
+
+    /// Plik, który edytor otwiera: `.pch2` albo `.prf2`; inny (np. `.txt`) daje `nil`.
+    nonisolated static func patchFile(in urls: [URL]) -> URL? {
+        urls.first { ["pch2", "prf2"].contains($0.pathExtension.lowercased()) }
+    }
+
+    private weak var state: PatchState?
+    private var device: DeviceConnection?
+    private var pending: URL?
+
+    func attach(state: PatchState, device: DeviceConnection) {
+        self.state = state
+        self.device = device
+        if let pending {
+            self.pending = nil
+            open(pending)
+        }
+    }
+
+    func open(_ url: URL) {
+        guard let state, let device else {
+            pending = url
+            return
+        }
+        if PluginHost.isBackground { PluginHost.showEditor() }
+        NSApp.activate(ignoringOtherApps: true)
+        guard ["pch2", "prf2"].contains(url.pathExtension.lowercased()) else {
+            state.errorMessage = "Please open a .pch2 or .prf2 file.\nSelected: \(url.lastPathComponent)"
+            return
+        }
+        guard UnsavedChangesGuard.shared.confirmDiscard(opening: url) else { return }
+        let onlySlot = state.load(url: url)
+        guard state.errorMessage == nil else { return }
+        Task { await device.send(state, onlyFocusedSlot: onlySlot, followDocument: true) }
+    }
 }
 
 /// Pytanie „zapisać zmiany?" — jedno miejsce dla ⌘Q, czerwonego przycisku okna I każdej
@@ -94,8 +176,16 @@ final class UnsavedChangesGuard {
     /// Wyjście z edytora pyta zawsze — tam nie ma już dokąd wrócić.
     static let askOnReplaceKey = "g2_ask_save_on_replace"
 
+    /// To samo dla przycisków „Init 1"/„Init 2" — osobno, bo szablon przywołuje się
+    /// znacznie częściej niż otwiera plik (życzenie z forum, wątek 2988).
+    static let askOnInitPatchKey = "g2_ask_save_on_init_patch"
+
     private var asksOnReplace: Bool {
         UserDefaults.standard.object(forKey: Self.askOnReplaceKey) as? Bool ?? true
+    }
+
+    private var asksOnInitPatch: Bool {
+        UserDefaults.standard.object(forKey: Self.askOnInitPatchKey) as? Bool ?? true
     }
 
     /// ⌘Q i zamknięcie okna — pytanie niezależnie od ustawienia.
@@ -114,6 +204,12 @@ final class UnsavedChangesGuard {
     /// Podmiana jednego slotu: New Patch, New To, Open To.
     func confirmDiscard(slot: Int) -> Bool {
         guard asksOnReplace else { return true }
+        return confirmDiscard(slots: [slot], performance: false)
+    }
+
+    /// Przycisk „Init 1"/„Init 2": szablon wchodzi do jednego slotu, tak jak „Open To".
+    func confirmDiscard(initPatchInto slot: Int) -> Bool {
+        guard asksOnInitPatch else { return true }
         return confirmDiscard(slots: [slot], performance: false)
     }
 

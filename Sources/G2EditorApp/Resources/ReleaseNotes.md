@@ -1,3 +1,17 @@
+## 0.1.3 — October 24, 2026
+Almost everything here comes from the Wish List on the electro-music forum.
+- **Building Blocks.** Pick a Building Blocks folder in Settings ▸ General ▸ Folders; the Patches drawer gets a Blocks tab. Drag a block onto the patch and it is inserted where you drop it — modules, cables, values in all variations, names, colours and mixer/switch labels — with everything selected and a single Undo. Any .pch2 works as a block. File ▸ Insert Patch File… does the same without the drawer.
+- **Knobs, MIDI CCs and morphs come with a block if you want.** When a block has its own assignments, a small window asks what to bring along (Morphs, Knobs, MIDI CC, Patch settings, Morph knobs) and shows what won't fit.
+- **Save your own blocks.** Select modules and choose Save Selection as Block…, or drag the selection onto the Blocks list. Their knobs, MIDI CCs, morphs and morph names are saved too.
+- **Type a knob value.** Double-click a knob or choose Enter Value… and type e.g. 0.5s, 500ms, 1.2k, 880 or (64). The arrow keys now show the value tooltip as well.
+- **Right-click a multi-value button for a list of all values** (LFO range, Step/Edge, keyboard tracking, the small P+/B−/B/P/N squares). On the small squares the tooltip spells the letter out (B → Bip).
+- **Note names in the tooltip** for oscillator tuning, filter cutoff, FltComb and LFO in Rate Hi mode, e.g. "698Hz / F5 ±0 ct". Zero on the oscillator Coarse knob is E4, as the G2 counts.
+- **Disconnect cables in bulk:** module menu ▸ Disconnect Cables ▸ All / Inside Selection / To Rest of Patch, and Disconnect All Cables in the background menu.
+- **Morphs:** Clear All Morphs (this variation or all), Copy Morph To now copies like the original editor (before, it moved), and morphs can be renamed by double-clicking the name in the morph bar — the name goes to the G2 too.
+- **Init 1 / Init 2 asks about unsaved changes** (can be switched off in Settings ▸ General).
+- **Open patches from the Finder:** double-click a .pch2 or .prf2, use Open With, or drag it onto the editor window.
+- **Fixes:** deleting a module also clears its knob, MIDI CC and morph assignments (a new module with the same number could inherit them), and Undo/Redo keep them in step on the G2; copy and paste keep mixer and switch labels; live LEDs and meters move with dragged modules; tooltips and parameter pages named the FltNord and DrumSynth filter type upside down (LP showed as BR); Download in Settings ▸ Updates now downloads the disk image instead of opening the release page.
+
 ## 0.1.2 — October 22, 2026
 - **Patches loaded from disk reach the G2 reliably.** Sometimes the G2 kept playing the previous patch while the screen already showed the new one. The editor was dropping a reply from the G2 that arrived at the very moment a read timed out. It now keeps that reply and waits for data as long as the original editor does. If the G2 still stops sending data, the editor reconnects and sends the patch again instead of failing silently. Thanks to Kymeia for the report and the USB log.
 - **The Mutator lights the right variation after you switch slots.** With several slots playing, it kept the variation of the previous slot lit, while the toolbar showed the right one.

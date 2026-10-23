@@ -1,8 +1,194 @@
 import AppKit
 import G2Core
+import G2EditorCore
 import SwiftUI
 
 extension PatchCanvasView {
+    // MARK: - Geometria ButtonFlat
+
+    /// Prostokąt przycisku ButtonFlat — JEDNO źródło dla rysowania, trafiania kliknięciem
+    /// i listy wartości rozwijanej pod przyciskiem. Dopóki renderer liczył go u siebie,
+    /// a hit-test u siebie, oba wyniki różniły się o ułamek punktu przy przyciskach
+    /// wyrównywanych do sąsiedniego ekranu — lista stawałaby odrobinę obok przycisku.
+    func flatButtonRect(_ btn: BVButtonFlat, module: G2Module, ui: ModuleUIDef,
+                        in rect: CGRect) -> CGRect
+    {
+        // OscB (typeID:7): "On" (CodeRef:2) styka się z etykietą "KBT" —
+        // wyrównaj jego prawą krawędź z przyciskiem "FM Lin" (CodeRef:10) poniżej.
+        var btnXPt = btn.xPt
+        if module.typeID == 7, btn.codeRef == 2,
+           let fmLin = ui.buttonsFlat.first(where: { $0.codeRef == 10 })
+        {
+            btnXPt = fmLin.xPt + fmLin.widthPt - btn.widthPt
+        }
+
+        let x = rect.minX + btnXPt
+        // Wyrównaj Y do pobliskiego RadioButton (±3 pt) — np. "0dB" w 2-In
+        var y = rect.minY + flatButtonYPt(module: module, button: btn, ui: ui)
+        // OscD: przycisk trybu "Semi/Freq/Fac/Part" (CodeRef:3) ma w źródle YPos o
+        // 1 Gen1px niższy start niż sąsiedni ekran "+0 +0" (TextField MasterRef:0), ale
+        // jest też wyższy (buttonFlatHeight 7 vs textFieldHeight 6.5) — razem wypadał
+        // wyraźnie niżej niż środek ekranu. Wyrównaj do WSPÓLNEGO środka.
+        if module.typeID == 96, btn.codeRef == 3,
+           let field = ui.textFields.first(where: { $0.masterRef == 0 })
+        {
+            let fieldCenterY = field.yPt + UIMetrics.textFieldHeight / 2
+            y = rect.minY + fieldCenterY - UIMetrics.buttonFlatHeight / 2
+        } else if let field = ui.textFields.first(where: {
+            // Ekran stojący W TYM SAMYM RZĘDZIE tuż PO PRAWEJ stronie przycisku
+            // (LfoC: „Rate Lo" + ekran „0.64Hz"). W danych Gen1 oba widżety mają
+            // inne wysokości niż nasze stałe, więc same YPos rozjeżdżają ich środki
+            // o ~0,8pt — w oryginale stoją równo. Ta sama korekta co OscD wyżej.
+            abs($0.yPt - btn.yPt) < 1.5
+                && $0.xPt >= btn.xPt + btn.widthPt - 1.0
+                && $0.xPt <= btn.xPt + btn.widthPt + 6.0
+        }) {
+            let fieldCenterY = field.yPt + UIMetrics.textFieldHeight / 2
+            y = rect.minY + fieldCenterY - UIMetrics.buttonFlatHeight / 2
+        }
+        if module.typeID == 180, [18, 20].contains(btn.codeRef) {
+            // Nadpisz ogólne wyrównanie do pobliskiego pola: dolne przyciski
+            // Operatora należą do przesuniętego rzędu L/R-Depth.
+            y = rect.minY + flatButtonYPt(module: module, button: btn, ui: ui)
+        }
+        // Wąskie ButtonFlat (np. T/G w SeqEvent) → rozmiar jak step-button
+        let isStepSized = btn.widthPt < UIMetrics.buttonFlatHeight
+        let w = isStepSized ? UIMetrics.seqFaderWidth : max(btn.widthPt, 8)
+        let h: CGFloat = isStepSized ? UIMetrics.seqFaderWidth : UIMetrics.buttonFlatHeight
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    /// Liczba wartości przycisku: znany zakres sprzętowy ma pierwszeństwo przed liczbą
+    /// napisów na przycisku — LfoA/LfoC mają pięć etykiet, ale tylko cztery zakresy
+    /// (bez Clk). Bez opcji tekstowych (np. Loop, infoFunc:9) → toggle 0/1.
+    func flatButtonStates(_ btn: BVButtonFlat, module: G2Module) -> Int {
+        ParameterRangeDatabase
+            .range(moduleTypeID: module.typeID, codeRef: btn.codeRef)
+            .map { $0.upperBound - $0.lowerBound + 1 }
+            ?? (btn.options.isEmpty ? 2 : btn.options.count)
+    }
+
+    // MARK: - Prawy klawisz na przycisku wielostanowym
+
+    /// Rozwija listę wartości pod przyciskiem ButtonFlat. Zwraca `true`, gdy lista
+    /// się otworzyła — wtedy zdarzenie jest skonsumowane i nie leci dalej.
+    ///
+    /// Przyciski dwustanowe listy nie dostają: kolumna z dwoma wierszami to więcej
+    /// ruchu niż samo przełączenie (życzenie z forum #5205 dotyczy przewijania
+    /// w kółko przez wiele wartości).
+    func handleButtonRightClick(at point: CGPoint) -> Bool {
+        let ro = rowOffset
+        let mods = modules
+
+        for module in mods {
+            guard let ui = ModuleUIDatabase.shared.uiDef(forID: module.typeID) else { continue }
+            let rect = PatchLayout.moduleRect(module, def: moduleDefinition(module.typeID),
+                                              rowOffset: ro, allModules: mods)
+            for btn in ui.buttonsFlat where !btn.options.isEmpty {
+                let btnRect = flatButtonRect(btn, module: module, ui: ui, in: rect)
+                guard btnRect.contains(point) else { continue }
+                let states = flatButtonStates(btn, module: module)
+                guard states > 2 else { return false }
+                // Zakres sprzętowy bywa węższy niż lista napisów (LfoA: pięć etykiet,
+                // cztery zakresy) — pokaż tylko te wartości, które sprzęt przyjmie.
+                let labels = btn.options.prefix(states)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                let cur = btn.codeRef < module.parameters.count ? module.parameters[btn.codeRef] : 0
+                selectorPicker = SelectorPickerState(
+                    moduleID: module.id,
+                    moduleTypeID: module.typeID,
+                    codeRef: btn.codeRef,
+                    usesParameter: true,
+                    infoFunc: btn.infoFunc,
+                    optionCount: labels.count,
+                    modeName: "",
+                    showsWaveOptions: false,
+                    showsLcdText: false,
+                    canvasRect: btnRect,
+                    selectedValue: max(0, min(cur, labels.count - 1)),
+                    panelOptions: labels
+                )
+                return true
+            }
+
+            // ── LevelShift i selektor typu wyjścia ────────────────────────────
+            // Kwadraciki rozmiaru Power („P+", „B") cyklują przez sześć albo trzy
+            // stany w jedną stronę — ten sam problem co ButtonFlat, ta sama lista.
+            for ls in ui.levelShifts {
+                let outer = powerSizedOuterRect(levelShiftRect(ls, moduleTypeID: module.typeID, in: rect))
+                guard outer.contains(point) else { continue }
+                let states = (ParameterRangeDatabase
+                    .range(moduleTypeID: module.typeID, codeRef: ls.codeRef)?.upperBound ?? 5) + 1
+                guard states > 2 else { return false }
+                let cur = ls.codeRef < module.parameters.count ? module.parameters[ls.codeRef] : 0
+                openPanelPicker(module: module, codeRef: ls.codeRef, rect: outer,
+                                labels: (0 ..< states).map { Self.levelShiftLabel($0) },
+                                current: cur,
+                                tooltips: Array(Self.levelShiftNames.prefix(states)))
+                return true
+            }
+
+            for sel in ui.partSelectors where sel.imageCount > 2 {
+                guard let first = Self.shortLabelButtonTitle(infoFunc: sel.infoFunc, value: 0)
+                else { continue }
+                let outer = powerSizedOuterRect(
+                    partSelectorRect(sel, moduleTypeID: module.typeID, in: rect)
+                )
+                guard outer.contains(point) else { continue }
+                let labels = (0 ..< sel.imageCount).map {
+                    Self.shortLabelButtonTitle(infoFunc: sel.infoFunc, value: $0) ?? first
+                }
+                let cur = sel.usesParameter
+                    ? (sel.codeRef < module.parameters.count ? module.parameters[sel.codeRef] : 0)
+                    : (sel.codeRef < module.modes.count ? module.modes[sel.codeRef] : 0)
+                let names = sel.infoFunc == Self.outputTypeInfoFunc ? Self.outputTypeNames : []
+                openPanelPicker(module: module, codeRef: sel.codeRef, rect: outer,
+                                labels: labels, current: cur,
+                                usesParameter: sel.usesParameter, infoFunc: sel.infoFunc,
+                                tooltips: Array(names.prefix(labels.count)))
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Pełne nazwy typu wyjścia. Kolejność z BVerhue: `prtPosNegInvBipInv`
+    /// i `prtOutTypeLfo` liczą tak samo (`0 ~ Pos, 1 ~ PosInv, 2 ~ Neg, 3 ~ NegInv,
+    /// 4 ~ Bip, 5 ~ BipInv`), a `prtBipPosNeg` modułów Random ma własną, krótszą
+    /// (`0 ~ Bip, 1 ~ Pos, 2 ~ Neg`) — dlatego nie da się jej wyprowadzić z tamtej.
+    static let levelShiftNames = ["Pos", "PosInv", "Neg", "NegInv", "Bip", "BipInv"]
+    static let outputTypeNames = ["Bip", "Pos", "Neg"]
+
+    /// Przycisk rozmiaru Power jest rysowany o `socketOuterMargin` szerzej niż prostokąt
+    /// zwracany przez `levelShiftRect`/`partSelectorRect` — lista ma stanąć pod tym,
+    /// co widać, więc liczy się z krawędzi zewnętrznej.
+    private func powerSizedOuterRect(_ innerRect: CGRect) -> CGRect {
+        innerRect.insetBy(dx: -UIMetrics.socketOuterMargin, dy: -UIMetrics.socketOuterMargin)
+    }
+
+    private func openPanelPicker(module: G2Module, codeRef: Int, rect: CGRect,
+                                 labels: [String], current: Int,
+                                 usesParameter: Bool = true, infoFunc: Int = 0,
+                                 tooltips: [String] = [])
+    {
+        selectorPicker = SelectorPickerState(
+            moduleID: module.id,
+            moduleTypeID: module.typeID,
+            codeRef: codeRef,
+            usesParameter: usesParameter,
+            infoFunc: infoFunc,
+            optionCount: labels.count,
+            modeName: "",
+            showsWaveOptions: false,
+            showsLcdText: false,
+            canvasRect: rect,
+            selectedValue: max(0, min(current, labels.count - 1)),
+            panelOptions: labels,
+            panelPowerSized: true,
+            panelTooltips: tooltips
+        )
+    }
+
     // MARK: - Button tap handler
 
     func handleButtonTap(at point: CGPoint, screenPos: CGPoint = .zero) {
@@ -167,26 +353,10 @@ extension PatchCanvasView {
 
             // ── ButtonFlat ─────────────────────────────────────────────────────
             for btn in ui.buttonsFlat {
-                var btnXPt = btn.xPt
-                if module.typeID == 7, btn.codeRef == 2,
-                   let fmLin = ui.buttonsFlat.first(where: { $0.codeRef == 10 })
-                {
-                    btnXPt = fmLin.xPt + fmLin.widthPt - btn.widthPt
-                }
-                let x = rect.minX + btnXPt
-                let y = rect.minY + flatButtonYPt(module: module, button: btn, ui: ui)
-                let w = max(btn.widthPt, 8)
-                let h: CGFloat = 7.0
-                guard CGRect(x: x, y: y, width: w, height: h).contains(point) else { continue }
+                guard flatButtonRect(btn, module: module, ui: ui, in: rect).contains(point)
+                else { continue }
                 let cur = btn.codeRef < module.parameters.count ? module.parameters[btn.codeRef] : 0
-                // Liczba stanów: znany zakres sprzętowy ma pierwszeństwo przed liczbą
-                // napisów na przycisku — LfoA/LfoC mają pięć etykiet, ale tylko cztery
-                // zakresy (bez Clk). Bez opcji tekstowych (np. Loop, infoFunc:9) → toggle 0/1.
-                let states = ParameterRangeDatabase
-                    .range(moduleTypeID: module.typeID, codeRef: btn.codeRef)
-                    .map { $0.upperBound - $0.lowerBound + 1 }
-                    ?? (btn.options.isEmpty ? 2 : btn.options.count)
-                let next = (cur + 1) % states
+                let next = (cur + 1) % flatButtonStates(btn, module: module)
                 onParameterChange?(module.id, btn.codeRef, next)
                 return
             }
@@ -329,7 +499,8 @@ extension PatchCanvasView {
                                 height: picker.canvasRect.height * zoom)
         // Rozwinięte ekrany (ikony fal/schematów Logic, teksty LCD) stykają się bez
         // odstępu — tworzą jedną ciągłą listę pod ekranem, tak jak w oryginale Clavii.
-        let stacksUnderScreen = picker.showsWaveOptions || picker.showsLcdText
+        let showsPanelButtons = !picker.panelOptions.isEmpty
+        let stacksUnderScreen = picker.showsWaveOptions || picker.showsLcdText || showsPanelButtons
         // Jedna ramka dookoła CAŁEJ listy (nie per-wiersz) — inaczej styk dwóch
         // sąsiednich pozycji rysuje ich ramki jedna na drugiej, więc wychodzi grubsza
         // niż reszta obwodu. Promień dopasowany do stylu wiersza (LCD vs wave/Gate).
@@ -345,7 +516,13 @@ extension PatchCanvasView {
         let waveMenuWidth = picker.moduleTypeID == 64
             ? gateSelectorRowWidth(rowHeight: rowHeight - 2 * zoom) + 2 * zoom
             : screenRect.width
-        let menuWidth = if picker.showsWaveOptions { waveMenuWidth } else if picker.showsLcdText { screenRect.width } else { max(104, screenRect.width + 30) }
+        let menuWidth = if picker.showsWaveOptions {
+            waveMenuWidth
+        } else if picker.showsLcdText || showsPanelButtons {
+            screenRect.width
+        } else {
+            max(104, screenRect.width + 30)
+        }
         let requestedHeight = CGFloat(picker.optionCount) * rowHeight
             + CGFloat(max(0, picker.optionCount - 1)) * rowSpacing
             + (stacksUnderScreen ? 0 : 8)
@@ -377,7 +554,41 @@ extension PatchCanvasView {
                         }
                         selectorPicker = nil
                     } label: {
-                        if picker.showsWaveOptions {
+                        if showsPanelButtons {
+                            // Wiersz to DOKŁADNIE ten sam przycisk co na panelu: ten sam
+                            // rozmiar, promień, obrys i wypukłość (`PanelFace.raised`),
+                            // ten sam font. Pozycje nieaktywne mają jeden odcień szarości
+                            // — wyróżniona jest tylko wartość ustawiona teraz.
+                            let isCurrent = value == picker.selectedValue
+                            let label = picker.panelOptions[value]
+                            let fill = isCurrent ? UIColor.buttonActive : UIColor.buttonInactive
+                            let textColor = isCurrent ? Color.white : Color(white: 0.20)
+                            Canvas { context, size in
+                                let optionRect = CGRect(origin: .zero, size: size)
+                                if picker.panelPowerSized {
+                                    let margin = UIMetrics.socketOuterMargin * zoom
+                                    drawPowerSizedLabelButton(
+                                        context,
+                                        in: optionRect.insetBy(dx: margin, dy: margin),
+                                        label: label, fill: fill, textColor: textColor, scale: zoom
+                                    )
+                                    return
+                                }
+                                PanelFace.raised(
+                                    context, optionRect.insetBy(dx: 0.2 * zoom, dy: 0.2 * zoom),
+                                    cornerRadius: UIMetrics.buttonFlatCornerRadius * zoom,
+                                    fill: fill, lineWidth: 0.4 * zoom, shaded: panelShading
+                                )
+                                context.draw(
+                                    Text(label)
+                                        .font(.system(size: UIFont.buttonLabel * zoom, weight: .bold))
+                                        .foregroundColor(textColor),
+                                    at: CGPoint(x: size.width / 2, y: size.height / 2),
+                                    anchor: .center
+                                )
+                            }
+                            .frame(width: menuWidth, height: rowHeight)
+                        } else if picker.showsWaveOptions {
                             // Najazd zmienia WYŁĄCZNIE kolor rysunku (jaśniejsza zieleń),
                             // nigdy grubość linii — pogrubianie zmieniało proporcje symbolu
                             // i wiersz pod kursorem wyglądał jak inny widżet.
@@ -502,7 +713,9 @@ extension PatchCanvasView {
                         }
                     }
                     .buttonStyle(.plain)
-                    .help(selectorPickerLabel(picker, value: value))
+                    .help(picker.panelTooltips.indices.contains(value)
+                        ? picker.panelTooltips[value]
+                        : selectorPickerLabel(picker, value: value))
                 }
             }
             .padding(stacksUnderScreen ? 0 : 4)
@@ -510,7 +723,11 @@ extension PatchCanvasView {
         .frame(width: menuWidth, height: menuHeight)
         .background(stacksUnderScreen ? Color.clear : Color(white: 0.16).opacity(0.96))
         .overlay {
-            if stacksUnderScreen {
+            if showsPanelButtons {
+                // Każdy wiersz niesie własny obrys przycisku — wspólna ramka dookoła
+                // listy dokładałaby drugą linię wzdłuż jej krawędzi.
+                EmptyView()
+            } else if stacksUnderScreen {
                 RoundedRectangle(cornerRadius: outerBorderRadius)
                     .stroke(Color.white.opacity(0.85), lineWidth: outerBorderWidth)
             } else {
@@ -527,6 +744,9 @@ extension PatchCanvasView {
     }
 
     private func selectorPickerLabel(_ picker: SelectorPickerState, value: Int) -> String {
+        if !picker.panelOptions.isEmpty {
+            return picker.panelOptions[min(value, picker.panelOptions.count - 1)]
+        }
         if picker.showsWaveOptions {
             return waveSelectorLabel(moduleTypeID: picker.moduleTypeID,
                                      value: value,
@@ -623,36 +843,83 @@ extension PatchCanvasView {
         return (base: value, end: max(0, min(maxValue, value + delta)))
     }
 
+    /// Nazwa nuty pod dymkiem gałki, która stroi: oscylator (`TextFunc 60` — Coarse, Fine
+    /// i tryb w `dependencies`, ujemny indeks = `modes`, jak w `g2TextFunction`), LFO w trybie
+    /// Rate Hi (`TextFunc 103`), odcięcie filtrów i FltComb (`g2PitchedHertz`).
+    ///
+    /// Gdzie odczyt jest w hercach, nuta idzie z odstrojeniem („A4 +12 ct”) — rzadko wypada
+    /// równo — i tylko powyżej `C-1`, żeby wolne LFO nie dostawało nut spod pasma. Pola, które już nazywają nutę same (FltNord, SeqNote, moduły MIDI — `TextFunc`
+    /// i `InfoFunc` 13), zostają bez trzeciej linii, żeby nie pisać tego samego dwa razy.
+    func tuningNote(hit: ParamHoverHit, params: [Int], modes: [Int], value: Int) -> String? {
+        guard hit.isKnob else { return nil }
+        var params = params
+        if !hit.usesModes, params.indices.contains(hit.paramIndex) { params[hit.paramIndex] = value }
+
+        if let field = hit.linkedTextField {
+            func dependency(_ index: Int) -> Int {
+                guard index < field.dependencies.count else { return 0 }
+                let ref = field.dependencies[index]
+                guard ref >= 0 else {
+                    let mode = -ref - 1
+                    return mode < modes.count ? modes[mode] : 0
+                }
+                return ref < params.count ? params[ref] : 0
+            }
+            switch field.textFunc {
+            case 13: return nil
+            case 60: return MusicalPitch.oscTuningName(freqMode: dependency(2), coarse: dependency(0))
+            case 103:
+                return g2LFOHighRateHertz(mode: dependency(1), value: dependency(0))
+                    .flatMap(MusicalPitch.pitchedLabel(forHz:))
+            default: break
+            }
+        }
+
+        guard hit.infoFunc != 13 else { return nil }
+        return g2PitchedHertz(infoFunc: hit.infoFunc, value: value)
+            .flatMap(MusicalPitch.pitchedLabel(forHz:))
+    }
+
+    /// Tekst wartości w dymku: gałka → wynik g2TextFunction (jeśli TextField powiązany)
+    /// lub g2InfoFunction; przycisk z opcjami → bieżąca opcja; fallback → paramName.
+    /// To samo czyta pole wpisywania wartości, żeby wpis i dymek mówiły jednym głosem.
+    func hintValueText(_ hit: ParamHoverHit, params allParams: [Int], value: Int) -> String {
+        if hit.isKnob {
+            if let tf = hit.linkedTextField {
+                var params = allParams
+                if params.indices.contains(hit.paramIndex) { params[hit.paramIndex] = value }
+                return g2TextFunction(textFunc: tf.textFunc,
+                                      deps: tf.dependencies,
+                                      params: params,
+                                      knobInfoFunc: hit.infoFunc)
+            }
+            return g2InfoFunction(hit.infoFunc, val: value)
+        }
+        if let opts = hit.displayOptions, opts.indices.contains(value) {
+            return opts[value]
+        }
+        return hit.paramName
+    }
+
     @ViewBuilder
     var hoverOverlayView: some View {
-        if let hit = hoverHit {
+        // Dymek po strzałkach ma pierwszeństwo przed tym spod kursora — mysz może stać
+        // nad zupełnie inną gałką niż ta z focusem. Przy otwartym polu wpisywania
+        // dymka nie ma: pole samo pokazuje wartość, a dymek by na nie nachodził.
+        if valueEntry == nil, let hit = keyHint ?? hoverHit {
             let module = modules.first(where: { $0.id == hit.moduleID })
             let curVal: Int = if hit.usesModes {
                 (module?.modes.indices.contains(hit.paramIndex) == true) ? module!.modes[hit.paramIndex] : 0
             } else {
                 (module?.parameters.indices.contains(hit.paramIndex) == true) ? module!.parameters[hit.paramIndex] : 0
             }
-            // Knob → wynik g2TextFunction (jeśli TextField powiązany) lub g2InfoFunction;
-            // Przycisk z opcjami → bieżąca opcja; fallback → paramName
             let allParams = module?.parameters ?? []
-            let valueText: (Int) -> String = { value in
-                if hit.isKnob {
-                    if let tf = hit.linkedTextField {
-                        var params = allParams
-                        if params.indices.contains(hit.paramIndex) { params[hit.paramIndex] = value }
-                        return g2TextFunction(textFunc: tf.textFunc,
-                                              deps: tf.dependencies,
-                                              params: params,
-                                              knobInfoFunc: hit.infoFunc)
-                    }
-                    return g2InfoFunction(hit.infoFunc, val: value)
-                }
-                if let opts = hit.displayOptions, opts.indices.contains(value) {
-                    return opts[value]
-                }
-                return hit.paramName
-            }
+            let valueText: (Int) -> String = { hintValueText(hit, params: allParams, value: $0) }
             let tipText = valueText(curVal)
+            // Nazwa nuty pod odczytem strojenia oscylatora — życzenie z forum (wątek 2991).
+            let noteText: (Int) -> String? = { value in
+                tuningNote(hit: hit, params: allParams, modes: module?.modes ?? [], value: value)
+            }
             let morphSpan = hit.isKnob
                 ? morphHintSpan(moduleTypeID: module?.typeID, moduleID: hit.moduleID,
                                 paramIndex: hit.paramIndex, value: curVal)
@@ -667,11 +934,17 @@ extension PatchCanvasView {
                     VStack(alignment: .center, spacing: 1) {
                         Text("\(valueText(span.base)) -- \(valueText(span.end))")
                         Text("(\(span.base) -- \(span.end))")
+                        if let from = noteText(span.base), let to = noteText(span.end) {
+                            Text(from == to ? from : "\(from) -- \(to)")
+                        }
                     }
                 } else if hit.isKnob {
                     VStack(alignment: .center, spacing: 1) {
                         Text(tipText.isEmpty ? "\(curVal)" : tipText)
                         Text("(\(curVal))")
+                        if let note = noteText(curVal) {
+                            Text(note)
+                        }
                     }
                 } else {
                     Text(tipText.isEmpty ? "\(curVal)" : tipText)
@@ -686,8 +959,8 @@ extension PatchCanvasView {
                     y: hit.tooltipAnchor.y * zoom)
             .allowsHitTesting(false)
 
-            // ▼▲ przyciski — tylko dla knobów rotacyjnych
-            if let canvasRect = hit.btnsRect {
+            // ▼▲ przyciski — tylko dla knobów rotacyjnych pod kursorem.
+            if keyHint == nil, let canvasRect = hit.btnsRect {
                 let br = CGRect(x: canvasRect.minX * zoom, y: canvasRect.minY * zoom,
                                 width: canvasRect.width * zoom, height: canvasRect.height * zoom)
                 let halfW = br.width / 2 - 1

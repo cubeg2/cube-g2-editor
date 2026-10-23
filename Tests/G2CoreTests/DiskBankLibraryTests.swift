@@ -34,6 +34,27 @@ final class DiskBankLibraryTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// Folder patchy i folder Building Blocks pamiętają się osobno — wskazanie jednego
+    /// nie może przestawić drugiego → Docs/Plan projektu/08-building-blocks.md
+    func testKeyPrefixKeepsLibrariesApart() throws {
+        let suite = "g2-disk-prefix-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let patches = DiskBankLibrary(defaults: defaults)
+        let blocks = DiskBankLibrary(defaults: defaults, keyPrefix: "g2_blocks")
+
+        blocks.setFolder(root.appendingPathComponent("Bass"))
+        blocks.currentPath = "Acid"
+        patches.setFolder(root)
+
+        XCTAssertEqual(DiskBankLibrary(defaults: defaults).folder?.lastPathComponent, root.lastPathComponent)
+        let reopened = DiskBankLibrary(defaults: defaults, keyPrefix: "g2_blocks")
+        XCTAssertEqual(reopened.folder?.lastPathComponent, "Bass")
+        XCTAssertEqual(reopened.currentPath, "Acid")
+        XCTAssertEqual(DiskBankLibrary.savedFolderPath(defaults: defaults), root.path,
+                       "the DAW plug-in browser keeps reading the patch folder")
+    }
+
     private func write(_ relative: String, bytes: Int = 1) throws {
         try Data(repeating: 0, count: bytes).write(to: root.appendingPathComponent(relative))
     }

@@ -74,6 +74,39 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Spectrum and X-Y Plot can show the sound coming into your audio interface, for example from a Nord G2.</string>
+    <!-- .pch2 i .prf2 otwierają się z Findera (podwójny klik, Open With, ikona w Docku). -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.clavia.nordmodular.g2.patch</string>
+            <key>UTTypeDescription</key><string>Nord Modular G2 Patch</string>
+            <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict><key>public.filename-extension</key><array><string>pch2</string></array></dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.clavia.nordmodular.g2.performance</string>
+            <key>UTTypeDescription</key><string>Nord Modular G2 Performance</string>
+            <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict><key>public.filename-extension</key><array><string>prf2</string></array></dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Nord Modular G2 Patch</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+            <key>LSItemContentTypes</key><array><string>com.clavia.nordmodular.g2.patch</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Nord Modular G2 Performance</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+            <key>LSItemContentTypes</key><array><string>com.clavia.nordmodular.g2.performance</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

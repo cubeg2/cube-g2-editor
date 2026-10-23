@@ -245,6 +245,8 @@ public enum G2UsbProtocol {
     private static let subDeleteModule: UInt8 = 0x32
     private static let subParamDump: UInt8 = 0x4D
     private static let subModuleNameDump: UInt8 = 0x5A
+    /// Custom Data jednego modułu — podpisy parametrów (patrz `setParamLabelMolecule`).
+    private static let subParamLabel: UInt8 = 0x42
 
     // MARK: - CRC16 (port bit-a-bit z utils.c crc_iterator/calc_crc16 — zweryfikowany
 
@@ -943,6 +945,25 @@ public enum G2UsbProtocol {
     public static func setModuleNameMolecule(_ module: G2Module) -> [UInt8] {
         let locationByte: UInt8 = module.area == .voice ? 1 : 0
         return [subModuleName, locationByte, UInt8(module.id)] + claviaString(module.label)
+    }
+
+    /// SUB_COMMAND (0x42, Custom Data) — **dodatkowe dane JEDNEGO modułu na żywo**: własne
+    /// podpisy parametrów (kanały miksów, przełączniki), widok SeqNote; w obszarze 2 moduł 1
+    /// to nazwy ośmiu morfów. `content` to treść wpisu z sekcji 0x5B pliku, bez numeru
+    /// i długości (`G2ModuleLabelSection.Entry`).
+    ///
+    /// Układ z dwóch źródeł: oryginalny edytor (komunikat `0x42`: obszar zapisany tak samo
+    /// jak w Module Name, numer modułu, długość, bajty) i BVerhue Gen2
+    /// `AddCopyModuleParamLabelsMessage` (`S_SET_PARAM_LABEL = $42`, location, potem
+    /// `TParamLabelModuleList.Write`: moduł, długość, wpisy). BVerhue wysyła to dla modułu
+    /// odtwarzanego po cofnięciu kasowania — tak jak my dla modułu wstawionego albo wklejonego.
+    /// Obszar 2 (nazwy morfów) u BVerhue nie występuje — potwierdza go Clavia i sprzęt (niżej).
+    ///
+    /// ✅ **Zweryfikowane na żywym G2 37 (firmware 1.62) 2026-10-23**: `USBProbe --labeltest-slot D`,
+    /// podpis „Value” przyjęty (`7F`) i oddany przy odczycie slotu bajt w bajt; obszar 2 tak samo
+    /// (`--morphnametest-slot D`: morf 1 „Wheel” → „ClTest” i z powrotem, reszta nazw nietknięta).
+    public static func setParamLabelMolecule(location: UInt8, moduleID: Int, content: [UInt8]) -> [UInt8] {
+        [subParamLabel, location, UInt8(moduleID), UInt8(min(content.count, 255))] + content.prefix(255)
     }
 
     /// SUB_COMMAND (0x34, Module Move) — **przesunięcie JEDNEGO modułu na żywo**.

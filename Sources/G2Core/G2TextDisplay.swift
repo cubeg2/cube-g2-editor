@@ -1224,6 +1224,29 @@ public func g2InfoFunction(_ infoFunc: Int, val: Int) -> String {
     }
 }
 
+// MARK: - Herce gałek, z których da się nazwać nutę
+
+/// Częstotliwość w hercach stojąca za odczytem gałki — tylko tam, gdzie da się z niej
+/// nazwać nutę: odcięcie filtrów (`123`, 440 Hz przy 60) i FltComb (`173`, 440 Hz przy 69).
+/// Każdy z tych modułów ma inne odniesienie, więc nuty nie liczy się z wartości gałki,
+/// tylko właśnie z herców. `nil` dla wszystkiego innego — także dla czasów, BPM i Digitizer
+/// Rate, gdzie nuta nic nie znaczy.
+public func g2PitchedHertz(infoFunc: Int, value: Int) -> Double? {
+    switch infoFunc {
+    case 123: 440.0 * pow(2.0, Double(value - 60) / 12.0)
+    case 173: 440.0 * pow(2.0, Double(value - 69) / 12.0)
+    default: nil
+    }
+}
+
+/// To samo dla LFO (`TextFunc 103`) — wyłącznie w trybie **Rate Hi** (mode 2), który sięga
+/// pasma słyszalnego (0,26–392 Hz) i bywa używany jako oscylator. Rate Sub, Rate Lo,
+/// BPM i Clk zostają bez nuty: pierwsze dwa chodzą w sekundach, dwa ostatnie w tempie.
+public func g2LFOHighRateHertz(mode: Int, value: Int) -> Double? {
+    guard mode == 2 else { return nil }
+    return 0.2555 * pow(2.0, Double(value) / 12.0)
+}
+
 // MARK: - FreqDispValue (konwersja częstotliwości oscylatora)
 
 /// Formatuje wyświetlanie częstotliwości oscylatora.

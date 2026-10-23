@@ -81,7 +81,7 @@ final class AppUpdates {
 enum UpdateWindow {
     enum Content {
         case available(AppRelease, current: String)
-        /// Po Download: strona wydania otwarta w przeglądarce, tu instrukcja instalacji.
+        /// Po Download: przeglądarka pobiera DMG, tu instrukcja instalacji.
         case installing(AppRelease)
         case upToDate(String)
         case failed
@@ -180,7 +180,7 @@ struct UpdateView: View {
             Spacer()
             TopBarButton(content: .text("Later")) { UpdateWindow.close() }
             TopBarButton(content: .text("Download"), isOn: true, tint: .green) {
-                NSWorkspace.shared.open(release.pageURL)
+                NSWorkspace.shared.open(release.downloadURL)
                 UpdateWindow.show(.installing(release))
             }
         }
@@ -189,7 +189,7 @@ struct UpdateView: View {
     @ViewBuilder
     private func installing(_ release: AppRelease) -> some View {
         header("Installing Cube G2 Editor \(release.version)",
-               "The download page opened in your browser. Download the .dmg file, then:")
+               "Your browser is downloading the .dmg file. When it has finished:")
         VStack(alignment: .leading, spacing: 8) {
             step(1, "Open the downloaded .dmg file.")
             step(2, "Drag Cube G2 Editor to the Applications folder and choose Replace.")

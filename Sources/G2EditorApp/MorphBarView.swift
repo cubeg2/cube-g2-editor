@@ -28,6 +28,11 @@ struct MorphBarView: View {
         state.header(slot: slot)
     }
 
+    /// Morf, którego nazwa jest właśnie edytowana (podwójny klik, jak u Clavii).
+    @State private var renaming: Int?
+    @State private var draft = ""
+    @FocusState private var nameFieldFocused: Bool
+
     private func focusing(_ action: () -> Void) {
         state.focusSlot(slot)
         action()
@@ -72,11 +77,7 @@ struct MorphBarView: View {
         return VStack(spacing: 0) {
             // Nazwa morfu i źródło pod gałką chodzą tym samym krojem co podpis
             // „Morph Groups" obok — jeden rozmiar podpisów w całej belce.
-            Text(G2Morph.names[morph])
-                .font(.system(size: TopBarMetrics.captionSize, weight: focused ? .bold : .regular))
-                .foregroundStyle(tint ?? .primary)
-                .lineLimit(1)
-                .frame(height: 12)
+            morphName(morph, focused: focused, tint: tint)
             SmallKnob(value: header.morphDials[morph],
                       size: TopBarMetrics.morphKnobSize,
                       onBegin: { focusing { state.beginParameterGesture() } },
@@ -98,8 +99,53 @@ struct MorphBarView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { focusing { state.focusedMorph = morph } }
-        .help("Morph \(morph + 1) — \(G2Morph.names[morph])")
+        .help("Morph \(morph + 1) — \(header.morphNames[morph])")
         .contextMenu { contextMenu(morph) }
+    }
+
+    /// Nazwa nad gałką; po podwójnym kliku pole do jej zmiany (7 znaków — tyle mieści Nord).
+    /// Enter albo kliknięcie obok zatwierdza, Esc porzuca.
+    @ViewBuilder
+    private func morphName(_ morph: Int, focused: Bool, tint: Color?) -> some View {
+        if renaming == morph {
+            TextField("", text: $draft)
+                .textFieldStyle(.plain)
+                .font(.system(size: TopBarMetrics.captionSize))
+                .multilineTextAlignment(.center)
+                .frame(height: 12)
+                .background(Color.primary.opacity(0.12))
+                .focused($nameFieldFocused)
+                .onChange(of: draft) { _, text in
+                    if text.count > G2MorphLabelSection.nameLength {
+                        draft = String(text.prefix(G2MorphLabelSection.nameLength))
+                    }
+                }
+                .onSubmit { commitRename() }
+                .onExitCommand { renaming = nil }
+                .onChange(of: nameFieldFocused) { _, isFocused in
+                    if !isFocused { commitRename() }
+                }
+        } else {
+            Text(header.morphNames[morph])
+                .font(.system(size: TopBarMetrics.captionSize, weight: focused ? .bold : .regular))
+                .foregroundStyle(tint ?? .primary)
+                .lineLimit(1)
+                .frame(height: 12)
+                .onTapGesture(count: 2) { beginRename(morph) }
+        }
+    }
+
+    private func beginRename(_ morph: Int) {
+        state.focusSlot(slot)
+        draft = header.morphNames[morph]
+        renaming = morph
+        nameFieldFocused = true
+    }
+
+    private func commitRename() {
+        guard let morph = renaming else { return }
+        renaming = nil
+        state.setMorphName(morph, name: draft, slot: slot)
     }
 
     /// Przycisk źródła pod gałką — u Clavii Rotate Text Button z tekstem
@@ -161,13 +207,19 @@ struct MorphBarView: View {
 
     @ViewBuilder
     private func contextMenu(_ morph: Int) -> some View {
+        Button("Rename Morph \(morph + 1)…") { beginRename(morph) }
+        Divider()
         assignMenu(morph)
         Divider()
         Button("Clear Morph \(morph + 1)") { focusing { state.clearMorph(morph, slot: slot) } }
+        Menu("Clear All Morphs") {
+            Button("This Variation") { focusing { state.clearAllMorphs(allVariations: false, slot: slot) } }
+            Button("All Variations") { focusing { state.clearAllMorphs(allVariations: true, slot: slot) } }
+        }
         Divider()
         Menu("Copy Morph \(morph + 1) To") {
             ForEach(0 ..< G2Morph.count, id: \.self) { target in
-                Button("Morph \(target + 1) — \(G2Morph.names[target])") {
+                Button("Morph \(target + 1) — \(header.morphNames[target])") {
                     focusing { state.copyMorph(from: morph, to: target, slot: slot) }
                 }
                 .disabled(target == morph)

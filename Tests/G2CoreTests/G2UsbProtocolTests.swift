@@ -6,6 +6,14 @@
 import XCTest
 
 final class G2UsbProtocolTests: XCTestCase {
+    /// Custom Data (0x42): [0x42][obszar: 1 = Voice][moduł][długość][treść wpisu 0x5B].
+    /// Treść: [1 = napis][8 = 1 + 7 znaków][parametr 0]["Lead" dopełnione zerami].
+    func testParamLabelMoleculeBytes() {
+        let content: [UInt8] = [1, 8, 0, 76, 101, 97, 100, 0, 0, 0]
+        XCTAssertEqual(G2UsbProtocol.setParamLabelMolecule(location: 1, moduleID: 12, content: content),
+                       [0x42, 0x01, 12, 10, 1, 8, 0, 76, 101, 97, 100, 0, 0, 0])
+    }
+
     // MARK: - CRC16
 
     func testCrc16OfEmptyIsZero() {

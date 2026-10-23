@@ -137,7 +137,12 @@ public enum G2ParameterText {
         }
         if let button = ui.buttonsRadio.first(where: { $0.codeRef == paramIndex }) {
             let count = max(1, button.buttonCount)
-            let labels = button.buttonLabels.count >= count ? Array(button.buttonLabels.prefix(count)) : []
+            var labels = button.buttonLabels.count >= count ? Array(button.buttonLabels.prefix(count)) : []
+            // Pionowa grupa: napisy BVerhue idą od góry, a wartość liczy się od dołu
+            // (FltNord „BR,HP,BP,LP" → 0 = LP) — tak samo zaznacza ją kanwa.
+            if button.orientation == "Vertical" {
+                labels.reverse()
+            }
             return ButtonOptions(count: count, labels: labels, infoFunc: button.infoFunc)
         }
         if let selector = ui.partSelectors.first(where: { $0.usesParameter && $0.codeRef == paramIndex }) {

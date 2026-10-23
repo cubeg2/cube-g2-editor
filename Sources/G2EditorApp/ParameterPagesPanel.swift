@@ -471,13 +471,13 @@ enum ParameterPagePresentationResolver {
             guard G2Morph.names.indices.contains(morph) else { return .empty }
             if assignment.paramIndex < G2Morph.count {
                 let value = patch.morphDial(morph, in: variation)
-                return item("Morph", G2Morph.names[morph], value: value,
+                return item("Morph", patch.morphName(morph), value: value,
                             valueText: "\(value)", target: .morphDial(morph))
             }
             guard assignment.paramIndex < G2Morph.count * 2 else { return .empty }
             let options = G2Morph.sourceOptions(morph: morph)
             let value = min(patch.morphMode(morph, in: variation), options.count - 1)
-            return item("Morph", "\(G2Morph.names[morph]) Src", value: value,
+            return item("Morph", "\(patch.morphName(morph)) Src", value: value,
                         valueText: options[value], target: .morphSource(morph))
         }
 

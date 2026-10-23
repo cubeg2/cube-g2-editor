@@ -878,42 +878,79 @@ public final class PatchState {
     }
 
     /// Zdejmuje wszystkie przypisania jednego morfu w bieżącej wariacji
-    /// (Clavia: „Clear Group"). Każde zdjęte przypisanie jedzie do urządzenia osobno —
-    /// zbiorczej komendy protokół nie ma.
+    /// (Clavia: „Clear Group").
     public func clearMorph(_ morph: Int, slot: Int? = nil) {
         let slot = slot ?? selectedSlot
         guard slots.indices.contains(slot) else { return }
-        let variation = slots[slot].activeVariation
-        let removed = slots[slot].clearMorph(morph, in: variation)
-        guard !removed.isEmpty else { return }
-        undoManager.registerUndo(withTarget: self) { target in
-            target.restoreMorphs(removed, morph: morph, variation: variation, slot: slot)
-        }
-        undoManager.setActionName("Clear Morph")
-        for entry in removed {
-            onMorphRangeChange?(slot, entry.location, entry.moduleID, entry.paramIndex,
-                                entry.morph, 0, variation)
+        editMorphs(in: [slots[slot].activeVariation], slot: slot, actionName: "Clear Morph") { patch, variation in
+            patch.clearMorph(morph, in: variation)
         }
     }
 
-    /// Przenosi przypisania jednego morfu na inny (Clavia: „Copy To ▸ Group N").
-    /// Do urządzenia idzie kasowanie starego przypisania i założenie nowego.
+    /// Zdejmuje wszystkie przypisania wszystkich ośmiu morfów — w bieżącej wariacji
+    /// albo w każdej z ośmiu (bez wariacji init). Oryginał tego nie ma: tam trzeba
+    /// czyścić morf po morfie i wariację po wariacji (życzenie z forum, wątek 19103).
+    /// Jedno ⌘Z przywraca wszystko.
+    public func clearAllMorphs(allVariations: Bool, slot: Int? = nil) {
+        let slot = slot ?? selectedSlot
+        guard slots.indices.contains(slot) else { return }
+        let variations = allVariations ? Array(0 ..< 8) : [slots[slot].activeVariation]
+        editMorphs(in: variations, slot: slot, actionName: "Clear All Morphs") { patch, variation in
+            for morph in 0 ..< G2Morph.count {
+                patch.clearMorph(morph, in: variation)
+            }
+        }
+    }
+
+    /// Kopiuje przypisania jednego morfu na inny (Clavia: „Copy To ▸ Group N").
+    /// Źródło zostaje, tak jak w oryginale.
     public func copyMorph(from source: Int, to destination: Int, slot: Int? = nil) {
         let slot = slot ?? selectedSlot
         guard slots.indices.contains(slot) else { return }
-        let variation = slots[slot].activeVariation
-        let before = slots[slot].morphs(in: variation).filter { $0.morph == source }
-        let moved = slots[slot].copyMorph(from: source, to: destination, in: variation)
-        guard !moved.isEmpty else { return }
+        editMorphs(in: [slots[slot].activeVariation], slot: slot, actionName: "Copy Morph") { patch, variation in
+            patch.copyMorph(from: source, to: destination, in: variation)
+        }
+    }
+
+    /// Wspólna droga zbiorczych zmian morfów: zapamiętuje przypisania wskazanych
+    /// wariacji, robi zmianę, odsyła do urządzenia każdą różnicę osobno (zbiorczej
+    /// komendy protokół nie ma — zakres 0 kasuje wpis) i rejestruje jedno cofnięcie,
+    /// które przywraca stan sprzed zmiany tą samą drogą.
+    private func editMorphs(in variations: [Int], slot: Int, actionName: String,
+                            _ edit: (inout G2Patch, Int) -> Void)
+    {
+        let variations = variations.filter { slots[slot].morphAssignments.indices.contains($0) }
+        let before = Dictionary(uniqueKeysWithValues: variations.map { ($0, slots[slot].morphs(in: $0)) })
+        for variation in variations {
+            edit(&slots[slot], variation)
+        }
+        var changed = false
+        for variation in variations {
+            let old = before[variation] ?? []
+            let new = slots[slot].morphs(in: variation)
+            guard old != new else { continue }
+            changed = true
+            sendMorphDifference(from: old, to: new, slot: slot, variation: variation)
+        }
+        guard changed else { return }
         undoManager.registerUndo(withTarget: self) { target in
-            target.copyMorph(from: destination, to: source, slot: slot)
+            target.editMorphs(in: variations, slot: slot, actionName: actionName) { patch, variation in
+                patch.morphAssignments[variation] = before[variation] ?? []
+            }
         }
-        undoManager.setActionName("Copy Morph")
-        for entry in before {
+        undoManager.setActionName(actionName)
+    }
+
+    private func sendMorphDifference(from old: [G2MorphAssignment], to new: [G2MorphAssignment],
+                                     slot: Int, variation: Int)
+    {
+        let key = { (a: G2MorphAssignment) in [Int(a.location), a.moduleID, a.paramIndex, a.morph] }
+        let newKeys = Set(new.map(key))
+        for entry in old where !newKeys.contains(key(entry)) {
             onMorphRangeChange?(slot, entry.location, entry.moduleID, entry.paramIndex,
-                                source, 0, variation)
+                                entry.morph, 0, variation)
         }
-        for entry in moved {
+        for entry in new where !old.contains(entry) {
             onMorphRangeChange?(slot, entry.location, entry.moduleID, entry.paramIndex,
                                 entry.morph, entry.range, variation)
         }
@@ -960,6 +997,45 @@ public final class PatchState {
         }
         undoManager.setActionName("Change Morph Source")
         onPatchSettingChange?(slot, Self.morphSettingsModule, morph + G2Morph.count, new, variation)
+    }
+
+    /// Nazwa morfu (podwójny klik na nazwie w pasku morfów, jak u Clavii). Nord mieści
+    /// 7 znaków ASCII (polskie litery bez ogonków); pusta nazwa wraca do domyślnej. Nazwy siedzą w sekcji 0x5B obszaru 2,
+    /// więc do Norda idą zmianą struktury (`syncPatch` → `0x42`), nie zmianą parametru.
+    public func setMorphName(_ morph: Int, name: String, slot: Int) {
+        guard slots.indices.contains(slot), (0 ..< G2Morph.count).contains(morph),
+              var labels = slots[slot].morphLabels else { return }
+        // Nord zna tylko ASCII: ogonki zdejmujemy („Łódź" → „Lodz"), resztę spoza ASCII pomijamy.
+        let plain = name.replacingOccurrences(of: "Ł", with: "L").replacingOccurrences(of: "ł", with: "l")
+            .folding(options: .diacriticInsensitive, locale: nil)
+        let printable = String(plain.unicodeScalars.filter { (0x20 ... 0x7E).contains($0.value) }.map(Character.init))
+            .trimmingCharacters(in: .whitespaces)
+        let clean = printable.isEmpty
+            ? G2MorphLabelSection.defaultNames[morph]
+            : String(printable.prefix(G2MorphLabelSection.nameLength))
+        guard labels.name(morph) != clean else { return }
+        // Brak sekcji = nazwy domyślne; cofnięcie wpisuje je jawnie, inaczej różnica patcha
+        // nie miałaby czego wysłać i Nord zostałby przy nowej nazwie.
+        let before = slots[slot].moduleCustomData[2] ?? G2MorphLabelSection.standard.raw
+        labels.setName(clean, morph: morph)
+        slots[slot].moduleCustomData[2] = labels.raw
+        registerMorphNamesRestore(before, slot: slot)
+        undoManager.setActionName("Rename Morph")
+        structureChanged(slot: slot)
+    }
+
+    private func restoreMorphNames(_ raw: [UInt8], slot: Int) {
+        guard slots.indices.contains(slot) else { return }
+        let current = slots[slot].moduleCustomData[2] ?? G2MorphLabelSection.standard.raw
+        slots[slot].moduleCustomData[2] = raw
+        registerMorphNamesRestore(current, slot: slot)
+        structureChanged(slot: slot)
+    }
+
+    private func registerMorphNamesRestore(_ raw: [UInt8], slot: Int) {
+        undoManager.registerUndo(withTarget: self) { target in
+            target.restoreMorphNames(raw, slot: slot)
+        }
     }
 
     /// Ustawienie patcha z arkusza Patch Settings (Glide, Bend, Vibrato, Arpeggiator…)
@@ -1010,24 +1086,6 @@ public final class PatchState {
         let variation = slots[slot].activeVariation
         guard slots[slot].variationSettings.indices.contains(variation) else { return 0 }
         return slots[slot].variationSettings[variation][keyPath: setting.keyPath]
-    }
-
-    /// Odtworzenie zdjętych przypisań (undo dla `clearMorph`).
-    private func restoreMorphs(_ entries: [G2MorphAssignment], morph: Int,
-                               variation: Int, slot: Int)
-    {
-        guard slots.indices.contains(slot) else { return }
-        for entry in entries {
-            slots[slot].setMorphRange(variation: variation, location: entry.location,
-                                      moduleID: entry.moduleID, paramIndex: entry.paramIndex,
-                                      morph: entry.morph, range: entry.range)
-            onMorphRangeChange?(slot, entry.location, entry.moduleID, entry.paramIndex,
-                                entry.morph, entry.range, variation)
-        }
-        undoManager.registerUndo(withTarget: self) { target in
-            target.clearMorph(morph, slot: slot)
-        }
-        undoManager.setActionName("Clear Morph")
     }
 
     // MARK: - Mutator
@@ -2583,6 +2641,32 @@ public final class PatchState {
         slots[selectedSlot].unusedCables(in: area).count
     }
 
+    /// „Disconnect Cables ▸" z menu modułu — kable zaznaczonych modułów, jeden krok undo.
+    public func disconnectCables(ofModules moduleIDs: Set<Int>, scope: CableDisconnectScope,
+                                 area: PatchArea)
+    {
+        mutateCables("Disconnect Cables") {
+            $0.disconnectCables(of: moduleIDs, scope: scope, in: area)
+        }
+    }
+
+    /// Ile kabli zdjęłoby „Disconnect Cables ▸" — menu wyszarza pusty wariant.
+    public func cableCount(ofModules moduleIDs: Set<Int>, scope: CableDisconnectScope,
+                           area: PatchArea) -> Int
+    {
+        slots[selectedSlot].cables(of: moduleIDs, scope: scope, in: area).count
+    }
+
+    /// „Disconnect All Cables" z menu tła — cały patch, Voice i FX.
+    public func disconnectAllCables() {
+        mutateCables("Disconnect All Cables") { $0.disconnectAllCables() }
+    }
+
+    /// Ile kabli ma cały patch — menu tła wyszarza „Disconnect All Cables" przy zerze.
+    public var totalCableCount: Int {
+        slots[selectedSlot].voiceCables.count + slots[selectedSlot].fxCables.count
+    }
+
     /// Wspólna oprawa operacji na kablach: zdjęcie stanu na undo + zgłoszenie zmiany.
     private func mutateCables(_ actionName: String, _ body: (inout G2Patch) -> Void) {
         let slot = selectedSlot
@@ -2606,11 +2690,14 @@ public final class PatchState {
         guard !existingIDs.isEmpty else { return }
         let snapshot = slots[slot]
         slots[slot].deleteModules(moduleIDs: existingIDs, in: area)
+        let changes = G2AssignmentChanges.split(snapshot, slots[slot])
+        publishAssignmentChanges(changes.beforeStructure, slot: slot)
         undoManager.registerUndo(withTarget: self) { [snapshot] target in
             target.restorePatch(snapshot, slot: slot)
         }
         undoManager.setActionName(existingIDs.count == 1 ? "Delete Module" : "Delete Modules")
         structureChanged()
+        publishAssignmentChanges(changes.afterStructure, slot: slot)
     }
 
     /// „Delete Unused Modules" z menu Patch — moduły, do których nie dochodzi ani nie
@@ -2730,11 +2817,36 @@ public final class PatchState {
     private func restorePatch(_ snapshot: G2Patch, slot: Int) {
         guard slots.indices.contains(slot) else { return }
         let current = slots[slot]
+        let changes = G2AssignmentChanges.split(current, snapshot)
+        publishAssignmentChanges(changes.beforeStructure, slot: slot)
         slots[slot] = snapshot
         undoManager.registerUndo(withTarget: self) { [current] target in
             target.restorePatch(current, slot: slot)
         }
         structureChanged(slot: slot)
+        publishAssignmentChanges(changes.afterStructure, slot: slot)
+    }
+
+    /// Gałki, CC, morfy i ustawienia patcha, które zmieniły się razem ze strukturą — po ⌘Z / ⇧⌘Z
+    /// (np. ponowione wstawienie bloku) i po skasowaniu modułów. Różnica struktury ich nie niesie.
+    /// Zgłaszane dwa razy: zwolnienia przypisań kasowanych modułów PRZED zmianą struktury,
+    /// reszta PO niej (`G2AssignmentChanges.split`) — kolejka urządzenia zachowuje tę kolejność.
+    public var onAssignmentChanges: ((_ slot: Int, _ changes: G2AssignmentChanges) -> Void)?
+
+    private func publishAssignmentChanges(_ changes: G2AssignmentChanges, slot: Int) {
+        guard !changes.isEmpty else { return }
+        var changes = changes
+        changes.refreshPage = shownParameterPage(slot: slot, touching: changes.knobs.keys)
+        onAssignmentChanges?(slot, changes)
+    }
+
+    /// Strona gałek, którą Nord pokazuje dla tego slotu, jeśli któraś z `knobs` na niej leży.
+    /// Nord nie odświeża ekranu bieżącej strony po (od)pięciu gałki — dopiero po ponownym
+    /// wybraniu strony, więc wysyłka kończy się jej wybraniem (sprawdzone na Nordzie 2026-10-24).
+    private func shownParameterPage(slot: Int, touching knobs: some Sequence<Int>) -> Int? {
+        guard slot == selectedSlot, !showsGlobalParameterPages else { return nil }
+        let page = storedParameterPage
+        return knobs.contains { $0 / G2KnobPages.knobsPerPage == page } ? page : nil
     }
 
     /// Podmienia CAŁY patch w slocie jako **jeden** krok Undo o własnej nazwie — tego
@@ -2871,6 +2983,12 @@ public final class PatchState {
             slots[slot].add(module: mod)
         }
 
+        // Podpisy modułów (sekcja 0x5B) pod nowe numery — bez tego wklejony mikser tracił nazwy kanałów.
+        let labels = content.modules.compactMap { clip in
+            clip.labelData.map { G2ModuleLabelSection.Entry(moduleID: clip.originalID, content: $0) }
+        }
+        slots[slot].addModuleLabels(labels, idMap: idMap, in: area)
+
         // Dodaj kable (tylko te których oba końce są w clipboardzie)
         for clip in content.cables {
             guard let fromID = idMap[clip.fromModule],
@@ -2894,6 +3012,36 @@ public final class PatchState {
 
         return Set(idMap.values)
     }
+
+    /// Wstawia cały patch z pliku (Building Block) do slotu z focusem jako jeden krok Undo,
+    /// razem z wybranymi rodzajami jego przypisań (morfy, gałki, CC).
+    /// Zwraca numery nowych modułów w każdym obszarze — kanwa zostawia je zaznaczone.
+    @discardableResult
+    public func insertBlock(_ block: G2Patch, area: PatchArea, column: Int, row: Int,
+                            carrying kinds: Set<G2BlockAssignmentKind> = []) -> [PatchArea: Set<Int>]
+    {
+        let slot = selectedSlot
+        guard slots.indices.contains(slot) else { return [:] }
+        let snapshot = slots[slot]
+        let insertion = slots[slot].insertBlock(block, dropArea: area, column: column, row: row,
+                                                carrying: kinds)
+        guard !insertion.modules.isEmpty else { return [:] }
+        undoManager.registerUndo(withTarget: self) { [snapshot] target in
+            target.restorePatch(snapshot, slot: slot)
+        }
+        undoManager.setActionName("Insert Block")
+        structureChanged(slot: slot)
+        if insertion.hasAssignments {
+            var insertion = insertion
+            insertion.refreshPage = shownParameterPage(slot: slot, touching: insertion.knobs.keys)
+            onBlockAssignmentsInsert?(slot, insertion)
+        }
+        return insertion.modules
+    }
+
+    /// Przypisania, które przyszły z wstawionym blokiem. Zmiana struktury ich nie niesie
+    /// (`syncPatch` wysyła moduły i kable), więc jadą osobno — po modułach, do których należą.
+    public var onBlockAssignmentsInsert: ((_ slot: Int, _ insertion: G2BlockInsertion) -> Void)?
 
     public func moveModule(moduleID: Int, newColumn: Int, newRow: Int,
                            area: PatchArea, push: G2Patch.PushDirection = .down)

@@ -52,11 +52,23 @@ struct PatchCanvasCommands {
     /// „Delete Unused Cables".
     var deleteUnusedCables: (() -> Void)?
     var unusedCableCount: (() -> Int)?
+    /// „Disconnect Cables ▸" z menu modułu — kable zaznaczonych modułów.
+    var disconnectModuleCables: ((_ moduleIDs: Set<Int>, CableDisconnectScope) -> Void)?
+    var moduleCableCount: ((_ moduleIDs: Set<Int>, CableDisconnectScope) -> Int)?
+    /// „Disconnect All Cables" z menu tła — cały patch.
+    var disconnectAllCables: (() -> Void)?
+    var totalCableCount: (() -> Int)?
 
     // MARK: - Moduły
 
     /// „Paste Params" — same wartości ze schowka na wskazane moduły.
     var pasteParams: ((_ moduleIDs: Set<Int>) -> Void)?
+    /// Sekcja 0x5B obszaru — kopiowanie (⌘C z menu modułu) zabiera podpisy modułów.
+    var moduleLabels: (() -> G2ModuleLabelSection?)?
+    /// „Save Selection as Block…" — wskazane moduły jako nowy plik w folderze bloków.
+    var saveModulesAsBlock: ((_ moduleIDs: Set<Int>) -> Void)?
+    /// Wskazane moduły jako blok — wyciągnięte z kanwy na listę Patches ▸ Blocks.
+    var blockFromModules: ((_ moduleIDs: Set<Int>) -> G2Patch?)?
     /// „Delete Unused Modules" z menu tła.
     var deleteUnusedModules: (() -> Void)?
     var unusedModuleCount: (() -> Int)?

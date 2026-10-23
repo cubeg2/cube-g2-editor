@@ -143,4 +143,48 @@ final class G2PatchDiffTests: XCTestCase {
         XCTAssertEqual(diff.modulesToAdd.map(\.area), [.fx])
         XCTAssertTrue(diff.modulesToDelete.isEmpty)
     }
+
+    // MARK: - Podpisy parametrów (0x5B → 0x42)
+
+    private func labelSection(_ entries: [(Int, [UInt8])], area: UInt8 = 1) -> [UInt8] {
+        G2ModuleLabelSection(area: area, entries: entries.map { .init(moduleID: $0.0, content: $0.1) }).raw
+    }
+
+    /// Nowy moduł dostaje swój wpis, zmieniony wpis idzie jeszcze raz, niezmieniony nie.
+    func testLabelsOfNewAndChangedModulesAreWritten() {
+        var old = G2Patch()
+        old.voiceModules = [G2Module(id: 1, typeID: 184, area: .voice), G2Module(id: 2, typeID: 184, area: .voice)]
+        old.moduleCustomData[1] = labelSection([(1, [1]), (2, [2])])
+        var new = old
+        new.voiceModules.append(G2Module(id: 3, typeID: 184, area: .voice))
+        new.moduleCustomData[1] = labelSection([(1, [1]), (2, [9]), (3, [3])])
+
+        let diff = G2PatchDiff.between(old, new)
+
+        XCTAssertEqual(diff.labelsToWrite.map(\.moduleID), [2, 3])
+        XCTAssertEqual(diff.labelsToWrite.map(\.content), [[9], [3]])
+        XCTAssertTrue(diff.labelsToWrite.allSatisfy { $0.location == 1 })
+    }
+
+    /// Nazwy morfów to w obszarze 2 jeden wpis modułu 1.
+    func testChangedMorphNamesAreWrittenAsModuleOneOfArea2() {
+        let old = G2Patch()
+        var new = old
+        var names = G2MorphLabelSection.standard
+        names.setName("DL Cut", morph: 0)
+        new.moduleCustomData[2] = names.raw
+
+        let writes = G2PatchDiff.between(old, new).labelsToWrite
+
+        XCTAssertEqual(writes.map(\.location), [2])
+        XCTAssertEqual(writes.first?.moduleID, 1)
+        XCTAssertEqual(writes.first?.content.count, 80)
+    }
+
+    func testSameLabelsWriteNothing() {
+        var patch = G2Patch()
+        patch.voiceModules = [G2Module(id: 1, typeID: 184, area: .voice)]
+        patch.moduleCustomData[1] = labelSection([(1, [1])])
+        XCTAssertTrue(G2PatchDiff.between(patch, patch).isEmpty)
+    }
 }

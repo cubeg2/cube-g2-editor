@@ -29,6 +29,34 @@ public struct G2Connector: Hashable, Sendable {
     }
 }
 
+/// Które kable zaznaczonych modułów zdejmuje „Disconnect Cables ▸".
+public enum CableDisconnectScope: CaseIterable, Sendable {
+    /// Wszystkie, także te do reszty patcha.
+    case all
+    /// Tylko między zaznaczonymi modułami.
+    case insideSelection
+    /// Tylko łączące zaznaczenie z resztą patcha — grupa zostaje okablowana w środku.
+    case toRestOfPatch
+
+    public var title: String {
+        switch self {
+        case .all: "All"
+        case .insideSelection: "Inside Selection"
+        case .toRestOfPatch: "To Rest of Patch"
+        }
+    }
+
+    public func includes(_ cable: G2Cable, modules: Set<Int>) -> Bool {
+        let from = modules.contains(cable.fromModule)
+        let to = modules.contains(cable.toModule)
+        switch self {
+        case .all: return from || to
+        case .insideSelection: return from && to
+        case .toRestOfPatch: return from != to
+        }
+    }
+}
+
 public extension G2Cable {
     /// Koniec źródłowy — wyjście albo (przy kablu wejście→wejście) wejście.
     var sourceConnector: G2Connector {
@@ -118,7 +146,13 @@ public extension G2Patch {
     /// łańcuch z powrotem**: to, co szło dalej z tego gniazda, dostaje sygnał
     /// prosto ze źródła usuniętego kabla. Instrukcja: „Deletes the connection.
     /// Any remaining cable chains will be rerouted."
-    mutating func disconnectCable(_ cable: G2Cable, in area: PatchArea) {
+    ///
+    /// `keepOnward` — przepięcie, którego nie robić: kabel dalej w szereg zostaje
+    /// wtedy, jak był. Korzysta z tego `disconnectCables(of:scope:in:)`, żeby nie
+    /// przepinać kabla w miejsce, z którego i tak zaraz by go zdjęło.
+    mutating func disconnectCable(_ cable: G2Cable, in area: PatchArea,
+                                  keepOnward: (G2Cable) -> Bool = { _ in false })
+    {
         let dropped = cable.destinationConnector
         let source = cable.sourceConnector
         remove(cable: cable)
@@ -128,11 +162,12 @@ public extension G2Patch {
         // to on karmił gniazdo, które właśnie odpięliśmy.
         let rest = cables(in: area).filter { $0.sourceConnector == dropped }
         for onward in rest {
-            remove(cable: onward)
             var rerouted = onward
             rerouted.fromModule = source.moduleID
             rerouted.fromConnector = source.index
             rerouted.sourceIsOutput = source.isOutput
+            if keepOnward(rerouted) { continue }
+            remove(cable: onward)
             // Bez duplikatów — źródło mogło już karmić ten sam cel.
             if !cables(in: area).contains(where: { $0.connectsSameAs(rerouted) }) {
                 add(cable: rerouted)
@@ -151,6 +186,36 @@ public extension G2Patch {
         for member in cableChain(containing: cable, in: area) {
             remove(cable: member)
         }
+    }
+
+    // MARK: - Hurtem: kable grupy modułów, cały patch
+
+    /// Kable zaznaczonych modułów, które zdjęłoby „Disconnect Cables ▸".
+    func cables(of moduleIDs: Set<Int>, scope: CableDisconnectScope,
+                in area: PatchArea) -> [G2Cable]
+    {
+        cables(in: area).filter { scope.includes($0, modules: moduleIDs) }
+    }
+
+    /// „Disconnect Cables ▸" z menu modułu — kabel po kablu jak „Disconnect", więc
+    /// łańcuch przechodzący przez grupę zszywa się ze źródłem. Kabel nie jest
+    /// przepinany tam, gdzie znów pasowałby do zakresu: przy „To Rest of Patch"
+    /// zostają dzięki temu kable wewnątrz grupy, a nie wędrują na zewnątrz.
+    mutating func disconnectCables(of moduleIDs: Set<Int>, scope: CableDisconnectScope,
+                                   in area: PatchArea)
+    {
+        let matches = { (cable: G2Cable) in scope.includes(cable, modules: moduleIDs) }
+        // Każdy krok zmniejsza liczbę kabli o co najmniej jeden, więc pętla się kończy.
+        while let cable = cables(in: area).first(where: matches) {
+            disconnectCable(cable, in: area, keepOnward: matches)
+        }
+        recolorUnusedChains(in: area)
+    }
+
+    /// „Disconnect All Cables" z menu tła — oba obszary, Voice i FX.
+    mutating func disconnectAllCables() {
+        voiceCables.removeAll()
+        fxCables.removeAll()
     }
 
     // MARK: - Kolor

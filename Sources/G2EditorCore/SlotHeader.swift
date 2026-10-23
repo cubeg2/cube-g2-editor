@@ -22,6 +22,8 @@ public struct SlotHeader: Equatable {
     public var morphModes: [Int]
     /// Czy do morfu jest w aktywnej wariacji przypisany jakikolwiek parametr.
     public var morphAssigned: [Bool]
+    /// Nazwy ośmiu morfów z patcha (`G2Patch.morphName`).
+    public var morphNames: [String]
     /// Czy na stronie gałek (0–14) siedzi jakiekolwiek przypisanie — menu
     /// „Assign to Knob" pisze wtedy „(used)".
     public var knobPageUsed: [Bool]
@@ -41,6 +43,7 @@ public struct SlotHeader: Equatable {
         morphModes = (0 ..< G2Morph.count).map { patch.morphMode($0, in: variation) }
         let assignedMorphs = Set(patch.morphs(in: variation).map(\.morph))
         morphAssigned = (0 ..< G2Morph.count).map { assignedMorphs.contains($0) }
+        morphNames = patch.morphNames
         knobPageUsed = (0 ..< G2KnobPages.pageCount).map { page in
             (0 ..< G2KnobPages.knobsPerPage).contains { patch.knobAssignment(page: page, slot: $0) != nil }
         }

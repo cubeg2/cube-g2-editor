@@ -10,10 +10,23 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum FilePanels {
-    /// Pokazuje okno zapisu i zwraca wybrany plik — `nil`, gdy użytkownik anulował.
+    /// Okno wyboru jednego pliku o danym rozszerzeniu — `nil`, gdy użytkownik anulował.
     @MainActor
-    static func saveURL(name: String, extension fileExtension: String) -> URL? {
+    static func openURL(extension fileExtension: String, directory: URL? = nil) -> URL? {
+        let panel = NSOpenPanel()
+        panel.directoryURL = directory
+        panel.allowedContentTypes = [contentType(for: fileExtension)]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    /// Pokazuje okno zapisu i zwraca wybrany plik — `nil`, gdy użytkownik anulował.
+    /// `directory` otwiera okno w tym folderze; bez niego macOS pokazuje ostatnio używany.
+    @MainActor
+    static func saveURL(name: String, extension fileExtension: String, directory: URL? = nil) -> URL? {
         let panel = NSSavePanel()
+        panel.directoryURL = directory
         // Sama nazwa, BEZ rozszerzenia: przy `allowedContentTypes` okno dokleja je samo.
         // Podane z rozszerzeniem dawało „Arpeggiaperc.pch2.pch2" (zgłoszenie 2026-09-26).
         panel.nameFieldStringValue = sanitized(name)

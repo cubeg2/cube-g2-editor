@@ -36,10 +36,12 @@ public enum G2Morph {
         return morph == 4 ? ["Knob", names[4], "G Wh 1"] : ["Knob", names[morph]]
     }
 
-    /// Ile parametrów da się przypisać do morfów w jednej wariacji. Limit jest
-    /// **edytora**, nie pliku: Clavia odmawia przypisania, gdy wariacja ma już 25
-    /// (`GetNumberOfMorphedParams(…) < 0x19` w `GetAssignMorphToParamMolecules`),
-    /// ale w kolekcji referencyjnej 100 z 32 652 wariacji ma więcej (rekord: 50),
+    /// Ile **parametrów** da się przypisać do morfów w jednej wariacji. Liczą się
+    /// parametry, nie wpisy: parametr pod trzema morfami to jeden. Parametr, który już
+    /// idzie za jakimkolwiek morfem, dostanie kolejny nawet przy komplecie
+    /// (`GetNumberOfMorphedParams(…) < 0x19 || IsParamMorphed(…)` w
+    /// `GetAssignMorphToParamMolecules`). Limit jest **edytora**, nie pliku:
+    /// w kolekcji referencyjnej 100 z 32 652 wariacji ma więcej (rekord: 50),
     /// więc przy wczytywaniu pliku niczego nie przycinamy.
     public static let maxAssignmentsPerVariation = 25
 }
@@ -115,7 +117,8 @@ public extension G2Patch {
     /// robi oryginał (BVerhue `AddMessClearMorph` wysyła zakres 0, urządzenie kasuje wpis).
     ///
     /// Zwraca `false`, gdy przypisania nie dało się dodać, bo wariacja ma już komplet
-    /// (`G2Morph.maxAssignmentsPerVariation`) — dokładnie ten warunek ma Clavia.
+    /// parametrów (`G2Morph.maxAssignmentsPerVariation`), a ten parametr nie idzie
+    /// jeszcze za żadnym morfem — dokładnie ten warunek ma Clavia.
     @discardableResult
     mutating func setMorphRange(variation: Int, location: UInt8, moduleID: Int,
                                 paramIndex: Int, morph: Int, range: Int) -> Bool
@@ -135,7 +138,10 @@ public extension G2Patch {
             morphAssignments[variation][index].range = clamped
             return true
         }
-        guard morphAssignments[variation].count < G2Morph.maxAssignmentsPerVariation else { return false }
+        guard morphedParameterCount(in: variation) < G2Morph.maxAssignmentsPerVariation
+            || !morphs(variation: variation, location: location, moduleID: moduleID,
+                       paramIndex: paramIndex).isEmpty
+        else { return false }
         let new = G2MorphAssignment(location: location, moduleID: moduleID,
                                     paramIndex: paramIndex, morph: morph, range: clamped)
         // Wstawiamy na miejsce wynikające z porządku pliku — (obszar, moduł, parametr,
@@ -158,19 +164,31 @@ public extension G2Patch {
         return removed
     }
 
-    /// Przenosi wszystkie przypisania jednego morfu na inny, zachowując zakresy
-    /// (Clavia: „Copy To ▸ Group N"). Zwraca listę przypisań PO zmianie.
+    /// Ile różnych parametrów idzie w wariacji za morfami (Clavia
+    /// `GetNumberOfMorphedParams`) — tym liczy się limit przypisań.
+    func morphedParameterCount(in variation: Int) -> Int {
+        Set(morphs(in: variation).map { [Int($0.location), $0.moduleID, $0.paramIndex] }).count
+    }
+
+    /// Kopiuje przypisania jednego morfu na inny z tymi samymi zakresami
+    /// (Clavia: „Copy To ▸ Group N"). Źródło zostaje — oryginał tylko przypisuje
+    /// grupę docelową, niczego nie zdejmuje. Parametr, który morf docelowy już miał,
+    /// dostaje zakres ze źródła. Zwraca przypisania, które się udały.
     @discardableResult
     mutating func copyMorph(from source: Int, to destination: Int, in variation: Int) -> [G2MorphAssignment] {
         guard morphAssignments.indices.contains(variation), source != destination,
               (0 ..< G2Morph.count).contains(source), (0 ..< G2Morph.count).contains(destination)
         else { return [] }
-        var moved: [G2MorphAssignment] = []
-        for i in morphAssignments[variation].indices where morphAssignments[variation][i].morph == source {
-            morphAssignments[variation][i].morph = destination
-            moved.append(morphAssignments[variation][i])
+        var copied: [G2MorphAssignment] = []
+        for entry in morphs(in: variation) where entry.morph == source {
+            guard setMorphRange(variation: variation, location: entry.location, moduleID: entry.moduleID,
+                                paramIndex: entry.paramIndex, morph: destination, range: entry.range)
+            else { continue }
+            copied.append(G2MorphAssignment(location: entry.location, moduleID: entry.moduleID,
+                                            paramIndex: entry.paramIndex, morph: destination,
+                                            range: entry.range))
         }
-        return moved
+        return copied
     }
 
     /// Wartość gałki morfu w danej wariacji (0–127).

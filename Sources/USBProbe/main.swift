@@ -25,6 +25,7 @@
 //   swift run USBProbe --setperfname "Empty perf"  # nazwa performance'u DO urządzenia (0x29)
 //   swift run USBProbe --perfheadertest         # zapis sekcji 0x11 (Hold/zakres klawiszy), z przywróceniem
 //   swift run USBProbe --perfheaderrules        # czy SAMA sekcja 0x11 ustawia sloty i zegar (bez 0x07/0x0F/0x3F)
+//   swift run USBProbe --uploadrules x.pch2 --slot D  # czy samo 0x37 zapala slot + zapytania Clavii po wgraniu
 //   swift run USBProbe --synthsettings          # ustawienia urządzenia (0x02 → 0x03): odczyt i rozpis pól
 //   swift run USBProbe --synthsettings-echo     # odsyła TEN SAM blok (0x03) i sprawdza odczytem — nic nie zmienia
 //   swift run USBProbe --synthsettings-write    # ZMIENIA dwa nieszkodliwe pola, sprawdza odczytem i przywraca
@@ -392,6 +393,13 @@ let loadFilePath: String? = {
     return args[index + 1]
 }()
 
+/// `--uploadrules <plik.pch2> [--slot D]` — co Nord robi sam po `0x37` bez selekcji slotów
+/// i co odpowiada na zapytania, które Clavia wysyła po wgraniu. Odwracalne.
+let uploadRulesPath: String? = {
+    guard let index = args.firstIndex(of: "--uploadrules"), index + 1 < args.count else { return nil }
+    return args[index + 1]
+}()
+
 /// `--loadperf <plik.prf2>` — CAŁY performance jednym komunikatem (`0x1A`), drogą
 /// oryginału. Sprawdza się sam: po wysyłce czyta cztery sloty na świeżo i porównuje je
 /// z plikiem, więc werdykt nie opiera się na odpowiedzi urządzenia. Działa też przeciw
@@ -542,6 +550,8 @@ let playSlot = slotArgument("--play-slot")
 let paramTestSlot = slotArgument("--paramtest-slot")
 let deleteTestSlot = slotArgument("--deletetest-slot")
 let liveTestSlot = slotArgument("--livetest-slot")
+let labelTestSlot = slotArgument("--labeltest-slot")
+let morphNameTestSlot = slotArgument("--morphnametest-slot")
 let listenSeconds: Double? = {
     guard let index = args.firstIndex(of: "--listen") else { return nil }
     guard index + 1 < args.count, let seconds = Double(args[index + 1]) else { return 20 }
@@ -2434,6 +2444,104 @@ do {
             try printSectionDiff(normalized(original), normalized(restored))
             printModuleDiff(normalized(original), normalized(restored))
         }
+    } else if let slot = morphNameTestSlot {
+        // Nazwa morfu na żywo: `0x42` w obszarze 2 (moduł 1 = osiem nazw morfów). Zmieniamy
+        // nazwę morfu 1, czytamy slot na świeżo, a na końcu przywracamy poprzednią.
+        let letter = Character(UnicodeScalar(65 + slot))
+        let original = patches[Int(slot)]
+        guard let before = original.morphLabels else {
+            print("Slot \(letter): sekcja nazw morfów nieczytelna — nie ma czego zmieniać.")
+            exit(1)
+        }
+        let testName = "ClTest"
+        var names = before
+        names.setName(testName, morph: 0)
+        var changed = original
+        changed.moduleCustomData[2] = names.raw
+        print("\n--- MORPH NAME TEST slot \(letter): morf 1 „\(before.name(0))” → „\(testName)” ---")
+
+        await manager.setLog { line in print(line) }
+        try await manager.selectSlot(slot)
+        let frames = try await manager.syncPatch(changed, toSlot: slot)
+        print("syncPatch: \(frames) ramek. Odczyt slotu na świeżo…")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await manager.disconnect()
+        try await manager.connect()
+        let readBack = await manager.patches[Int(slot)].morphLabels
+        let all = (0 ..< G2Morph.count).map { readBack?.name($0) ?? "?" }
+        print("Nazwy morfów po zapisie: \(all)")
+        if readBack?.name(0) == testName, (1 ..< G2Morph.count).allSatisfy({ readBack?.name($0) == before.name($0) }) {
+            print("✅ 0x42 w obszarze 2 DZIAŁA — Nord oddaje nową nazwę morfu 1, reszta bez zmian.")
+        } else {
+            print("❌ Nazwa nie wróciła tak, jak wysłana.")
+        }
+
+        print("\n--- Przywracam nazwę „\(before.name(0))” ---")
+        try await manager.selectSlot(slot)
+        _ = try await manager.syncPatch(original, toSlot: slot)
+        await manager.disconnect()
+        try await manager.connect()
+        let restored = await manager.patches[Int(slot)].morphLabels?.name(0)
+        print(restored == before.name(0)
+            ? "✅ Morf 1 znów „\(before.name(0))”."
+            : "⚠️ Morf 1 po przywróceniu: „\(restored ?? "?")”, oczekiwano „\(before.name(0))”.")
+    } else if let slot = labelTestSlot {
+        // Podpis parametru (`0x42`) na żywo: do slotu trafia nowy moduł z podpisem wziętym
+        // z prawdziwego bloku, potem świeży odczyt slotu mówi, czy urządzenie go zapamiętało.
+        // Na końcu moduł znika. Jedyny dowód skutku to odczyt — sam brak błędu nic nie znaczy.
+        let letter = Character(UnicodeScalar(65 + slot))
+        let blocks = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Developer/G2-reference/Ptches pch2 i prf2/NORDD G2 - OK/Bulding Blocks")
+        let files = (try? FileManager.default.contentsOfDirectory(at: blocks, includingPropertiesForKeys: nil)) ?? []
+        var sample: (module: G2Module, content: [UInt8], file: String)?
+        for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where file.pathExtension == "pch2" {
+            guard let block = try? PatchParser.parse(url: file).first,
+                  // Podpis z tekstem, nie pusty — inaczej test nie odróżni zapisu od zer.
+                  let entry = block.moduleLabels(in: .voice)?.entries.first(where: { $0.content.contains { $0 >= 0x41 } }),
+                  let module = block.voiceModules.first(where: { $0.id == entry.moduleID }) else { continue }
+            sample = (module, entry.content, file.lastPathComponent)
+            break
+        }
+        guard let sample else {
+            print("Brak bloku z podpisem w \(blocks.path) — nie ma czego wysłać.")
+            exit(1)
+        }
+        let original = patches[Int(slot)]
+        let newID = (Set(original.voiceModules.map(\.id)).max() ?? 0) + 1
+        var module = sample.module
+        module.id = newID
+        module.column = (original.voiceModules.map(\.column).max() ?? -1) + 1
+        module.row = 0
+        var changed = original
+        changed.voiceModules.append(module)
+        changed.addModuleLabels([G2ModuleLabelSection.Entry(moduleID: sample.module.id, content: sample.content)],
+                                idMap: [sample.module.id: newID], in: .voice)
+        print("\n--- LABEL TEST slot \(letter): moduł typeID \(module.typeID) z „\(sample.file)” jako id \(newID), podpis \(sample.content) ---")
+
+        await manager.setLog { line in print(line) }
+        try await manager.selectSlot(slot)
+        let frames = try await manager.syncPatch(changed, toSlot: slot)
+        print("syncPatch: \(frames) ramek. Odczyt slotu na świeżo…")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await manager.disconnect()
+        try await manager.connect()
+        let after = await manager.patches[Int(slot)]
+        let readBack = after.moduleLabels(in: .voice)?.entries.first { $0.moduleID == newID }?.content
+        if readBack == sample.content {
+            print("✅ 0x42 DZIAŁA — urządzenie oddaje podpis nowego modułu bajt w bajt.")
+        } else {
+            print("❌ Podpis nie wrócił (odczyt: \(readBack.map { "\($0)" } ?? "brak wpisu"), oczekiwano \(sample.content)).")
+        }
+
+        print("\n--- Sprzątanie: moduł testowy znika ---")
+        try await manager.selectSlot(slot)
+        _ = try await manager.syncPatch(original, toSlot: slot)
+        await manager.disconnect()
+        try await manager.connect()
+        let restored = await manager.patches[Int(slot)]
+        print(restored.voiceModules.contains { $0.id == newID }
+            ? "⚠️ Moduł testowy nadal w slocie \(letter)."
+            : "✅ Slot \(letter) bez modułu testowego.")
     } else if let slot = liveTestSlot {
         // Test skutku SUB_COMMAND_SET_PARAM (0x40) na żywo. To komenda COMMAND_WRITE_NO_RESP —
         // urządzenie jej nie potwierdza (patrz [[Docs/usb/actor]] „Real-time parametry") —
@@ -3134,6 +3242,125 @@ do {
                 && restored?.settings.masterClock == wasBPM
                 ? "✅ Sloty i zegar wróciły do stanu sprzed testu."
                 : "⚠️ NIE udało się przywrócić stanu — popraw sloty i tempo na froncie Norda.")
+        } catch {
+            print("⚠️ przywracanie nie powiodło się: \(error)")
+        }
+    } else if let path = uploadRulesPath {
+        // Co Nord robi SAM po `0x37`, gdy nikt nie dosyła selekcji slotów (`0x07`/`0x0F`)?
+        // Clavia po wgraniu `.pch2` nie wysyła nic poza `0x09` + `0x37` i zapytaniami — my
+        // dokładamy selekcję z pamięci podręcznej. Tu: slot docelowy najpierw wyciszony
+        // i bez klawiatury, potem samo `0x37` i odczyt nagłówka. Na koniec zapytania Clavii
+        // (`0x71` ×2, `0x70`, `0x04`, `0x3B`) z zapisem odpowiedzi. Test odwracalny: kopia
+        // slotu wraca tą samą drogą, a selekcja do stanu sprzed testu.
+        let slot = slotArgument("--slot") ?? 3
+        let letter = slotLabel(Int(slot))
+        let mode: Bool? = await (try? manager.readPerformanceMode()) ?? nil
+        print("\n--- UPLOADRULES slot \(letter): \(path) ---")
+        print(mode.map { $0 ? "tryb: PERFORMANCE" : "tryb: PATCH" } ?? "tryb: nie udało się odczytać")
+        guard let before = try? await manager.readPerformanceHeader() else {
+            print("❌ nie udało się odczytać nagłówka performance'u")
+            await manager.disconnect()
+            exit(1)
+        }
+        let wasEnabled = before.settings.slots.map(\.enabled)
+        let wasKeyboard = before.settings.slots.map(\.keyboard)
+        func describe(_ enabled: [Bool], _ keyboard: [Bool]) -> String {
+            (0 ..< G2UsbProtocol.maxSlots).map {
+                "\(slotLabel($0)):\(enabled[$0] ? "gra" : "—")\(keyboard[$0] ? "+kb" : "")"
+            }.joined(separator: "  ")
+        }
+        print("przed testem:      \(describe(wasEnabled, wasKeyboard))")
+
+        let original = patches[Int(slot)]
+        let backupData = try PatchParser.saveAll(originalData: PatchParser.emptyPatchFile, patches: [original])
+        let backupStream = try PatchParser.slotSectionStream(fileData: backupData, slot: 0)
+
+        // Slot docelowy cichy i bez klawiatury; grać i słuchać klawiatury musi inny slot,
+        // bo Nord nie przyjmie selekcji bez żadnego grającego.
+        var silent = wasEnabled
+        var silentKeys = wasKeyboard
+        silent[Int(slot)] = false
+        silentKeys[Int(slot)] = false
+        let other = Int(slot) == 0 ? 1 : 0
+        if !silent.contains(true) { silent[other] = true }
+        if !silentKeys.contains(true) { silentKeys[silent.firstIndex(of: true) ?? other] = true }
+        try await manager.setSlotSelection(silent, keyboard: silentKeys)
+        if let set = try? await manager.readPerformanceHeader() {
+            print("slot wyciszony:    \(describe(set.settings.slots.map(\.enabled), set.settings.slots.map(\.keyboard)))")
+        }
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        var patch = try PatchParser.parseFile(data: data).patches.first ?? G2Patch()
+        patch.fillMissingParameters()
+        let current = try PatchParser.saveAll(originalData: data, patches: [patch])
+        let stream = try PatchParser.slotSectionStream(fileData: current, slot: 0)
+        if patch.name.isEmpty { patch.name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent }
+
+        let notes = NotificationLog()
+        await manager.setNotificationHandler { note in notes.append(note) }
+        try await manager.sendPatch(patch, toSlot: slot, sectionStream: stream)
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let spontaneous = notes.all().filter { $0.note.subCommand == G2UsbProtocol.subResponsePatchLoad }
+        print("po samym 0x37: 0x72 samo z siebie × \(spontaneous.count)"
+            + spontaneous.map { " [slot \($0.note.slot): \(hexString($0.note.payload))]" }.joined())
+
+        let after = try? await manager.readPerformanceHeader()
+        let gotEnabled = after?.settings.slots.map(\.enabled) ?? []
+        let gotKeyboard = after?.settings.slots.map(\.keyboard) ?? []
+        if gotEnabled.count == G2UsbProtocol.maxSlots, gotKeyboard.count == G2UsbProtocol.maxSlots {
+            print("po samym 0x37:     \(describe(gotEnabled, gotKeyboard))")
+            print(gotEnabled[Int(slot)]
+                ? "    ✅ Nord SAM zapalił slot \(letter)"
+                : "    ❌ slot \(letter) dalej wyciszony — selekcję trzeba dosyłać")
+            print(gotKeyboard[Int(slot)]
+                ? "    ✅ Nord SAM dał slotowi \(letter) klawiaturę"
+                : "    ⚠️ slot \(letter) BEZ klawiatury — tego Nord sam nie robi")
+            print(gotEnabled.enumerated().allSatisfy { $0.offset == Int(slot) || $0.element == silent[$0.offset] }
+                ? "    ✅ pozostałe sloty nietknięte"
+                : "    ⚠️ pozostałe sloty zmieniły stan")
+        } else {
+            print("❌ nie udało się odczytać nagłówka po wgraniu")
+        }
+        // Nuty `0x56` trafiają tam, gdzie klawisze Norda — do slotów z klawiaturą. Bez
+        // klawiatury na slocie docelowym zagra inny slot, i właśnie to ma usłyszeć ucho.
+        print("👂 Gram C-E-G (po 1,5 s): słychać patch ze slotu \(letter) czy inny?")
+        for note: UInt8 in [60, 64, 67] {
+            try await manager.playNote(note, on: true)
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+            try await manager.playNote(note, on: false)
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+
+        print("\n--- Zapytania Clavii po wgraniu ---")
+        let version = await manager.slotVersion(slot)
+        let queries: [(String, [UInt8])] = [
+            ("0x71 voice", G2UsbProtocol.patchLoadRequestPayload(slot: slot, version: version, area: .voice)),
+            ("0x71 fx", G2UsbProtocol.patchLoadRequestPayload(slot: slot, version: version, area: .fx)),
+            ("0x70 FlushBlink — patrz na diody", [0x01, 0x28 + slot, version, 0x70]),
+            ("0x04 NumberOfVoices", [0x01, 0x2C, 0x41, 0x04]),
+            ("0x3B ClockInfo", G2UsbProtocol.clockInfoRequestPayload()),
+        ]
+        for (name, payload) in queries {
+            let capture = try await manager.diagnoseCommand(name: name, payload: payload, listenSeconds: 1.5)
+            let replies = capture.responses.map { String(format: "0x%02X", $0.subCommand ?? 0) + " " + hexString($0.payload) }
+            print("  \(name) [\(hexString(payload))] → \(replies.isEmpty ? "cisza" : replies.joined(separator: " | "))")
+        }
+        await manager.setNotificationHandler(nil)
+
+        print("\n--- Przywracam slot \(letter) i selekcję ---")
+        do {
+            // `diagnoseCommand` czyta oba punkty końcowe na surowo i potrafi rozerwać parę
+            // zapowiedź/dane — świeże połączenie przed przywracaniem (pierwszy przebieg
+            // 2026-10-24 bez niego: „did not acknowledge selecting slot 3").
+            await manager.disconnect()
+            try await manager.connect(readPatches: false)
+            try await manager.sendPatch(original, toSlot: slot, sectionStream: backupStream.isEmpty ? nil : backupStream)
+            try await manager.setSlotSelection(wasEnabled, keyboard: wasKeyboard)
+            let restored = try? await manager.readPerformanceHeader()
+            print(restored?.settings.slots.map(\.enabled) == wasEnabled
+                && restored?.settings.slots.map(\.keyboard) == wasKeyboard
+                ? "✅ Selekcja wróciła: \(describe(wasEnabled, wasKeyboard)); w slocie \(letter) znów \"\(original.name)\""
+                : "⚠️ Selekcja NIE wróciła — popraw sloty na froncie Norda.")
         } catch {
             print("⚠️ przywracanie nie powiodło się: \(error)")
         }

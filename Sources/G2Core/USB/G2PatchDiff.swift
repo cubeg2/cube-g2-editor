@@ -35,12 +35,21 @@ public struct G2PatchDiff {
     /// Moduły, które zostają, ale zmieniły uprate po zmianie kabli — do wysłania `0x2A`.
     /// Idą po kablach, jak w oryginale: najpierw połączenie, potem jego skutek.
     public var modulesToUprate: [G2Module] = []
+    /// Wpisy sekcji 0x5B (podpisy parametrów, nazwy morfów) nowych modułów i te, które się
+    /// zmieniły — do wysłania `0x42`. Wpis skasowanego modułu znika razem z nim.
+    public var labelsToWrite: [LabelWrite] = []
+
+    public struct LabelWrite: Equatable {
+        public var location: UInt8
+        public var moduleID: Int
+        public var content: [UInt8]
+    }
 
     public var isEmpty: Bool {
         cablesToDelete.isEmpty && modulesToDelete.isEmpty
             && modulesToAdd.isEmpty && cablesToAdd.isEmpty
             && modulesToRename.isEmpty && modulesToRecolor.isEmpty && modulesToMove.isEmpty
-            && modulesToUprate.isEmpty
+            && modulesToUprate.isEmpty && labelsToWrite.isEmpty
     }
 
     /// Tożsamością modułu jest para (obszar, id) **wraz z typem**: podmiana modułu
@@ -89,7 +98,23 @@ public struct G2PatchDiff {
                 rebuilt.contains(cable.fromModule) || rebuilt.contains(cable.toModule)
                     || !oldCables.contains(cable)
             }
+            diff.labelsToWrite += labelWrites(location: area.rawValue, old: old, new: new,
+                                              rebuilt: Set(added.map(\.id)))
         }
+        diff.labelsToWrite += labelWrites(location: 2, old: old, new: new, rebuilt: [])
         return diff
+    }
+
+    /// Wpisy, które Nord musi dostać: nowego modułu (Module New ich nie niesie) i zmienione.
+    private static func labelWrites(location: UInt8, old: G2Patch, new: G2Patch,
+                                    rebuilt: Set<Int>) -> [LabelWrite]
+    {
+        guard let raw = new.moduleCustomData[location], raw != old.moduleCustomData[location],
+              let section = G2ModuleLabelSection(raw: raw) else { return [] }
+        let before = old.moduleCustomData[location].flatMap(G2ModuleLabelSection.init(raw:))?.entries ?? []
+        let oldContent = Dictionary(before.map { ($0.moduleID, $0.content) }, uniquingKeysWith: { first, _ in first })
+        return section.entries
+            .filter { rebuilt.contains($0.moduleID) || oldContent[$0.moduleID] != $0.content }
+            .map { LabelWrite(location: location, moduleID: $0.moduleID, content: $0.content) }
     }
 }

@@ -77,7 +77,7 @@ extension PatchCanvasView {
                                       moduleID: module.id, paramIndex: paramIndex)
             guard !morphs.isEmpty else { return nil }
             return morphs
-                .map { Self.morphName($0.morph) }
+                .map { morphName($0.morph) }
                 .joined(separator: "+")
 
         case .knobAssignments:

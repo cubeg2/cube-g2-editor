@@ -23,7 +23,8 @@ struct RootView: View {
     /// Panele boczne — jeden system dla wszystkich (patrz `PanelController`).
     @State private var panels = PanelController()
     /// Folder z patchami pokazywany w panelu Banks — niezależny od podłączonego Norda.
-    @State private var library = DiskBankLibrary()
+    /// Wspólny z Settings ▸ General, gdzie też da się go wskazać.
+    @State private var library = DiskBankLibrary.patches
     /// Caps Lock → litery grają nuty na Nordzie, także przy zamkniętym oknie klawiatury.
     @State private var typing = MusicalTyping()
     /// Układ slotów — okna slotów (`SlotWindows`) trzeba otwierać i zamykać stąd,
@@ -95,6 +96,12 @@ struct RootView: View {
             state.onMidiControllerAssignmentChange = { [device] slot, cc, assignment in
                 device.sendMidiControllerAssignment(slot: slot, cc: cc, assignment: assignment)
             }
+            state.onBlockAssignmentsInsert = { [device] slot, insertion in
+                device.sendBlockAssignments(slot: slot, insertion: insertion)
+            }
+            state.onAssignmentChanges = { [device] slot, changes in
+                device.sendAssignmentChanges(slot: slot, changes: changes)
+            }
             state.onParameterPageChange = { [device] slot, page, global in
                 device.sendParameterPage(slot: slot, page: page, global: global)
             }
@@ -159,6 +166,18 @@ struct RootView: View {
             device.startAutoConnect()
             VirtualDeviceLauncher.shared.watch(device)
             typing.start(device: device)
+            // Na końcu: plik z Findera, który uruchomił edytor, wchodzi do gotowego mostu.
+            FinderOpen.shared.attach(state: state, device: device)
+        }
+        // `.pch2`/`.prf2` z Findera upuszczony gdziekolwiek w oknie otwiera się jak z File ▸ Open
+        // (kanwa ma własny cel w `DropTargetNSView`, który robi to samo).
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, FinderOpen.patchFile(in: [url]) != nil else { return }
+                DispatchQueue.main.async { FinderOpen.shared.open(url) }
+            }
+            return true
         }
         .fileImporter(
             isPresented: $showFileImporter,

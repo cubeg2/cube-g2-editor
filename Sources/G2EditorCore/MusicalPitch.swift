@@ -25,6 +25,24 @@ public enum MusicalPitch {
         return (note, Int(((exact - Double(note)) * 100).rounded()))
     }
 
+    /// Etykieta nuty dla odczytu w hercach — ale tylko w paśmie, w którym G2 stroi:
+    /// od `C-1` (8,18 Hz, dolna granica oscylatora). Niżej chodzi LFO jako modulator
+    /// i nazwa w rodzaju „A-3” byłaby myląca, więc nuty tam nie ma.
+    public static func pitchedLabel(forHz hz: Double) -> String? {
+        guard hz > 0, nearest(toHz: hz).note >= 0 else { return nil }
+        return label(forHz: hz)
+    }
+
+    /// Nuta, którą gra gałka strojenia oscylatora (TextFunc 60). Zerem wysokości
+    /// w G2 jest E4 = nuta 64 — tak liczy klawiatura i KBT — więc Coarse jest wprost
+    /// numerem nuty MIDI, a Fine przesuwa o mniej niż pół tonu i nazwy nie zmienia.
+    /// `nil` dla trybów, w których nuty nie ma: Fac i Part podają stosunek
+    /// częstotliwości, PShift — przesunięcie, nie wysokość.
+    public static func oscTuningName(freqMode: Int, coarse: Int) -> String? {
+        guard freqMode == 0 || freqMode == 1, (0 ... 127).contains(coarse) else { return nil }
+        return name(ofMidiNote: coarse)
+    }
+
     /// „A3 +12 ct", „C4 ±0 ct" — odczyt pod kursorem w oknie Spectrum.
     public static func label(forHz hz: Double) -> String {
         let (note, cents) = nearest(toHz: hz)

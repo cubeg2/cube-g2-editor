@@ -150,13 +150,13 @@ public enum PluginAutomation {
             let morph = assignment.paramIndex % G2Morph.count
             if assignment.paramIndex < G2Morph.count {
                 let value = patch.morphDial(morph, in: variation)
-                return KnobTarget(kind: .morphDial(morph), module: "Morph", parameter: G2Morph.names[morph],
+                return KnobTarget(kind: .morphDial(morph), module: "Morph", parameter: patch.morphName(morph),
                                   value: value, maxValue: 127, text: "\(value)")
             }
             guard assignment.paramIndex < G2Morph.count * 2 else { return nil }
             let options = G2Morph.sourceOptions(morph: morph)
             let value = min(patch.morphMode(morph, in: variation), options.count - 1)
-            return KnobTarget(kind: .morphSource(morph), module: "Morph", parameter: "\(G2Morph.names[morph]) Src",
+            return KnobTarget(kind: .morphSource(morph), module: "Morph", parameter: "\(patch.morphName(morph)) Src",
                               value: value, maxValue: options.count - 1, text: options[value])
         }
         guard let setting = G2PatchSetting.allCases.first(where: {

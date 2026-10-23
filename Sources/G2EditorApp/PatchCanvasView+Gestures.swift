@@ -9,6 +9,7 @@ extension PatchCanvasView {
     var combinedDragGesture: some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .local)
             .onChanged { g in
+                guard !exportingBlock else { return }
                 let startLP = CGPoint(x: g.startLocation.x / zoom, y: g.startLocation.y / zoom)
                 let curLP = CGPoint(x: g.location.x / zoom, y: g.location.y / zoom)
 
@@ -100,7 +101,8 @@ extension PatchCanvasView {
                 }
 
                 // ── Module drag ──────────────────────────────────────────────
-                if moduleDrag != nil {
+                if let drag = moduleDrag {
+                    if startBlockExportIfOutside(drag) { return }
                     moduleDrag?.dragOffset = CGSize(
                         width: (g.location.x - g.startLocation.x) / zoom,
                         height: (g.location.y - g.startLocation.y) / zoom
@@ -161,6 +163,7 @@ extension PatchCanvasView {
                     rubberBandStart = nil
                     rubberBandCurrent = nil
                 }
+                guard !exportingBlock else { return }
                 let endLP = CGPoint(x: g.location.x / zoom, y: g.location.y / zoom)
 
                 // Rubber-band → toggle zaznaczenia modułów w prostokącie
@@ -204,6 +207,25 @@ extension PatchCanvasView {
                     }
                 }
             }
+    }
+
+    /// Chwytane ZAZNACZONE moduły wyjechały poza widoczną kanwę: przesuwanie się kończy (moduły
+    /// wracają na miejsce), a zaczyna zwykłe przeciąganie bloku — na listę Patches ▸ Blocks albo
+    /// na jej folder, gdzie zapisuje się pod nazwą z okienka (`BlockExportDragData`). Moduł
+    /// niezaznaczony zostaje przy przesuwaniu (decyzja użytkownika 2026-10-23).
+    func startBlockExportIfOutside(_ drag: ModuleDragState) -> Bool {
+        guard selectedModuleIDs.contains(drag.moduleID) else { return false }
+        guard let view = dragSource.view, view.pointerLeftVisibleCanvas else { return false }
+        let ids = Set([drag.moduleID] + drag.extraModules.map(\.id))
+        guard let block = commands.blockFromModules?(ids) else { return false }
+        let preview = BlockDragPreview(name: ids.count == 1 ? "1 module" : "\(ids.count) modules", load: nil)
+        guard let image = ImageRenderer(content: preview).nsImage,
+              view.beginBlockExport(BlockExportDragData.begin(block), image: image,
+                                    ended: { exportingBlock = false })
+        else { return false }
+        moduleDrag = nil
+        exportingBlock = true
+        return true
     }
 
     /// Zakres morfu z focusem dla parametru w bieżącej wariacji — 0, gdy nie przypisany.

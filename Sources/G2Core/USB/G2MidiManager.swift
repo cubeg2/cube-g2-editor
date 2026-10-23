@@ -1531,6 +1531,12 @@ public actor G2MidiManager {
                 frames += 1
             }
 
+            // Podpisy parametrów i nazwy morfów (`0x42`) — po parametrach, jak w oryginale
+            // (`GetNewModulesMolecules`: ParamDump → CustomDataDump).
+            try await send(diff.labelsToWrite.map {
+                G2UsbProtocol.setParamLabelMolecule(location: $0.location, moduleID: $0.moduleID, content: $0.content)
+            }, "ParamLabel")
+
             patches[Int(slot)] = patch
             return frames
         }

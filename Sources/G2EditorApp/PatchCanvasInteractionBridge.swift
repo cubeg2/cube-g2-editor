@@ -11,6 +11,7 @@ import SwiftUI
 //   • updateDraggingItemsForDrop — powiększa drag image do canvas-zoom
 //   • hitTest zwraca nil       — nie przechwytuje normalnych zdarzeń myszy
 //   • performDragOperation     — odczytuje typeID ze schowka, oblicza pozycję gridu
+//   • pliki z Findera          — `.pch2`/`.prf2` otwierają się (`FinderOpen`), jak w reszcie okna
 
 final class DropTargetNSView: NSView {
     var zoom: CGFloat = 1.0
@@ -18,10 +19,17 @@ final class DropTargetNSView: NSView {
     var onDropModule: ((Int, Int, Int) -> Void)? // typeID, col, row
     var onDropParameterPageKnob: ((Int, CGPoint) -> Bool)?
     var onDropModuleColor: ((UInt8, CGPoint) -> Bool)?
+    /// Building Block z listy Blocks — plik, kolumna i wiersz lewego górnego rogu.
+    var onDropBlock: ((URL, Int, Int) -> Bool)?
+    /// Blok wisi nad kanwą (`nil` = wyszedł albo upuszczony) — dla ducha bloku.
+    var onBlockHover: ((BlockDropHover?) -> Void)?
+    private var lastBlockHover: BlockDropHover?
+    /// Koniec przeciągania bloku wyciągniętego z kanwy — kanwa wraca do zwykłych gestów.
+    var onBlockExportEnded: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        registerForDraggedTypes([.string])
+        registerForDraggedTypes([.string, .fileURL])
     }
 
     @available(*, unavailable)
@@ -43,14 +51,32 @@ final class DropTargetNSView: NSView {
     // MARK: NSDraggingDestination
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // Moduły wyciągnięte z tej kanwy jako blok — wracają na nią bez skutku.
+        if let string = sender.draggingPasteboard.string(forType: .string),
+           BlockExportDragData.isExport(string) { return [] }
+        // Plik z Findera zostaje z obrazkiem Findera — otwiera się, ducha nie ma.
+        if let files = FinderOpen.files(on: sender.draggingPasteboard) {
+            return FinderOpen.patchFile(in: files) == nil ? [] : .copy
+        }
         if let string = sender.draggingPasteboard.string(forType: .string) {
             // Gałka strony parametrów i kwadracik koloru niosą własny obrazek
             // przeciągania — tylko moduł z biblioteki dostaje ducha rysowanego
             // przez SwiftUI, więc tylko jemu chowamy obrazek systemowy.
             if ParameterPageDragData.parse(string) != nil { return .move }
             if ModuleColorDragData.parse(string) != nil { return .copy }
+            // Blok ma własnego ducha (`BlockDropGhost`) — obrazek wiersza listy by go zasłaniał.
+            if let url = BuildingBlockDragData.parse(string) {
+                hideDragImage(sender)
+                reportBlockHover(url, sender)
+                return .copy
+            }
         }
         // Ukryj OS drag image — SwiftUI ghost przejmuje nad canvasem.
+        hideDragImage(sender)
+        return .copy
+    }
+
+    private func hideDragImage(_ sender: NSDraggingInfo) {
         let tiny = NSImage(size: NSSize(width: 1, height: 1))
         sender.enumerateDraggingItems(options: [], for: self,
                                       classes: [NSPasteboardItem.self],
@@ -58,16 +84,44 @@ final class DropTargetNSView: NSView {
         { item, _, _ in
             item.setDraggingFrame(CGRect(x: -200, y: -200, width: 1, height: 1), contents: tiny)
         }
-        return .copy
+    }
+
+    /// Zgłasza nową pozycję bloku tylko przy zmianie pola siatki — ruch myszy w obrębie
+    /// jednego pola nie przerysowuje ducha.
+    private func reportBlockHover(_ url: URL, _ sender: NSDraggingInfo) {
+        let loc = convert(sender.draggingLocation, from: nil)
+        let grid = PatchLayout.gridPosition(at: CGPoint(x: loc.x / zoom, y: loc.y / zoom), rowOffset: rowOffset)
+        let hover = BlockDropHover(url: url, column: grid.column, row: grid.row)
+        guard hover != lastBlockHover else { return }
+        lastBlockHover = hover
+        onBlockHover?(hover)
+    }
+
+    private func endBlockHover() {
+        guard lastBlockHover != nil else { return }
+        lastBlockHover = nil
+        onBlockHover?(nil)
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         if let string = sender.draggingPasteboard.string(forType: .string),
-           ParameterPageDragData.parse(string) != nil
-        {
-            return .move
+           BlockExportDragData.isExport(string) { return [] }
+        if let files = FinderOpen.files(on: sender.draggingPasteboard) {
+            return FinderOpen.patchFile(in: files) == nil ? [] : .copy
+        }
+        if let string = sender.draggingPasteboard.string(forType: .string) {
+            if ParameterPageDragData.parse(string) != nil { return .move }
+            if let url = BuildingBlockDragData.parse(string) { reportBlockHover(url, sender) }
         }
         return .copy
+    }
+
+    override func draggingExited(_: NSDraggingInfo?) {
+        endBlockHover()
+    }
+
+    override func concludeDragOperation(_: NSDraggingInfo?) {
+        endBlockHover()
     }
 
     override func prepareForDragOperation(_: NSDraggingInfo) -> Bool {
@@ -75,16 +129,29 @@ final class DropTargetNSView: NSView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let string = sender.draggingPasteboard.string(forType: .string) else { return false }
-
         // convert nil = z układu okna do układu tego NSView (uwzględnia scroll offset)
         let loc = convert(sender.draggingLocation, from: nil)
         let logicalPoint = CGPoint(x: loc.x / zoom, y: loc.y / zoom)
+
+        if let files = FinderOpen.files(on: sender.draggingPasteboard) {
+            guard let url = FinderOpen.patchFile(in: files) else { return false }
+            // Pytanie o zapis zmian dopiero po zakończeniu przeciągania — modalne okno
+            // w trakcie trzymałoby Findera w zawieszeniu.
+            DispatchQueue.main.async { FinderOpen.shared.open(url) }
+            return true
+        }
+        guard let string = sender.draggingPasteboard.string(forType: .string) else { return false }
         if let payload = ParameterPageDragData.parse(string) {
             return onDropParameterPageKnob?(payload.index, logicalPoint) ?? false
         }
         if let color = ModuleColorDragData.parse(string) {
             return onDropModuleColor?(color, logicalPoint) ?? false
+        }
+        if let url = BuildingBlockDragData.parse(string) {
+            // Duch znika przed okienkiem przypisań — inaczej wisiałby nad nim.
+            endBlockHover()
+            let grid = PatchLayout.gridPosition(at: logicalPoint, rowOffset: rowOffset)
+            return onDropBlock?(url, grid.column, grid.row) ?? false
         }
 
         guard let typeID = Int(string) else { return false }
@@ -99,15 +166,70 @@ final class DropTargetNSView: NSView {
     }
 }
 
+// MARK: - Moduły wyciągnięte z kanwy jako blok
+
+/// Widok, który zaczyna systemowe przeciąganie bloku — kanwa sięga po niego z gestu SwiftUI.
+@MainActor
+final class CanvasDragSource {
+    weak var view: DropTargetNSView?
+}
+
+extension DropTargetNSView: NSDraggingSource {
+    /// Kursor poza widocznym kawałkiem kanwy (np. nad panelem Patches obok).
+    var pointerLeftVisibleCanvas: Bool {
+        guard let window, let event = NSApp.currentEvent, event.window === window else { return false }
+        return !visibleRect.contains(convert(event.locationInWindow, from: nil))
+    }
+
+    /// Zaczyna przeciąganie bloku z bieżącego ruchu myszy; `false`, gdy to nie ruch myszy.
+    func beginBlockExport(_ payload: String, image: NSImage, ended: @escaping () -> Void) -> Bool {
+        guard let event = NSApp.currentEvent, event.type == .leftMouseDragged else { return false }
+        let point = convert(event.locationInWindow, from: nil)
+        let item = NSDraggingItem(pasteboardWriter: payload as NSString)
+        item.setDraggingFrame(NSRect(x: point.x - image.size.width / 2, y: point.y - image.size.height / 2,
+                                     width: image.size.width, height: image.size.height),
+                              contents: image)
+        onBlockExportEnded = ended
+        beginDraggingSession(with: [item], event: event, source: self)
+        return true
+    }
+
+    func draggingSession(_: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation
+    {
+        context == .withinApplication ? .copy : []
+    }
+
+    func draggingSession(_: NSDraggingSession, endedAt _: NSPoint, operation _: NSDragOperation) {
+        // Sesja przeciągania połyka puszczenie przycisku, więc gest kanwy (SwiftUI) czekał na nie
+        // dalej i zjadał następne kliknięcie — pierwsze przesunięcie modułu po zapisie bloku
+        // nie działało (sprawdzone 2026-10-23). Oddajemy mu to puszczenie.
+        if let window, let up = NSEvent.mouseEvent(
+            with: .leftMouseUp, location: window.mouseLocationOutsideOfEventStream, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 0
+        ) {
+            window.sendEvent(up)
+        }
+        onBlockExportEnded?()
+        onBlockExportEnded = nil
+    }
+}
+
 struct DropTargetRepresentable: NSViewRepresentable {
     let zoom: CGFloat
     let rowOffset: Int
     let onDropModule: ((Int, Int, Int) -> Void)?
     let onDropParameterPageKnob: ((Int, CGPoint) -> Bool)?
     let onDropModuleColor: ((UInt8, CGPoint) -> Bool)?
+    let onDropBlock: ((URL, Int, Int) -> Bool)?
+    let onBlockHover: ((BlockDropHover?) -> Void)?
+    let dragSource: CanvasDragSource
 
     func makeNSView(context _: Context) -> DropTargetNSView {
-        DropTargetNSView()
+        let view = DropTargetNSView()
+        dragSource.view = view
+        return view
     }
 
     func updateNSView(_ v: DropTargetNSView, context _: Context) {
@@ -116,6 +238,8 @@ struct DropTargetRepresentable: NSViewRepresentable {
         v.onDropModule = onDropModule
         v.onDropParameterPageKnob = onDropParameterPageKnob
         v.onDropModuleColor = onDropModuleColor
+        v.onDropBlock = onDropBlock
+        v.onBlockHover = onBlockHover
     }
 }
 
@@ -223,6 +347,76 @@ struct SeqScrollHandlerRepresentable: NSViewRepresentable {
         v.rowOffset = rowOffset
         v.modules = modules
         v.onSeqScroll = onSeqScroll
+    }
+}
+
+// MARK: - Prawy klawisz i dwuklik nad kanwą
+
+/// Przechwytuje `rightMouseDown` i drugie kliknięcie lewym nad kanwą i podaje punkt
+/// w układzie patcha. Ta sama konstrukcja co `SeqScrollWheelNSView`: `hitTest` zwraca
+/// nil, więc widok jest przezroczysty dla zwykłych kliknięć, a zdarzenie łapie lokalny
+/// monitor.
+///
+/// Dwuklik czytamy z `clickCount` zdarzenia, a nie z gestu SwiftUI: gest dwukliku
+/// wstrzymywałby każde pojedyncze kliknięcie na kanwie, aż minie czas na drugie.
+final class CanvasRightClickNSView: NSView {
+    var zoom: CGFloat = 1.0
+    /// Zwraca `true`, gdy klik został obsłużony — wtedy zdarzenie nie leci dalej.
+    var onRightClick: ((CGPoint) -> Bool)?
+    var onDoubleClick: ((CGPoint) -> Bool)?
+
+    private var monitor: Any?
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func hitTest(_: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, monitor == nil {
+            // guard let self, nie optional chaining — patrz komentarz przy
+            // SeqScrollWheelNSView: `NSEvent??` spłaszczone do `nil` jest nie do
+            // odróżnienia od zwolnionego self i `?? event` przywracałoby zdarzenie.
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { [weak self] event in
+                guard let self else { return event }
+                return self.handleClick(event)
+            }
+        } else if window == nil, let m = monitor {
+            NSEvent.removeMonitor(m)
+            monitor = nil
+        }
+    }
+
+    private func handleClick(_ event: NSEvent) -> NSEvent? {
+        guard let myWindow = window, event.window === myWindow else { return event }
+        let handler = event.type == .rightMouseDown ? onRightClick
+            : event.clickCount == 2 ? onDoubleClick : nil
+        guard let handler else { return event }
+        let viewPt = convert(event.locationInWindow, from: nil)
+        // Poza kanwą (paski, panele boczne) nie ma czego trafiać.
+        guard bounds.contains(viewPt) else { return event }
+        let logicalPt = CGPoint(x: viewPt.x / zoom, y: viewPt.y / zoom)
+        return handler(logicalPt) ? nil : event
+    }
+}
+
+struct CanvasRightClickRepresentable: NSViewRepresentable {
+    let zoom: CGFloat
+    var onRightClick: ((CGPoint) -> Bool)?
+    var onDoubleClick: ((CGPoint) -> Bool)?
+
+    func makeNSView(context _: Context) -> CanvasRightClickNSView {
+        CanvasRightClickNSView()
+    }
+
+    func updateNSView(_ v: CanvasRightClickNSView, context _: Context) {
+        v.zoom = zoom
+        v.onRightClick = onRightClick
+        v.onDoubleClick = onDoubleClick
     }
 }
 

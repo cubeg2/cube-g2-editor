@@ -36,4 +36,18 @@ final class G2ParameterTextTests: XCTestCase {
     func testKnobParameterIsNotAButton() {
         XCTAssertNil(G2ParameterText.buttonOptions(moduleTypeID: 92, paramIndex: 0)) // FltClassic.Freq
     }
+
+    /// Pionowe ButtonRadio: BVerhue pisze napisy od góry, a wartość liczy od dołu
+    /// (kanwa zaznacza `count-1-wartość`). g2ools `params.py`: LpBpHpBr i LpBpHp — 0 = LP.
+    func testVerticalRadioButtonsCountFromTheBottom() throws {
+        let fltNord = try XCTUnwrap(ModuleDatabase.module(shortName: "FltNord"))
+        let filterType = try XCTUnwrap(fltNord.paramNames.firstIndex(of: "FilterType"))
+        let nord = try XCTUnwrap(G2ParameterText.buttonOptions(moduleTypeID: fltNord.id, paramIndex: filterType))
+        XCTAssertEqual((0 ..< 4).map(nord.text(for:)), ["LP", "BP", "HP", "BR"])
+
+        let drum = try XCTUnwrap(ModuleDatabase.module(shortName: "DrumSynth"))
+        let noiseMode = try XCTUnwrap(drum.paramNames.firstIndex(of: "NoiseFltMode"))
+        let drumOptions = try XCTUnwrap(G2ParameterText.buttonOptions(moduleTypeID: drum.id, paramIndex: noiseMode))
+        XCTAssertEqual((0 ..< 3).map(drumOptions.text(for:)), ["LP", "BP", "HP"])
+    }
 }

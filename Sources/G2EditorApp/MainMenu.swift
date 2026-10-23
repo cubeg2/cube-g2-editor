@@ -155,6 +155,12 @@ struct MainMenuCommands: Commands {
                 openIntoSlot?.wrappedValue = slot
                 fileOpen = true
             }
+            // Cały patch z pliku jako Building Block — to samo, co przeciągnięcie `.pch2` na kanwę.
+            Button("Insert Patch File…") {
+                guard let state else { return }
+                BuildingBlockInsert.insertFile(into: state, selections: selections)
+            }
+            .disabled(state?.isLoaded != true)
 
             Divider()
 
@@ -957,6 +963,15 @@ private struct EditPasteboardCommands: View {
         Button("Select All") { forward(#selector(NSText.selectAll(_:))) { selectAll() } }
             .keyboardShortcut("a", modifiers: [.command])
             .disabled(state?.isLoaded != true)
+
+        Divider()
+
+        // Bez skrótu, więc wygaszenie przy pustym zaznaczeniu niczego nie połyka.
+        Button("Save Selection as Block…") {
+            guard let state, let selection else { return }
+            BuildingBlockSave.save(from: state, area: area, moduleIDs: selection.targets)
+        }
+        .disabled(state?.isLoaded != true || selection?.isEmpty != false)
     }
 
     /// `sendAction` zwraca `false`, gdy nikt w łańcuchu respondera polecenia nie zna —
@@ -979,7 +994,8 @@ private struct EditPasteboardCommands: View {
         let area = area
         guard let content = G2ClipboardContent.make(modules: state.patch.modules(in: area),
                                                     cables: state.patch.cables(in: area),
-                                                    ids: selection.targets) else { return }
+                                                    ids: selection.targets,
+                                                    labels: state.patch.moduleLabels(in: area)) else { return }
         content.writeToPasteboard()
     }
 

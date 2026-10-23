@@ -50,6 +50,7 @@ extension PatchCanvasView {
                                                  codeRef: focus.paramIndex) ?? 0 ... 127
         let value = module.parameters[focus.paramIndex] + step
         let clamped = max(range.lowerBound, min(range.upperBound, value))
+        showKeyHint(focus)
         guard clamped != module.parameters[focus.paramIndex] else { return true }
         onParameterChange?(focus.moduleID, focus.paramIndex, clamped)
         return true
@@ -66,6 +67,7 @@ extension PatchCanvasView {
         // musi zostać w granicach parametru.
         let wanted = max(range.lowerBound - base,
                          min(range.upperBound - base, current + step))
+        showKeyHint(focus)
         guard wanted != current else { return true }
         onMorphRangeChange?(focus.moduleID, focus.paramIndex, wanted)
         return true
@@ -150,7 +152,7 @@ extension PatchCanvasView {
     }
 
     /// Prostokąt kontrolki z focusem w układzie canvasu.
-    private func focusRect(_ focus: ParameterFocus) -> CGRect? {
+    func focusRect(_ focus: ParameterFocus) -> CGRect? {
         let ro = rowOffset
         let mods = modules
         guard let module = mods.first(where: { $0.id == focus.moduleID }),

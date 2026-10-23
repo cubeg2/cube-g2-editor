@@ -153,21 +153,51 @@ final class MorphTests: XCTestCase {
         XCTAssertEqual(patch.morphs(in: 0).count, 25)
     }
 
-    func testClearAndCopyMoveWholeGroups() {
+    func testClearAndCopyWholeGroups() {
         var patch = makePatch()
         patch.setMorphRange(variation: 0, location: 1, moduleID: 2, paramIndex: 0, morph: 2, range: 30)
         patch.setMorphRange(variation: 0, location: 1, moduleID: 2, paramIndex: 1, morph: 2, range: -20)
         patch.setMorphRange(variation: 0, location: 1, moduleID: 3, paramIndex: 0, morph: 5, range: 40)
 
-        let moved = patch.copyMorph(from: 2, to: 6, in: 0)
-        XCTAssertEqual(moved.count, 2)
+        let copied = patch.copyMorph(from: 2, to: 6, in: 0)
+        XCTAssertEqual(copied.count, 2)
         XCTAssertEqual(patch.morphs(in: 0).filter { $0.morph == 6 }.map(\.range), [30, -20],
                        "zakresy jadą razem z przypisaniem")
-        XCTAssertTrue(patch.morphs(in: 0).filter { $0.morph == 2 }.isEmpty)
+        XCTAssertEqual(patch.morphs(in: 0).filter { $0.morph == 2 }.count, 2,
+                       "Clavia kopiuje — źródło zostaje")
 
         let removed = patch.clearMorph(6, in: 0)
         XCTAssertEqual(removed.count, 2)
-        XCTAssertEqual(patch.morphs(in: 0).count, 1, "morf 5 zostaje nietknięty")
+        XCTAssertEqual(patch.morphs(in: 0).count, 3, "morfy 2 i 5 zostają nietknięte")
+    }
+
+    /// Morf docelowy miał już ten parametr — ma być jeden wpis z zakresem ze źródła,
+    /// a nie dwa o tym samym kluczu; kolejność zostaje kolejnością pliku.
+    func testCopyMorphOverwritesTargetWithoutDuplicates() {
+        var patch = makePatch()
+        patch.setMorphRange(variation: 0, location: 1, moduleID: 2, paramIndex: 0, morph: 2, range: 30)
+        patch.setMorphRange(variation: 0, location: 1, moduleID: 2, paramIndex: 0, morph: 6, range: 10)
+        patch.setMorphRange(variation: 0, location: 1, moduleID: 2, paramIndex: 1, morph: 6, range: 5)
+
+        patch.copyMorph(from: 2, to: 6, in: 0)
+
+        let keys = patch.morphs(in: 0).map { [$0.moduleID, $0.paramIndex, $0.morph, $0.range] }
+        XCTAssertEqual(keys, [[2, 0, 2, 30], [2, 0, 6, 30], [2, 1, 6, 5]])
+    }
+
+    /// Limit liczy parametry, nie wpisy (`GetNumberOfMorphedParams`), a parametr już
+    /// morfowany dostaje kolejny morf mimo kompletu (`IsParamMorphed`).
+    func testLimitCountsParametersNotAssignments() {
+        var patch = makePatch()
+        for i in 0 ..< G2Morph.maxAssignmentsPerVariation {
+            patch.setMorphRange(variation: 0, location: 1, moduleID: i, paramIndex: 0, morph: 0, range: 10)
+        }
+        XCTAssertTrue(patch.setMorphRange(variation: 0, location: 1, moduleID: 0,
+                                          paramIndex: 0, morph: 3, range: 10),
+                      "drugi morf na tym samym parametrze nie zjada miejsca")
+        XCTAssertEqual(patch.morphedParameterCount(in: 0), 25)
+        XCTAssertFalse(patch.setMorphRange(variation: 0, location: 1, moduleID: 99,
+                                           paramIndex: 0, morph: 3, range: 10))
     }
 
     /// Kopia wariacji zabiera morfy — u Clavii robi to Morph Map (CopyParamSetting).
@@ -223,6 +253,56 @@ final class MorphTests: XCTestCase {
 
         XCTAssertTrue(state.patch.morphs(in: 0).isEmpty)
         XCTAssertEqual(zeroed, 2, "zbiorczej komendy nie ma — każde przypisanie osobno")
+    }
+
+    /// Cofnięcie kopii przywraca dokładnie stan sprzed niej — także przypisania,
+    /// które morf docelowy miał wcześniej (dawniej wędrowały do źródła).
+    func testCopyMorphUndoRestoresBothMorphs() {
+        var patch = makePatch()
+        patch.setMorphRange(variation: 0, location: 1, moduleID: 2, paramIndex: 0, morph: 2, range: 30)
+        patch.setMorphRange(variation: 0, location: 1, moduleID: 2, paramIndex: 1, morph: 6, range: 5)
+        let before = patch.morphs(in: 0)
+        let state = makeState(patch)
+        var reported: [(morph: Int, range: Int)] = []
+        state.onMorphRangeChange = { _, _, _, _, morph, range, _ in reported.append((morph, range)) }
+
+        undoStep(on: state) { state.copyMorph(from: 2, to: 6) }
+        XCTAssertEqual(state.patch.morphs(in: 0).count, 3)
+        XCTAssertEqual(reported.map(\.morph), [6], "do Norda idzie tylko nowe przypisanie")
+
+        state.undoManager.undo()
+        XCTAssertEqual(state.patch.morphs(in: 0), before)
+        XCTAssertEqual(reported.last?.range, 0, "cofnięcie kasuje kopię na urządzeniu")
+        state.undoManager.redo()
+        XCTAssertEqual(state.patch.morphs(in: 0).count, 3)
+    }
+
+    func testClearAllMorphsInOneOrAllVariationsWithOneUndo() {
+        var patch = makePatch()
+        for variation in [0, 3, 7] {
+            patch.setMorphRange(variation: variation, location: 1, moduleID: 2, paramIndex: 0, morph: 1, range: 30)
+            patch.setMorphRange(variation: variation, location: 1, moduleID: 2, paramIndex: 1, morph: 4, range: -9)
+        }
+        patch.setMorphRange(variation: 8, location: 1, moduleID: 2, paramIndex: 0, morph: 1, range: 30)
+        let state = makeState(patch)
+        var zeroed = 0
+        state.onMorphRangeChange = { _, _, _, _, _, range, _ in if range == 0 { zeroed += 1 } }
+
+        undoStep(on: state) { state.clearAllMorphs(allVariations: false) }
+        XCTAssertTrue(state.patch.morphs(in: 0).isEmpty)
+        XCTAssertEqual(state.patch.morphs(in: 3).count, 2, "inne wariacje nietknięte")
+        XCTAssertEqual(zeroed, 2)
+        state.undoManager.undo()
+        XCTAssertEqual(state.patch.morphs(in: 0).count, 2)
+
+        zeroed = 0
+        undoStep(on: state) { state.clearAllMorphs(allVariations: true) }
+        XCTAssertTrue((0 ..< 8).allSatisfy { state.patch.morphs(in: $0).isEmpty })
+        XCTAssertEqual(state.patch.morphs(in: 8).count, 1, "wariacja init zostaje")
+        XCTAssertEqual(zeroed, 6)
+        state.undoManager.undo()
+        XCTAssertEqual([0, 3, 7].map { state.patch.morphs(in: $0).count }, [2, 2, 2],
+                       "jedno ⌘Z przywraca wszystkie wariacje")
     }
 
     func testMorphDialGoesToThePatchSettingsArea() {

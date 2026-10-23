@@ -3,6 +3,8 @@
 //
 //   • **Nord** — co siedzi w pamięci urządzenia. Odczyt komendą `0x14`, ładowanie `0x0A`.
 //   • **Disk** — folder z plikami `.pch2`/`.prf2`, działa bez podłączonego sprzętu.
+//   • **Blocks** — drugi folder, z Building Blocks: ta sama lista co Disk, a wiersz
+//     `.pch2` przeciągnięty na kanwę wstawia cały blok → Docs/Plan projektu/08-building-blocks.md
 //
 // Rozdzielone przełącznikiem, bo to naprawdę dwie różne rzeczy: z Norda ładuje się
 // patcha DO SLOTU (urządzenie robi to samo, co PATCH LOAD na froncie), a z dysku
@@ -13,10 +15,291 @@ import G2Core
 import G2EditorCore
 import SwiftUI
 
+// MARK: - Biblioteki folderów
+
+extension DiskBankLibrary {
+    /// Folder patchy — panel Patches ▸ Disk i Settings ▸ General.
+    static let patches = DiskBankLibrary()
+    /// Folder Building Blocks — panel Patches ▸ Blocks i Settings ▸ General.
+    static let blocks = DiskBankLibrary(keyPrefix: "g2_blocks")
+}
+
+/// Blok przeciągany z listy Blocks na kanwę: w schowku przeciągania ścieżka pliku.
+enum BuildingBlockDragData {
+    private static let prefix = "g2-building-block:"
+
+    static func string(url: URL) -> String {
+        prefix + url.path
+    }
+
+    static func parse(_ string: String) -> URL? {
+        guard string.hasPrefix(prefix) else { return nil }
+        return URL(fileURLWithPath: String(string.dropFirst(prefix.count)))
+    }
+
+    /// Blok spod kursora dla ducha na kanwie — czytany raz na przeciąganie, nie przy
+    /// każdym ruchu myszy.
+    @MainActor
+    static func block(at url: URL) -> G2Patch? {
+        if let cached, cached.url == url { return cached.block }
+        let block = try? PatchParser.parse(url: url).first
+        cached = (url, block)
+        return block
+    }
+
+    @MainActor private static var cached: (url: URL, block: G2Patch?)?
+}
+
+/// Upuszczony blok: odczyt pliku i wstawka do slotu z focusem (jedno ⌘Z).
+@MainActor
+enum BuildingBlockInsert {
+    /// Numery nowych modułów obszaru `area`; pusty zbiór, gdy pliku nie da się wczytać
+    /// albo użytkownik zrezygnował w okienku przypisań.
+    static func insert(_ url: URL, into state: PatchState, area: PatchArea,
+                       column: Int, row: Int) -> Set<Int>
+    {
+        do {
+            guard let block = try PatchParser.parse(url: url).first else { return [] }
+            let name = url.deletingPathExtension().lastPathComponent
+            guard let kinds = chooseAssignments(for: state.patch.blockAssignmentPreview(block), name: name)
+            else { return [] }
+            return state.insertBlock(block, area: area, column: column, row: row, carrying: kinds)[area] ?? []
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "The block \u{201C}\(url.deletingPathExtension().lastPathComponent)\u{201D} could not be read."
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.runModal()
+            return []
+        }
+    }
+
+    /// File ▸ Insert Patch File… — dowolny `.pch2` jako blok w slocie z focusem: obszar Voice,
+    /// lewa krawędź, pod wszystkim, co już tam stoi, więc nic się nie przesuwa. Wstawione
+    /// moduły zostają zaznaczone, jak po upuszczeniu.
+    static func insertFile(into state: PatchState, selections: CanvasSelectionHub?) {
+        let folder = DiskBankLibrary.blocks.folder ?? DiskBankLibrary.patches.folder
+        guard let url = FilePanels.openURL(extension: "pch2", directory: folder) else { return }
+        let ids = insert(url, into: state, area: .voice, column: 0, row: state.patch.bottomRow(in: .voice))
+        guard !ids.isEmpty, let selection = selections?.voice else { return }
+        selection.moduleIDs = ids
+        selection.activeID = nil
+    }
+}
+
+extension BuildingBlockInsert {
+    /// Pola okienka, klucze, pod którymi pamiętają ostatni wybór, i wybór na start.
+    /// Ustawienia patcha i gałki morfów nadpisują to, co patch już ma — stąd na start odznaczone.
+    private static let fields: [(kind: G2BlockAssignmentKind, title: String, key: String, initial: Bool)] = [
+        (.morphs, "Morphs", "g2_block_carry_morphs", true),
+        (.knobs, "Knobs", "g2_block_carry_knobs", true),
+        (.midiControllers, "MIDI CC", "g2_block_carry_midi", true),
+        (.patchSettings, "Patch settings", "g2_block_carry_settings", false),
+        (.morphKnobs, "Morph knobs", "g2_block_carry_morph_knobs", false),
+        (.morphNames, "Morph names", "g2_block_carry_morph_names", false),
+    ]
+
+    /// Okienko „Morphs / Knobs / MIDI CC / Patch settings / Morph knobs" (decyzja D2): tylko
+    /// pola, które blok faktycznie ma — ustawienia i gałki morfów tylko wtedy, gdy różnią się od patcha.
+    /// Blok bez przypisań wstawia się bez pytania. `nil` = Cancel, nic się nie wstawia.
+    static func chooseAssignments(for preview: G2BlockInsertion, name: String) -> Set<G2BlockAssignmentKind>? {
+        let shown = fields.filter { (preview.offered[$0.kind] ?? 0) > 0 }
+        guard !shown.isEmpty else { return [] }
+        let defaults = UserDefaults.standard
+
+        let boxes = shown.map { field in
+            let box = NSButton(checkboxWithTitle: label(field.kind, field.title, preview), target: nil, action: nil)
+            box.toolTip = tooltip(field.kind, preview)
+            box.state = (defaults.object(forKey: field.key) as? Bool ?? field.initial) ? .on : .off
+            return box
+        }
+        let stack = NSStackView(views: boxes)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.frame = NSRect(x: 0, y: 0, width: 360, height: CGFloat(boxes.count) * 22)
+
+        let alert = NSAlert()
+        alert.messageText = "Insert \u{201C}\(name)\u{201D}"
+        let replaces = shown.contains { [.patchSettings, .morphKnobs, .morphNames].contains($0.kind) }
+        alert.informativeText = "This block has its own assignments and settings. Choose what comes with it."
+            + (replaces ? " Patch settings and morphs replace the ones in this patch." : "")
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Insert")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        var kinds = Set<G2BlockAssignmentKind>()
+        for (field, box) in zip(shown, boxes) {
+            defaults.set(box.state == .on, forKey: field.key)
+            if box.state == .on { kinds.insert(field.kind) }
+        }
+        return kinds
+    }
+
+    /// „Knobs — 6 (2 already used)", „Patch settings — Glide, Bend Range". Każda linijka musi się
+    /// zmieścić w szerokości alertu — dłuższy powód („13 skipped: over the limit of 25 per
+    /// variation") ucinał się w aplikacji (2026-10-23), więc pełne wyjaśnienie jest w dymku.
+    private static func label(_ kind: G2BlockAssignmentKind, _ title: String, _ preview: G2BlockInsertion) -> String {
+        switch kind {
+        case .patchSettings:
+            return "\(title) \u{2014} \(list(preview.settingNames))"
+        case .morphKnobs:
+            return "\(title) \u{2014} \(list(preview.morphKnobNames))"
+        case .morphNames:
+            return "\(title) \u{2014} \(list(preview.morphNames.sorted { $0.key < $1.key }.map(\.value)))"
+        case .morphs, .knobs, .midiControllers:
+            break
+        }
+        let offered = preview.offered[kind] ?? 0
+        let skipped = preview.skipped[kind] ?? 0
+        let unit = kind == .morphs ? (offered == 1 ? " parameter" : " parameters") : ""
+        var text = "\(title) \u{2014} \(offered)\(unit)"
+        if skipped > 0 {
+            text += kind == .morphs ? " (\(skipped) won\u{2019}t fit)" : " (\(skipped) already used)"
+        }
+        return text
+    }
+
+    /// Najwyżej dwie nazwy, reszta jako „+4 more" — pole ma się zmieścić w jednej linijce
+    /// alertu (przy trzech „Patch settings" ucinało się w aplikacji). Pełna lista jest w dymku.
+    private static func list(_ names: [String]) -> String {
+        let shown = names.prefix(2).joined(separator: ", ")
+        return names.count > 2 ? shown + " +\(names.count - 2) more" : shown
+    }
+
+    private static func tooltip(_ kind: G2BlockAssignmentKind, _ preview: G2BlockInsertion) -> String? {
+        switch kind {
+        case .patchSettings: "Replaces in this patch: " + preview.settingNames.joined(separator: ", ")
+        case .morphKnobs: "Knob position and source of: " + preview.morphKnobNames.joined(separator: ", ")
+        case .morphNames:
+            "Renames morphs in this patch: " + preview.morphNames.sorted { $0.key < $1.key }
+                .map { "\(G2Morph.names[$0.key]) \u{2192} \($0.value)" }.joined(separator: ", ")
+        case .morphs, .knobs, .midiControllers:
+            skippedReason(kind, preview.skipped[kind] ?? 0)
+        }
+    }
+
+    private static func skippedReason(_ kind: G2BlockAssignmentKind, _ skipped: Int) -> String? {
+        guard skipped > 0 else { return nil }
+        return switch kind {
+        case .morphs: "\(skipped) parameters stay behind: a variation takes at most 25 morphed parameters."
+        case .knobs: "\(skipped) knobs stay behind: this patch already uses them."
+        case .midiControllers: "\(skipped) CC numbers stay behind: this patch already uses them."
+        case .patchSettings, .morphKnobs, .morphNames: nil
+        }
+    }
+}
+
+/// Save Selection as Block… — zaznaczone moduły jako nowy `.pch2` w folderze bloków.
+@MainActor
+enum BuildingBlockSave {
+    static func save(from state: PatchState, area: PatchArea, moduleIDs: Set<Int>) {
+        guard let block = state.patch.block(from: area, moduleIDs: moduleIDs),
+              let url = FilePanels.saveURL(name: "New Block", extension: "pch2",
+                                           directory: DiskBankLibrary.blocks.folder)
+        else { return }
+        write(block, to: url)
+    }
+
+    /// Moduły wyciągnięte z kanwy na listę Blocks: okienko na nazwę, zapis do `folder`.
+    static func save(_ block: G2Patch, into folder: URL) {
+        let count = block.voiceModules.count + block.fxModules.count
+        let alert = NSAlert()
+        alert.messageText = "Save as Block"
+        alert.informativeText = (count == 1 ? "1 module goes" : "\(count) modules go")
+            + " into \u{201C}\(folder.lastPathComponent)\u{201D}."
+        let field = NSTextField(string: "New Block")
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 22)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+        let name = typed.isEmpty ? "New Block" : typed
+        let url = folder.appendingPathComponent(name).appendingPathExtension("pch2")
+        if FileManager.default.fileExists(atPath: url.path) {
+            let replace = NSAlert()
+            replace.messageText = "\u{201C}\(name)\u{201D} already exists. Do you want to replace it?"
+            replace.informativeText = "The block in this folder will be overwritten."
+            replace.alertStyle = .warning
+            replace.addButton(withTitle: "Replace")
+            replace.addButton(withTitle: "Cancel")
+            guard replace.runModal() == .alertFirstButtonReturn else { return }
+        }
+        write(block, to: url)
+    }
+
+    private static func write(_ block: G2Patch, to url: URL) {
+        var block = block
+        block.name = url.deletingPathExtension().lastPathComponent
+        do {
+            let data = try PatchParser.saveAll(originalData: PatchParser.emptyPatchFile, patches: [block])
+            try data.write(to: url, options: .atomic)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "The block \u{201C}\(block.name)\u{201D} could not be saved."
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
+        // Nowy plik od razu na liście Blocks, bez ręcznego odświeżania — i podświetlony.
+        DiskBankLibrary.blocks.highlightedFile = url
+        Task { await DiskBankLibrary.blocks.scan() }
+    }
+}
+
+/// Moduły wyciągnięte z kanwy na listę Blocks. W schowku przeciągania jest tylko znacznik;
+/// sam blok, zrobiony w chwili wyjazdu z kanwy, czeka tutaj.
+@MainActor
+enum BlockExportDragData {
+    private static let prefix = "g2-module-selection:"
+    private static var pending: (token: String, block: G2Patch)?
+
+    static func begin(_ block: G2Patch) -> String {
+        let token = UUID().uuidString
+        pending = (token, block)
+        return prefix + token
+    }
+
+    static func isExport(_ string: String) -> Bool {
+        string.hasPrefix(prefix)
+    }
+
+    static func block(for string: String) -> G2Patch? {
+        guard let pending, string == prefix + pending.token else { return nil }
+        return pending.block
+    }
+
+    /// Upuszczenie na listę Blocks albo na jej folder — blok zapisuje się do `folder`.
+    static func accept(_ providers: [NSItemProvider], into folder: URL) -> Bool {
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+        _ = provider.loadObject(ofClass: NSString.self) { string, _ in
+            guard let string = string as? String else { return }
+            // Okienko z nazwą dopiero po zakończeniu przeciągania (pętla wraca do trybu
+            // `.default`): otwarte w trakcie trzymało sesję przeciągania do swojego zamknięcia,
+            // a pierwszy gest na kanwie po zapisie potrafił się nie złapać (sprawdzone 2026-10-23).
+            DispatchQueue.main.async {
+                RunLoop.main.perform(inModes: [.default]) {
+                    MainActor.assumeIsolated {
+                        guard let block = block(for: string) else { return }
+                        BuildingBlockSave.save(block, into: folder)
+                    }
+                }
+            }
+        }
+        return true
+    }
+}
+
 struct BanksPanel: View {
     let state: PatchState
     let device: DeviceConnection
-    @Bindable var library: DiskBankLibrary
+    let library: DiskBankLibrary
     /// Otwarcie pliku idzie tą samą drogą co File → Open, żeby nie było dwóch sposobów
     /// wczytania patcha, które mogą się rozjechać.
     let onOpenFile: (URL) -> Void
@@ -24,15 +307,35 @@ struct BanksPanel: View {
     private enum Source: String, CaseIterable {
         case nord = "Nord"
         case disk = "Disk"
+        case blocks = "Blocks"
     }
 
     @AppStorage("g2_banks_source") private var sourceRaw = Source.disk.rawValue
+    /// Ten sam przełącznik co miernik pod modułem z palety (View ▸ Show Load When Dragging).
+    @AppStorage("g2_show_drag_load") private var showDragLoad: Bool = true
     @State private var query = ""
     /// Folder, po którym właśnie chodzimy — trzyma go biblioteka, żeby przetrwał
     /// ponowne uruchomienie.
     private var diskPath: String {
-        get { library.currentPath }
-        nonmutating set { library.currentPath = newValue }
+        get { folderLibrary.currentPath }
+        nonmutating set { folderLibrary.currentPath = newValue }
+    }
+
+    /// Obciążenie obu obszarów slotu z focusem po wstawieniu bloku: raport Norda, bez niego
+    /// szacunek z tabeli kosztów — tak samo jak pasek pod modułem z palety.
+    private func blockLoadAfter(_ block: G2Patch) -> (voice: G2PatchLoad?, fx: G2PatchLoad?) {
+        let slot = state.selectedSlot
+        func load(_ area: PatchArea) -> G2PatchLoad {
+            let now = device.patchLoad(slot: slot, area: area)
+                ?? .estimate(area: area, modules: state.patch.modules(in: area))
+            return now.adding(block.modules(in: area))
+        }
+        return (load(.voice), load(.fx))
+    }
+
+    /// Biblioteka listy folderów: Disk albo Blocks — obie chodzą tym samym kodem.
+    private var folderLibrary: DiskBankLibrary {
+        source == .blocks ? .blocks : library
     }
 
     /// Foldery rozwinięte w miejscu (trójkątem), ścieżki względne jak `diskPath`.
@@ -72,9 +375,10 @@ struct BanksPanel: View {
 
             switch source {
             case .nord: nordList
-            case .disk: diskList
+            case .disk, .blocks: diskList
             }
         }
+        .environment(\.blockLoadPreview, showDragLoad ? blockLoadAfter : nil)
         .onReceive(state.fileURLChanges) { openPath = $0?.standardizedFileURL.path }
     }
 
@@ -354,10 +658,12 @@ struct BanksPanel: View {
 
     @ViewBuilder
     private var diskList: some View {
-        if library.folder == nil {
+        if folderLibrary.folder == nil {
             VStack(spacing: 8) {
                 Button("Choose folder…", action: chooseFolder)
-                Text("Point at a folder of .pch2 files — subfolders are included.")
+                Text(source == .blocks
+                    ? "Point at a folder of building blocks (.pch2). Drag a block onto the patch to insert it."
+                    : "Point at a folder of .pch2 files — subfolders are included.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -376,8 +682,8 @@ struct BanksPanel: View {
             .background(PatchStepKeys(step: stepPatch))
             // Powrót na szczyt przy zmianie folderu głównego robi `setFolder`, nie widok —
             // tu zerowanie kasowałoby też podfolder zapamiętany z poprzedniej sesji.
-            .task(id: library.folder) {
-                await library.scan()
+            .task(id: folderLibrary.folder) {
+                await folderLibrary.scan()
             }
         }
     }
@@ -391,14 +697,16 @@ struct BanksPanel: View {
             if isSearching {
                 // Szukanie przeszukuje CAŁĄ bibliotekę, nie tylko otwarty folder —
                 // stąd płaska lista z podpisaną ścieżką.
-                List(library.items(matching: query)) { item in
+                List(folderLibrary.items(matching: query)) { item in
                     DiskFileRow(
-                        library: library, item: item, showsFolder: true,
-                        isOpen: item.isFile(atPath: openPath), onOpen: onOpenFile
+                        library: folderLibrary, item: item, showsFolder: true,
+                        isOpen: item.isFile(atPath: openPath), onOpen: onOpenFile,
+                        onDropToFolder: source == .blocks ? acceptBlockExport : nil
                     )
                 }
                 .listStyle(.plain)
                 .disabled(!device.acceptsPatchChange)
+                .onDrop(of: source == .blocks ? [.text] : [], isTargeted: nil) { acceptBlockExport($0, path: diskPath) }
             } else {
                 List {
                     // „Piętro wyżej" jako PIERWSZY WIERSZ listy, nie tylko ikonka w pasku:
@@ -408,14 +716,25 @@ struct BanksPanel: View {
                         upRow
                     }
                     DiskFolderRows(
-                        library: library, path: diskPath, expanded: $expanded,
-                        diskPath: $library.currentPath, openPath: openPath, onOpenFile: onOpenFile
+                        library: folderLibrary, path: diskPath, expanded: $expanded,
+                        diskPath: Bindable(folderLibrary).currentPath, openPath: openPath, onOpenFile: onOpenFile,
+                        onDropToFolder: source == .blocks ? acceptBlockExport : nil
                     )
                 }
                 .listStyle(.plain)
                 .disabled(!device.acceptsPatchChange)
+                // Moduły wyciągnięte z kanwy: upuszczone na pusty kawałek listy zapisują się
+                // jako blok w oglądanym folderze, na plik — obok niego (także w rozwiniętym
+                // podfolderze), na wiersz folderu — w tym folderze (decyzja użytkownika 2026-10-23).
+                .onDrop(of: source == .blocks ? [.text] : [], isTargeted: nil) { acceptBlockExport($0, path: diskPath) }
             }
         }
+    }
+
+    /// `path` względem folderu bloków; pusty = sam folder bloków.
+    private func acceptBlockExport(_ providers: [NSItemProvider], path: String) -> Bool {
+        guard source == .blocks, let root = folderLibrary.folder else { return false }
+        return BlockExportDragData.accept(providers, into: path.isEmpty ? root : root.appendingPathComponent(path))
     }
 
     // MARK: - Przesłuchiwanie strzałkami
@@ -424,13 +743,13 @@ struct BanksPanel: View {
     /// folderu razem z folderami rozwiniętymi w miejscu (ich pliki przed plikami rodzica,
     /// jak w `DiskFolderRows`).
     private var visibleFiles: [DiskBankItem] {
-        if isSearching { return library.items(matching: query) }
+        if isSearching { return folderLibrary.items(matching: query) }
         func files(in path: String) -> [DiskBankItem] {
-            let nested = library.subfolders(of: path).flatMap { name in
+            let nested = folderLibrary.subfolders(of: path).flatMap { name in
                 let child = path.isEmpty ? name : path + "/" + name
                 return expanded.contains(child) ? files(in: child) : []
             }
-            return nested + library.files(in: path)
+            return nested + folderLibrary.files(in: path)
         }
         return files(in: diskPath)
     }
@@ -440,7 +759,8 @@ struct BanksPanel: View {
     /// Na końcach listy stoi (bez zawijania), żeby nie przeskoczyć niechcący na początek.
     private func stepPatch(forward: Bool) {
         let files = visibleFiles
-        guard !files.isEmpty, device.acceptsPatchChange else { return }
+        // Na liście Blocks nic się nie otwiera — także strzałkami.
+        guard source != .blocks, !files.isEmpty, device.acceptsPatchChange else { return }
         let target: DiskBankItem
         if let index = files.firstIndex(where: { $0.isFile(atPath: openPath) }) {
             let next = index + (forward ? 1 : -1)
@@ -469,7 +789,7 @@ struct BanksPanel: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.head)
-                .help(library.folder?.appendingPathComponent(diskPath).path ?? "")
+                .help(folderLibrary.folder?.appendingPathComponent(diskPath).path ?? "")
 
             Spacer(minLength: 4)
 
@@ -483,9 +803,9 @@ struct BanksPanel: View {
             sortMenu
 
             barButton("arrow.clockwise", help: "Scan the folder again") {
-                Task { await library.scan() }
+                Task { await folderLibrary.scan() }
             }
-            .disabled(library.isScanning)
+            .disabled(folderLibrary.isScanning)
 
             barButton("folder", help: "Choose a different folder", action: chooseFolder)
         }
@@ -516,13 +836,13 @@ struct BanksPanel: View {
     /// nazwie, więc wybór dotyczy tylko plików.
     private var sortMenu: some View {
         Menu {
-            Picker("Sort by", selection: $library.sortOrder) {
+            Picker("Sort by", selection: Bindable(folderLibrary).sortOrder) {
                 ForEach(DiskBankSort.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.inline)
-            Picker("Order", selection: $library.sortReversed) {
-                Text(library.sortOrder.directionTitles.natural).tag(false)
-                Text(library.sortOrder.directionTitles.reversed).tag(true)
+            Picker("Order", selection: Bindable(folderLibrary).sortReversed) {
+                Text(folderLibrary.sortOrder.directionTitles.natural).tag(false)
+                Text(folderLibrary.sortOrder.directionTitles.reversed).tag(true)
             }
             .pickerStyle(.inline)
         } label: {
@@ -535,19 +855,19 @@ struct BanksPanel: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Sort by: \(library.sortOrder.title), \(sortDirectionTitle)")
+        .help("Sort by: \(folderLibrary.sortOrder.title), \(sortDirectionTitle)")
     }
 
     /// Filtr kategorii — pokazuje tylko patche jednej kategorii (Bass, Lead…), w folderze
     /// i w wynikach szukania. Włączony filtr to wypełniona ikonka w kolorze akcentu, żeby
     /// krótsza lista nie wyglądała na zgubione pliki.
     private var categoryMenu: some View {
-        let active = library.categoryFilter != nil
+        let active = folderLibrary.categoryFilter != nil
         return Menu {
-            Picker("Category", selection: $library.categoryFilter) {
+            Picker("Category", selection: Bindable(folderLibrary).categoryFilter) {
                 Text("All Files").tag(Int?.none)
                 Divider()
-                ForEach(library.availableCategories, id: \.self) { category in
+                ForEach(folderLibrary.availableCategories, id: \.self) { category in
                     Text(G2PatchCategory.name(category)).tag(Int?.some(category))
                 }
             }
@@ -563,60 +883,48 @@ struct BanksPanel: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help(library.categoryFilter.map { "Showing only \(G2PatchCategory.name($0)) patches" }
+        .help(folderLibrary.categoryFilter.map { "Showing only \(G2PatchCategory.name($0)) patches" }
             ?? "Show only patches of one category")
     }
 
     private var sortDirectionTitle: String {
-        let titles = library.sortOrder.directionTitles
-        return library.sortReversed ? titles.reversed : titles.natural
+        let titles = folderLibrary.sortOrder.directionTitles
+        return folderLibrary.sortReversed ? titles.reversed : titles.natural
     }
 
     /// Nazwa miejsca, w którym stoimy: w katalogu głównym nazwa wskazanego folderu,
     /// niżej ścieżka względem niego.
     private var location: String {
         if isSearching { return "All folders" }
-        if diskPath.isEmpty { return library.folder?.lastPathComponent ?? "" }
+        if diskPath.isEmpty { return folderLibrary.folder?.lastPathComponent ?? "" }
         return diskPath
     }
 
     private var count: String {
-        if library.isScanning { return "scanning…" }
-        if let message = library.message { return message }
-        return "\(library.fileCount(under: isSearching ? "" : diskPath))"
+        if folderLibrary.isScanning { return "scanning…" }
+        if let message = folderLibrary.message { return message }
+        return "\(folderLibrary.fileCount(under: isSearching ? "" : diskPath))"
     }
 
-    /// Folder nad folderem głównym biblioteki; `nil` na szczycie dysku.
-    private var folderAboveRoot: URL? {
-        guard let folder = library.folder?.standardizedFileURL, folder.path != "/" else { return nil }
-        return folder.deletingLastPathComponent()
-    }
-
-    /// „Wyżej" działa jak w Finderze — także PONAD folderem głównym. Użytkownik wskazał
-    /// jako główny folder `…/Drum` i chciał wyjść do jego rodzica; wygaszona strzałka
-    /// wyglądała na zepsutą (trzecie zgłoszenie, 2026-09-16). W folderze głównym „wyżej"
-    /// przestawia więc bibliotekę na folder nadrzędny — `.task(id: library.folder)` wraca
-    /// na jego szczyt i skanuje.
+    /// „Wyżej" kończy się na folderze wskazanym w Settings — wyżej nie wychodzi. Od 2026-09-16
+    /// do 2026-10-23 wychodziło ponad nim i po cichu przestawiało ten folder w ustawieniach;
+    /// użytkownik uznał, że lista ma się trzymać wskazanego folderu (inny = przycisk folderu).
     private var canGoUp: Bool {
-        !diskPath.isEmpty || folderAboveRoot != nil
+        !diskPath.isEmpty
     }
 
     private func goUp() {
         if let parent = DiskBankLibrary.parent(of: diskPath) {
             diskPath = parent
-        } else if let above = folderAboveRoot {
-            library.setFolder(above)
         }
     }
 
     /// Nazwa folderu, do którego prowadzi „wyżej".
     private var folderAboveName: String {
-        if let parent = DiskBankLibrary.parent(of: diskPath) {
-            return parent.isEmpty
-                ? library.folder?.lastPathComponent ?? ""
-                : String(parent.split(separator: "/").last ?? "")
-        }
-        return folderAboveRoot?.lastPathComponent ?? ""
+        guard let parent = DiskBankLibrary.parent(of: diskPath) else { return "" }
+        return parent.isEmpty
+            ? folderLibrary.folder?.lastPathComponent ?? ""
+            : String(parent.split(separator: "/").last ?? "")
     }
 
     /// Pierwszy wiersz listy: wyjście piętro wyżej z nazwą folderu, do którego się wraca.
@@ -643,7 +951,7 @@ struct BanksPanel: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
         if panel.runModal() == .OK, let url = panel.url {
-            library.setFolder(url)
+            folderLibrary.setFolder(url)
         }
     }
 
@@ -725,6 +1033,9 @@ private struct DiskFolderRows: View {
     @Binding var diskPath: String
     let openPath: String?
     let onOpenFile: (URL) -> Void
+    /// Lista Blocks: moduły z kanwy upuszczone na wiersz folderu zapisują się w nim.
+    var onDropToFolder: ((_ providers: [NSItemProvider], _ path: String) -> Bool)?
+    @State private var targetedFolder: String?
 
     var body: some View {
         ForEach(library.subfolders(of: path), id: \.self) { name in
@@ -732,18 +1043,33 @@ private struct DiskFolderRows: View {
             DisclosureGroup(isExpanded: expansion(of: child)) {
                 DiskFolderRows(
                     library: library, path: child, expanded: $expanded,
-                    diskPath: $diskPath, openPath: openPath, onOpenFile: onOpenFile
+                    diskPath: $diskPath, openPath: openPath, onOpenFile: onOpenFile,
+                    onDropToFolder: onDropToFolder
                 )
             } label: {
                 folderRow(name, path: child)
+                    .background(targetedFolder == child ? Color.accentColor.opacity(0.3) : .clear)
+                    .onDrop(of: onDropToFolder == nil ? [] : [.text], isTargeted: targeting(child)) {
+                        onDropToFolder?($0, child) ?? false
+                    }
             }
         }
         ForEach(library.files(in: path)) { item in
             DiskFileRow(
                 library: library, item: item, showsFolder: false,
-                isOpen: item.isFile(atPath: openPath), onOpen: onOpenFile
+                isOpen: item.isFile(atPath: openPath), onOpen: onOpenFile,
+                onDropToFolder: onDropToFolder
             )
         }
+    }
+
+    private func targeting(_ path: String) -> Binding<Bool> {
+        Binding(
+            get: { targetedFolder == path },
+            set: { inside in
+                if inside { targetedFolder = path } else if targetedFolder == path { targetedFolder = nil }
+            }
+        )
     }
 
     private func expansion(of path: String) -> Binding<Bool> {
@@ -792,59 +1118,106 @@ private struct DiskFileRow: View {
     /// Ten plik jest właśnie otwarty na canvasie.
     let isOpen: Bool
     let onOpen: (URL) -> Void
+    /// Lista Blocks: moduły z kanwy upuszczone na plik zapisują się w jego folderze.
+    var onDropToFolder: ((_ providers: [NSItemProvider], _ path: String) -> Bool)?
 
     /// Liczba modułów i DSP do dymka — czytane dopiero, gdy kursor stanie nad wierszem
     /// (cały plik trzeba sparsować), i tylko raz.
     @State private var summary: DiskFileSummary?
     @State private var summaryRequested = false
+    @Environment(\.blockLoadPreview) private var blockLoadPreview
 
     var body: some View {
-        Button {
-            onOpen(item.url)
-        } label: {
-            HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 5) {
-                        // Przy wąskim panelu najpierw skraca się kategoria, potem nazwa.
-                        Text(item.name)
-                            .font(.system(size: 11, weight: isOpen ? .semibold : .regular))
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                        tagDots
-                        if !item.isPerformance, item.category > 0 {
-                            Text(G2PatchCategory.name(item.category))
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-                    }
-                    if showsFolder, !item.relativeFolder.isEmpty {
-                        Text(item.relativeFolder)
-                            .font(.system(size: 9))
+        row
+            .help(help)
+            .onHover { inside in
+                guard inside, !summaryRequested else { return }
+                summaryRequested = true
+                let url = item.url
+                Task {
+                    summary = await Task.detached(priority: .userInitiated) {
+                        DiskBankLibrary.summary(of: url)
+                    }.value
+                }
+            }
+            .contextMenu { menu }
+            .onDrop(of: onDropToFolder == nil ? [] : [.text], isTargeted: nil) {
+                onDropToFolder?($0, item.relativeFolder) ?? false
+            }
+            .listRowBackground(isOpen ? Color.accentColor.opacity(0.22)
+                : isHighlighted ? Color.accentColor.opacity(0.12) : nil)
+    }
+
+    /// Blok to nie przycisk: przycisk połyka gest przeciągania i blok nie dawał się
+    /// wyciągnąć z listy (sprawdzone w aplikacji). Na liście Blocks plik się NIE otwiera —
+    /// blok tylko się przeciąga i wstawia (decyzja użytkownika 2026-10-23); otwiera się go
+    /// z listy Disk. `.prf2` w folderze bloków nie robi nic: performance'u nie da się wstawić.
+    @ViewBuilder
+    private var row: some View {
+        if isBlock {
+            label
+                .onDrag {
+                    NSItemProvider(object: BuildingBlockDragData.string(url: item.url) as NSString)
+                } preview: {
+                    BlockDragPreview(name: item.name,
+                                     load: BuildingBlockDragData.block(at: item.url).flatMap { blockLoadPreview?($0) })
+                }
+        } else if inBlocks {
+            label
+        } else {
+            Button {
+                onOpen(item.url)
+            } label: {
+                label
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var label: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    // Przy wąskim panelu najpierw skraca się kategoria, potem nazwa.
+                    Text(item.name)
+                        .font(.system(size: 11, weight: isOpen ? .semibold : .regular))
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    tagDots
+                    if !item.isPerformance, item.category > 0 {
+                        Text(G2PatchCategory.name(item.category))
+                            .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
                 }
-                Spacer(minLength: 0)
-                PatchKindBadge(isPerformance: item.isPerformance)
+                if showsFolder, !item.relativeFolder.isEmpty {
+                    Text(item.relativeFolder)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            Spacer(minLength: 0)
+            PatchKindBadge(isPerformance: item.isPerformance)
         }
-        .buttonStyle(.plain)
-        .help(help)
-        .onHover { inside in
-            guard inside, !summaryRequested else { return }
-            summaryRequested = true
-            let url = item.url
-            Task {
-                summary = await Task.detached(priority: .userInitiated) {
-                    DiskBankLibrary.summary(of: url)
-                }.value
-            }
-        }
-        .contextMenu { menu }
-        .listRowBackground(isOpen ? Color.accentColor.opacity(0.22) : nil)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    /// Świeżo zapisany blok (`DiskBankLibrary.highlightedFile`).
+    private var isHighlighted: Bool {
+        library.highlightedFile?.standardizedFileURL == item.url.standardizedFileURL
+    }
+
+    /// Wiersz listy Blocks — klik niczego nie otwiera.
+    private var inBlocks: Bool {
+        library === DiskBankLibrary.blocks
+    }
+
+    /// Patch z listy Blocks — przeciągnięty na kanwę wstawia się w całości.
+    private var isBlock: Bool {
+        inBlocks && !item.isPerformance
     }
 
     /// Tagi w kolejności tęczy z menu Findera. Nazwy z listy ulubionych tagów Findera
@@ -949,6 +1322,11 @@ private struct DiskFileRow: View {
             lines.append("Tags: " + item.tags.map(\.name).joined(separator: ", "))
         }
         lines.append(item.url.path)
+        if isBlock {
+            lines.append("Drag onto the patch to insert this block")
+        } else if inBlocks {
+            lines.append("A performance can\u{2019}t be inserted as a block \u{2014} open it from Disk")
+        }
         if isOpen {
             lines.append("Open in the editor — \u{2325}\u{2191} / \u{2325}\u{2193} open the previous / next file")
         }

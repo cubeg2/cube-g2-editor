@@ -265,6 +265,26 @@ struct LiveIndicatorPlan {
         self.modules = modules
         signature = Self.signature(patch: patch, area: area)
     }
+
+    /// Plan z modułami `ids` przesuniętymi o `offset` — w trakcie przeciągania kanwa rysuje
+    /// je w nowym miejscu, a patch zna jeszcze stare (zmienia się dopiero po puszczeniu).
+    func shifted(_ ids: Set<Int>, by offset: CGSize) -> LiveIndicatorPlan {
+        guard offset != .zero, !ids.isEmpty else { return self }
+        var moved = modules
+        for id in ids {
+            guard let module = modules[id] else { continue }
+            func move(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: offset.width, dy: offset.height) }
+            func move(_ led: Led) -> Led { Led(codeRef: led.codeRef, rect: move(led.rect), type: led.type) }
+            moved[id] = Module(
+                vuBounds: module.vuBounds.map(move),
+                vuSegments: module.vuSegments.map { $0.map(move) },
+                groupLeds: module.groupLeds.map(move),
+                groupCodeRefs: module.groupCodeRefs,
+                singleLeds: module.singleLeds.mapValues(move)
+            )
+        }
+        return LiveIndicatorPlan(modules: moved, signature: signature)
+    }
 }
 
 /// Trzyma ostatni plan między klatkami. Zwykły obiekt, celowo NIE `@Observable`:
@@ -297,6 +317,9 @@ struct LiveIndicatorLayer: View {
     var panelShading = true
     /// Setup ▸ Options ▸ Glow — blask wokół zapalonych diod i kresek Mini VU.
     var glow = 0.0
+    /// Moduły w trakcie przeciągania i droga myszy (pt kanwy) — diody jadą razem z nimi.
+    var draggedModuleIDs: Set<Int> = []
+    var dragOffset: CGSize = .zero
 
     @State private var cache = LiveIndicatorPlanCache()
 
@@ -307,7 +330,7 @@ struct LiveIndicatorLayer: View {
         // Plan liczymy dopiero, gdy jest co rysować — patch bez połączenia nie płaci nic.
         let plan = levels.isEmpty && groups.isEmpty && lit.isEmpty
             ? LiveIndicatorPlan.empty
-            : cache.plan(patch: patch, area: area)
+            : cache.plan(patch: patch, area: area).shifted(draggedModuleIDs, by: dragOffset)
         Canvas { ctx, _ in
             guard !plan.modules.isEmpty else { return }
             ctx.scaleBy(x: zoom, y: zoom)

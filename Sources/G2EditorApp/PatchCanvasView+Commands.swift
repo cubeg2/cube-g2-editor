@@ -69,10 +69,25 @@ extension PatchCanvasView {
 
             Divider()
 
+            moduleDisconnectMenu(for: id)
+
             Button("Delete", role: .destructive) {
                 deleteSelectedModules(targetID: id)
             }
         }
+    }
+
+    /// „Disconnect Cables ▸" — kable zaznaczenia (albo samego modułu pod kursorem)
+    /// hurtem, jednym krokiem undo. Pusty wariant jest wyszarzony.
+    private func moduleDisconnectMenu(for id: Int) -> some View {
+        let targets = selectedModuleIDs.contains(id) ? selectedModuleIDs : [id]
+        return Menu("Disconnect Cables") {
+            ForEach(CableDisconnectScope.allCases, id: \.self) { scope in
+                Button(scope.title) { commands.disconnectModuleCables?(targets, scope) }
+                    .disabled((commands.moduleCableCount?(targets, scope) ?? 0) == 0)
+            }
+        }
+        .disabled(commands.disconnectModuleCables == nil)
     }
 
     private func moduleColorMenu(for id: Int) -> some View {
@@ -116,6 +131,13 @@ extension PatchCanvasView {
                 commands.pasteParams?(targets)
             }
             .disabled(!G2ClipboardContent.hasModulesOnPasteboard)
+
+            Divider()
+
+            Button("Save Selection as Block…") {
+                selectIfNeeded(id)
+                commands.saveModulesAsBlock?(selectedModuleIDs.isEmpty ? [id] : selectedModuleIDs)
+            }
         }
     }
 
@@ -239,7 +261,8 @@ extension PatchCanvasView {
         // Zaznaczone moduły — lub aktywny jeśli brak selection
         var ids = selectedModuleIDs
         if ids.isEmpty, let id = activeModuleID { ids = [id] }
-        guard let content = G2ClipboardContent.make(modules: modules, cables: cables, ids: ids)
+        guard let content = G2ClipboardContent.make(modules: modules, cables: cables, ids: ids,
+                                                    labels: commands.moduleLabels?())
         else { return }
         content.writeToPasteboard()
     }

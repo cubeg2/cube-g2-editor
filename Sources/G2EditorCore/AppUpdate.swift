@@ -41,16 +41,20 @@ public struct AppVersion: Comparable, CustomStringConvertible, Sendable {
     }
 }
 
-/// Jedno wydanie z GitHuba: numer, lista zmian z opisu i strona do pobrania DMG.
+/// Jedno wydanie z GitHuba: numer, lista zmian z opisu, strona wydania i sam plik DMG.
 public struct AppRelease: Equatable, Sendable {
     public let version: AppVersion
     public let notes: String
     public let pageURL: URL
+    /// Bezpośredni link do DMG — Download pobiera plik, zamiast otwierać stronę, na której
+    /// DMG ginie pod „Assets” (zgłoszenie użytkownika 2026-10-22). Bez DMG: strona wydania.
+    public let downloadURL: URL
 
-    public init(version: AppVersion, notes: String, pageURL: URL) {
+    public init(version: AppVersion, notes: String, pageURL: URL, downloadURL: URL? = nil) {
         self.version = version
         self.notes = notes
         self.pageURL = pageURL
+        self.downloadURL = downloadURL ?? pageURL
     }
 }
 
@@ -87,7 +91,9 @@ public enum UpdateCheck {
         guard let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else { return .failed }
         let candidates = releases.compactMap { release -> AppRelease? in
             guard release.draft != true, let version = AppVersion(release.tag) else { return nil }
-            return AppRelease(version: version, notes: release.body ?? "", pageURL: release.page)
+            let dmg = release.assets?.first { $0.name.lowercased().hasSuffix(".dmg") }
+            return AppRelease(version: version, notes: release.body ?? "", pageURL: release.page,
+                              downloadURL: dmg?.url)
         }
         guard let newest = candidates.max(by: { $0.version < $1.version }) else { return .noReleases }
         return .found(newest)
@@ -108,8 +114,19 @@ private struct GitHubRelease: Decodable {
     let body: String?
     let page: URL
     let draft: Bool?
+    let assets: [GitHubAsset]?
 
     enum CodingKeys: String, CodingKey {
-        case tag = "tag_name", body, page = "html_url", draft
+        case tag = "tag_name", body, page = "html_url", draft, assets
+    }
+}
+
+/// Plik dołączony do wydania (u nas DMG).
+private struct GitHubAsset: Decodable {
+    let name: String
+    let url: URL
+
+    enum CodingKeys: String, CodingKey {
+        case name, url = "browser_download_url"
     }
 }

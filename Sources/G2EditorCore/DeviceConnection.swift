@@ -2079,6 +2079,105 @@ public final class DeviceConnection {
         }
     }
 
+    /// Ustawienia patcha, gałki, CC i morfy wstawionego bloku (Building Blocks). Kolejka ta sama co przy
+    /// `syncStructure`: przypisanie do modułu, którego Nord jeszcze nie dostał, nie ma sensu,
+    /// więc czeka na wysyłkę modułów. Komendy te same co przy ręcznym przypisaniu.
+    public func sendBlockAssignments(slot: Int, insertion: G2BlockInsertion) {
+        guard status == .connected, slot == activeSlot else { return }
+        let previous = structureSyncTask
+        structureSyncTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.status == .connected else { return }
+            do {
+                for setting in insertion.settings {
+                    try await self.manager.setPatchSettingLive(
+                        slot: UInt8(slot), moduleID: setting.module, paramIndex: setting.param,
+                        value: setting.value, variation: setting.variation
+                    )
+                }
+                for (knob, assignment) in insertion.knobs.sorted(by: { $0.key < $1.key }) {
+                    try await self.manager.assignKnob(slot: UInt8(slot), location: assignment.location,
+                                                      moduleID: assignment.moduleID,
+                                                      paramIndex: assignment.paramIndex,
+                                                      knob: knob, isLed: assignment.isLed)
+                }
+                for (cc, assignment) in insertion.midiControllers.sorted(by: { $0.key < $1.key }) {
+                    try await self.manager.assignMidiController(slot: UInt8(slot), cc: cc,
+                                                                location: assignment.location,
+                                                                moduleID: assignment.moduleID,
+                                                                paramIndex: assignment.paramIndex)
+                }
+                for morph in insertion.morphs {
+                    let entry = morph.assignment
+                    try await self.manager.setMorphRangeLive(
+                        slot: UInt8(slot), location: entry.location, moduleID: entry.moduleID,
+                        paramIndex: entry.paramIndex, morph: entry.morph, range: entry.range,
+                        variation: morph.variation
+                    )
+                }
+                if let page = insertion.refreshPage {
+                    try await self.manager.selectParameterPage(slot: UInt8(slot), page: page)
+                }
+            } catch {
+                self.status = .error(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Gałki, CC, morfy i ustawienia patcha po ⌘Z / ⇧⌘Z zmiany struktury i po skasowaniu
+    /// modułów (`G2AssignmentChanges`). Ta sama kolejka co `syncStructure`: przypisanie do
+    /// modułu, który dopiero wraca, czeka na jego wysyłkę. Komendy te same co przy ręcznej zmianie.
+    public func sendAssignmentChanges(slot: Int, changes: G2AssignmentChanges) {
+        guard status == .connected, slot == activeSlot else { return }
+        let previous = structureSyncTask
+        structureSyncTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.status == .connected else { return }
+            do {
+                for setting in changes.settings {
+                    try await self.manager.setPatchSettingLive(
+                        slot: UInt8(slot), moduleID: setting.module, paramIndex: setting.param,
+                        value: setting.value, variation: setting.variation
+                    )
+                }
+                for (knob, assignment) in changes.knobs.sorted(by: { $0.key < $1.key }) {
+                    if let assignment {
+                        try await self.manager.assignKnob(slot: UInt8(slot), location: assignment.location,
+                                                          moduleID: assignment.moduleID,
+                                                          paramIndex: assignment.paramIndex,
+                                                          knob: knob, isLed: assignment.isLed)
+                    } else {
+                        try await self.manager.deassignKnob(slot: UInt8(slot), knob: knob)
+                    }
+                }
+                for (cc, assignment) in changes.midiControllers.sorted(by: { $0.key < $1.key }) {
+                    if let assignment {
+                        try await self.manager.assignMidiController(slot: UInt8(slot), cc: cc,
+                                                                    location: assignment.location,
+                                                                    moduleID: assignment.moduleID,
+                                                                    paramIndex: assignment.paramIndex)
+                    } else {
+                        try await self.manager.deassignMidiController(slot: UInt8(slot), cc: cc)
+                    }
+                }
+                for morph in changes.morphs {
+                    let entry = morph.assignment
+                    try await self.manager.setMorphRangeLive(
+                        slot: UInt8(slot), location: entry.location, moduleID: entry.moduleID,
+                        paramIndex: entry.paramIndex, morph: entry.morph, range: entry.range,
+                        variation: morph.variation
+                    )
+                }
+                // Nord odświeża ekran strony gałek dopiero po jej ponownym wybraniu.
+                if let page = changes.refreshPage {
+                    try await self.manager.selectParameterPage(slot: UInt8(slot), page: page)
+                }
+            } catch {
+                self.status = .error(error.localizedDescription)
+            }
+        }
+    }
+
     /// Diagnostyka: surowe bajty TX/RX. `notifications` włącza też strumień VU/LED —
     /// domyślnie wyłączony, bo to ~80 linii na sekundę.
     ///
