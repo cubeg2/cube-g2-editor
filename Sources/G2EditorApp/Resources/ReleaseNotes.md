@@ -1,3 +1,8 @@
+## 0.1.4 — October 25, 2026
+- **Big patch folders no longer slow the editor down.** With a folder of thousands of patches open in the Patches drawer, every click anywhere in the window could spin the wait cursor for several seconds, and restarting did not help because the editor reopens the last folder. With 6,500 patches in one folder a click took over 4 seconds; now clicks and stepping through patches are instant again.
+- **The patch list appears much sooner after launch.** Reading a library of 45,000 files took almost 7 seconds; it now takes about 1.5. The editor no longer asks macOS about iCloud for every single file when the folder is not in iCloud, and reads the files on all processor cores.
+- **Mutator: Exclude From Mutations protects the Power button too.** A module you excluded and switched off came back on with the next Mutate. Modules you exclude by hand now keep what they are playing.
+
 ## 0.1.3 — October 24, 2026
 Almost everything here comes from the Wish List on the electro-music forum.
 - **Building Blocks.** Pick a Building Blocks folder in Settings ▸ General ▸ Folders; the Patches drawer gets a Blocks tab. Drag a block onto the patch and it is inserted where you drop it — modules, cables, values in all variations, names, colours and mixer/switch labels — with everything selected and a single Undo. Any .pch2 works as a block. File ▸ Insert Patch File… does the same without the drawer.

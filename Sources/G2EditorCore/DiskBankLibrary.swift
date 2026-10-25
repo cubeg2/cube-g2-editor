@@ -292,13 +292,13 @@ public final class DiskBankLibrary {
         isScanning = true
         defer { isScanning = false }
 
-        let found = await Task.detached(priority: .utility) { [limit = scanLimit] in
-            Self.scanFolder(folder, limit: limit)
+        // Na listę czeka użytkownik, więc priorytet jak dla jego akcji — przy `.utility`
+        // skan dostaje słabsze rdzenie. Sortowanie też poza głównym wątkiem.
+        items = await Task.detached(priority: .userInitiated) { [limit = scanLimit] in
+            Self.scanFolder(folder, limit: limit).sorted { lhs, rhs in
+                lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
         }.value
-
-        items = found.sorted { lhs, rhs in
-            lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-        }
         // Urwany skan musi być widoczny: lista wygląda tak samo jak kompletna, a brakuje
         // w niej całych folderów — tych, do których enumerator doszedł za późno (#102).
         if items.count >= scanLimit {
@@ -313,37 +313,62 @@ public final class DiskBankLibrary {
     }
 
     /// Czysty przegląd katalogu — bez stanu, więc może biec poza głównym wątkiem.
+    ///
+    /// Zmierzone na 45 643 plikach (2026-10-25, #156): pytanie o iCloud przy KAŻDYM pliku
+    /// brało 3,4 s z 5,2 s, więc zadajemy je tylko w folderze, który sam leży w iCloud — poza
+    /// nim pliki są na dysku. Tagi i 4 KB nagłówka czytamy na wszystkich rdzeniach naraz.
     private nonisolated static func scanFolder(_ folder: URL, limit: Int) -> [DiskBankItem] {
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey, .fileSizeKey,
-                                      .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
+        let inCloud = (try? folder.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
+        var keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey, .fileSizeKey]
+        if inCloud {
+            keys += [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
+        }
         guard let walker = FileManager.default.enumerator(
             at: folder, includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
 
-        let base = folder.standardizedFileURL.path
-        var items: [DiskBankItem] = []
+        var urls: [URL] = []
         for case let url as URL in walker {
-            guard items.count < limit else { break }
+            guard urls.count < limit else { break }
             let ext = url.pathExtension.lowercased()
-            guard ext == "pch2" || ext == "prf2" else { continue }
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            guard values?.isRegularFile != false else { continue }
-
-            let parent = url.deletingLastPathComponent().standardizedFileURL.path
-            let relative = parent.hasPrefix(base) ? String(parent.dropFirst(base.count)) : parent
-            items.append(DiskBankItem(
-                url: url,
-                name: url.deletingPathExtension().lastPathComponent,
-                isPerformance: ext == "prf2",
-                modified: values?.contentModificationDate ?? .distantPast,
-                size: values?.fileSize ?? 0,
-                relativeFolder: relative.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-                tags: finderTags(at: url),
-                category: ext == "pch2" && isLocal(values) ? patchCategory(at: url) : 0
-            ))
+            if ext == "pch2" || ext == "prf2" { urls.append(url) }
         }
-        return items
+
+        let base = folder.standardizedFileURL.path
+        var found = [DiskBankItem?](repeating: nil, count: urls.count)
+        found.withUnsafeMutableBufferPointer { buffer in
+            let slots = ScanSlots(buffer: buffer)
+            DispatchQueue.concurrentPerform(iterations: urls.count) { index in
+                slots.buffer[index] = item(at: urls[index], base: base, keys: keys)
+            }
+        }
+        return found.compactMap { $0 }
+    }
+
+    /// Wyniki skanu zapisywane z wielu wątków naraz — każdy pisze wyłącznie do swojej
+    /// komórki, więc bufor bez zamka jest bezpieczny.
+    private struct ScanSlots: @unchecked Sendable {
+        let buffer: UnsafeMutableBufferPointer<DiskBankItem?>
+    }
+
+    /// Jeden plik z dysku jako pozycja listy; `nil` dla czegoś, co tylko nazywa się `.pch2`.
+    private nonisolated static func item(at url: URL, base: String, keys: [URLResourceKey]) -> DiskBankItem? {
+        let values = try? url.resourceValues(forKeys: Set(keys))
+        guard values?.isRegularFile != false else { return nil }
+        let ext = url.pathExtension.lowercased()
+        let parent = url.deletingLastPathComponent().standardizedFileURL.path
+        let relative = parent.hasPrefix(base) ? String(parent.dropFirst(base.count)) : parent
+        return DiskBankItem(
+            url: url,
+            name: url.deletingPathExtension().lastPathComponent,
+            isPerformance: ext == "prf2",
+            modified: values?.contentModificationDate ?? .distantPast,
+            size: values?.fileSize ?? 0,
+            relativeFolder: relative.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            tags: finderTags(at: url),
+            category: ext == "pch2" && isLocal(values) ? patchCategory(at: url) : 0
+        )
     }
 
     /// Plik z iCloud, którego nie ma na dysku, zostaje w chmurze: czytanie kategorii

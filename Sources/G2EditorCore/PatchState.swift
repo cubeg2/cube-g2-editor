@@ -1640,7 +1640,7 @@ public final class PatchState {
         if box.kind == .variations {
             guard box.index < 8 else { return }
             beginMutatorEdit("Copy To Variation")
-            writeIndividualToVariation(sound, variation: box.index)
+            writeIndividualToVariation(keepingHeldModules(sound), variation: box.index)
             return
         }
         beginMutatorEdit("Copy Sound")
@@ -1725,7 +1725,7 @@ public final class PatchState {
         let previousSound = G2Mutator.individual(from: slots[slot], variation: buffer,
                                                  genome: mutatorGenome)
 
-        slots[slot].apply(individual, variation: buffer)
+        slots[slot].apply(keepingHeldModules(individual), variation: buffer)
         slots[slot].setActiveVariation(buffer)
 
         if registerUndo {
@@ -1780,6 +1780,12 @@ public final class PatchState {
         G2Mutator.individual(from: patch, variation: patch.activeVariation, genome: mutatorGenome)
     }
 
+    /// Dźwięk z kratki albo z drzewa w drodze do patcha: moduły wyłączone z mutacji
+    /// ręcznie zostają takie, jakie grają teraz — kratka mogła je zapamiętać sprzed zmiany.
+    private func keepingHeldModules(_ individual: G2Individual) -> G2Individual {
+        G2Mutator.keepingHeldModules(individual, from: currentIndividual(), genome: mutatorGenome)
+    }
+
     // MARK: Przenoszenie między kratkami
 
     /// Przeciągnięcie kratki na kratkę. W magazynie tymczasowym dźwięk się
@@ -1789,7 +1795,9 @@ public final class PatchState {
         if destination.kind == .variations {
             guard destination.index < 8 else { return }
             beginMutatorEdit("Copy To Variation")
-            writeIndividualToVariation(individual, variation: destination.index)
+            // Kratka wariacji jest czytana z patcha na bieżąco — nie ma w niej nic starego.
+            writeIndividualToVariation(source.kind == .variations ? individual : keepingHeldModules(individual),
+                                       variation: destination.index)
             return
         }
         beginMutatorEdit("Move Sound")
@@ -1827,12 +1835,14 @@ public final class PatchState {
         let slot = selectedSlot
         guard slots.indices.contains(slot) else { return }
         let before = slots[slot]
+        let playing = currentIndividual()
         var written: [Int] = []
         for column in 0 ..< 8 {
             let index = row * 8 + column
             guard mutatorStorage.indices.contains(index),
                   let individual = mutatorStorage[index] else { continue }
-            slots[slot].apply(individual, variation: column)
+            slots[slot].apply(G2Mutator.keepingHeldModules(individual, from: playing, genome: mutatorGenome),
+                              variation: column)
             written.append(column)
         }
         guard !written.isEmpty else { return }

@@ -128,6 +128,10 @@ public struct G2MutatorGenome: Sendable {
         public let curve: G2ParamClass.Curve
         /// Czy moduł jest wyłączony z mutacji (`Exclude From Mutations`).
         public let moduleExcluded: Bool
+        /// Moduł wyłączony z mutacji ręcznie, nie z góry (wejścia/wyjścia, MIDI…).
+        /// Taki moduł zostaje w patchu taki, jak go słychać — kratka nie przywraca
+        /// jego stanu sprzed zmiany (`G2Mutator.keepingHeldModules`).
+        public let moduleHeld: Bool
         /// Tylko `FreqCoarse` oscylatora: klucz jego `FreqMode`. Randomize sprawdza,
         /// czy oscylator stoi w trybie Partials — wtedy losuje z górnej części skali.
         public let freqModeKey: G2Individual.Key?
@@ -158,6 +162,7 @@ public struct G2MutatorGenome: Sendable {
         for area in [PatchArea.voice, PatchArea.fx] {
             for module in patch.modules(in: area).sorted(by: { $0.id < $1.id }) {
                 let excluded = module.excludedFromMutation
+                let held = excluded && !G2Module.isExcludedFromMutationByDefault(typeID: module.typeID)
                 let classes = module.parameters.indices.map {
                     G2ParamClass.of(moduleTypeID: module.typeID, paramIndex: $0)
                 }
@@ -175,6 +180,7 @@ public struct G2MutatorGenome: Sendable {
                         category: category,
                         curve: maxValue > 0 ? paramClass?.curve ?? .none : .none,
                         moduleExcluded: excluded,
+                        moduleHeld: held,
                         freqModeKey: paramClass?.rawValue == G2ParamClass.oscillatorCoarse ? freqModeKey : nil,
                         group: G2MutatorGroup.of(paramClass: paramClass, category: category),
                         discreteStates: G2ParameterText.buttonOptions(
@@ -527,6 +533,25 @@ public enum G2Mutator {
             morphs[key, default: [:]][entry.morph] = entry.range
         }
         return G2Individual(values: values, morphs: morphs)
+    }
+
+    /// Dźwięk z kratki z modułami wyłączonymi z mutacji ręcznie przepisanymi z `playing`
+    /// — wartości i morfy. Kratka pamięta dźwięk z chwili powstania, więc bez tego taki
+    /// moduł wracał do stanu z Mother: Power zgaszony po zrobieniu Mother zapalał się
+    /// przy następnym Mutate. Oryginał robi tak samo; to nasza poprawka.
+    ///
+    /// Moduły wyłączone z góry jadą dalej z dźwiękiem kratki — `2-Out` potrafi mieć
+    /// w każdej wariacji inne wyjście, a wariacja przeciągnięta do Mother ma brzmieć
+    /// dokładnie jak ona (#109).
+    public static func keepingHeldModules(_ individual: G2Individual, from playing: G2Individual,
+                                          genome: G2MutatorGenome) -> G2Individual
+    {
+        var result = individual
+        for gene in genome.genes where gene.moduleHeld {
+            result[gene.key] = playing[gene.key]
+            result.morphs[gene.key] = playing.morphs[gene.key]
+        }
+        return result
     }
 
     /// Wartość ustawienia patcha spod klucza obszaru 2.

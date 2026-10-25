@@ -1234,4 +1234,61 @@ final class MutatorTests: XCTestCase {
             XCTAssertFalse(G2Mutator.isEnabled(gene, locks: G2MutatorLocks(enabled: 0xFF)))
         }
     }
+
+    /// Power (`Active`) modułu wyłączonego z mutacji, zgaszony już PO zrobieniu Mother,
+    /// wracał przy następnym Mutate: kratki pamiętają dźwięk z chwili powstania, więc
+    /// dzieci niosły Power z Mother. Moduł wyłączony ma zostać taki, jaki gra.
+    func testExcludedModulePowerSwitchedOffAfterMotherStaysOff() throws {
+        let state = try makeState(fixturePatch())
+        state.mutatorLocks = G2MutatorLocks(enabled: 0xFF, solo: 0)
+        let (moduleID, active) = try XCTUnwrap(state.patch.voiceModules.lazy.compactMap { module -> (Int, Int)? in
+            guard !module.excludedFromMutation,
+                  let index = ModuleDatabase.module(id: module.typeID)?.paramNames.firstIndex(of: "Active")
+            else { return nil }
+            return (module.id, index)
+        }.first)
+        func power(_ variation: Int? = nil) throws -> Int {
+            let module = try XCTUnwrap(state.patch.voiceModules.first { $0.id == moduleID })
+            return module.parameterVariations[variation ?? state.patch.activeVariation][active]
+        }
+        undoStep(on: state) { state.setModulesExcludedFromMutation([moduleID], excluded: true) }
+        undoStep(on: state) { state.mutatorMutate() }
+        XCTAssertEqual(try power(), 1, "Mother powstała z włączonym Power")
+
+        undoStep(on: state) { state.setParameter(moduleID: moduleID, paramIndex: active, value: 0, area: .voice) }
+        undoStep(on: state) { state.mutatorMutate() }
+        XCTAssertEqual(try power(), 0, "Mutate nie włącza Power modułu wyłączonego z mutacji")
+
+        undoStep(on: state) { state.mutatorSetFocus(.mother) }
+        XCTAssertEqual(try power(), 0, "kliknięcie Mother też nie")
+
+        undoStep(on: state) { state.mutatorDrag(from: .child(0), to: G2MutatorBox(.storage, 0)) }
+        undoStep(on: state) { state.mutatorDrag(from: G2MutatorBox(.storage, 0), to: G2MutatorBox(.variations, 3)) }
+        XCTAssertEqual(try power(3), 0, "wariacja dostaje to, co było słychać")
+
+        undoStep(on: state) { state.mutatorCopyStorageRowToVariations(0) }
+        XCTAssertEqual(try power(0), 0, "rząd magazynu do wariacji tak samo")
+    }
+
+    /// Kopia wariacji na wariację bierze moduł wyłączony z mutacji z wariacji źródłowej
+    /// — tam nic nie jest stare, więc nie ma czego podmieniać na to, co gra.
+    func testVariationToVariationCopiesExcludedModuleAsIs() throws {
+        let state = try makeState(fixturePatch())
+        let (moduleID, active) = try XCTUnwrap(state.patch.voiceModules.lazy.compactMap { module -> (Int, Int)? in
+            guard !module.excludedFromMutation,
+                  let index = ModuleDatabase.module(id: module.typeID)?.paramNames.firstIndex(of: "Active")
+            else { return nil }
+            return (module.id, index)
+        }.first)
+        undoStep(on: state) { state.setModulesExcludedFromMutation([moduleID], excluded: true) }
+        undoStep(on: state) { state.selectVariation(2) }
+        undoStep(on: state) { state.setParameter(moduleID: moduleID, paramIndex: active, value: 0, area: .voice) }
+        undoStep(on: state) { state.selectVariation(0) }
+
+        undoStep(on: state) { state.mutatorDrag(from: G2MutatorBox(.variations, 2), to: G2MutatorBox(.variations, 5)) }
+
+        let module = try XCTUnwrap(state.patch.voiceModules.first { $0.id == moduleID })
+        XCTAssertEqual(module.parameterVariations[5][active], 0)
+        XCTAssertEqual(module.parameterVariations[0][active], 1)
+    }
 }

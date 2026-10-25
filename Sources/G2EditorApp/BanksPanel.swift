@@ -697,11 +697,12 @@ struct BanksPanel: View {
             if isSearching {
                 // Szukanie przeszukuje CAŁĄ bibliotekę, nie tylko otwarty folder —
                 // stąd płaska lista z podpisaną ścieżką.
+                let highlightedPath = folderLibrary.highlightedFile?.standardizedFileURL.path
                 List(folderLibrary.items(matching: query)) { item in
                     DiskFileRow(
                         library: folderLibrary, item: item, showsFolder: true,
-                        isOpen: item.isFile(atPath: openPath), onOpen: onOpenFile,
-                        onDropToFolder: source == .blocks ? acceptBlockExport : nil
+                        isOpen: item.isFile(atPath: openPath), isHighlighted: item.isFile(atPath: highlightedPath),
+                        onOpen: onOpenFile, onDropToFolder: source == .blocks ? acceptBlockExport : nil
                     )
                 }
                 .listStyle(.plain)
@@ -1038,6 +1039,8 @@ private struct DiskFolderRows: View {
     @State private var targetedFolder: String?
 
     var body: some View {
+        // Podświetlenie czytane raz tutaj, nie w każdym wierszu (#155).
+        let highlightedPath = library.highlightedFile?.standardizedFileURL.path
         ForEach(library.subfolders(of: path), id: \.self) { name in
             let child = path.isEmpty ? name : path + "/" + name
             DisclosureGroup(isExpanded: expansion(of: child)) {
@@ -1057,8 +1060,8 @@ private struct DiskFolderRows: View {
         ForEach(library.files(in: path)) { item in
             DiskFileRow(
                 library: library, item: item, showsFolder: false,
-                isOpen: item.isFile(atPath: openPath), onOpen: onOpenFile,
-                onDropToFolder: onDropToFolder
+                isOpen: item.isFile(atPath: openPath), isHighlighted: item.isFile(atPath: highlightedPath),
+                onOpen: onOpenFile, onDropToFolder: onDropToFolder
             )
         }
     }
@@ -1117,6 +1120,11 @@ private struct DiskFileRow: View {
     let showsFolder: Bool
     /// Ten plik jest właśnie otwarty na canvasie.
     let isOpen: Bool
+    /// Świeżo zapisany blok (`DiskBankLibrary.highlightedFile`). Podaje go rodzic: wiersz
+    /// nie może czytać biblioteki sam — każdy odczyt obserwowanej własności rejestruje
+    /// wiersz w SwiftUI, a przy 6 513 wierszach jedno kliknięcie gdziekolwiek w oknie
+    /// zajmowało sekundy (#155).
+    let isHighlighted: Bool
     let onOpen: (URL) -> Void
     /// Lista Blocks: moduły z kanwy upuszczone na plik zapisują się w jego folderze.
     var onDropToFolder: ((_ providers: [NSItemProvider], _ path: String) -> Bool)?
@@ -1128,7 +1136,10 @@ private struct DiskFileRow: View {
     @Environment(\.blockLoadPreview) private var blockLoadPreview
 
     var body: some View {
-        row
+        // `row` to if/else: bez opakowania lista nie wie, że to zawsze jeden wiersz, i przy
+        // każdej zmianie w oknie liczy wszystkie pliki folderu, nie tylko widoczne — przy
+        // 6 513 patchach sekundy kółeczka po każdym kliknięciu (#155).
+        HStack(spacing: 0) { row }
             .help(help)
             .onHover { inside in
                 guard inside, !summaryRequested else { return }
@@ -1203,11 +1214,6 @@ private struct DiskFileRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-    }
-
-    /// Świeżo zapisany blok (`DiskBankLibrary.highlightedFile`).
-    private var isHighlighted: Bool {
-        library.highlightedFile?.standardizedFileURL == item.url.standardizedFileURL
     }
 
     /// Wiersz listy Blocks — klik niczego nie otwiera.
