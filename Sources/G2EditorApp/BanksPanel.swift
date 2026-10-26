@@ -1226,12 +1226,12 @@ private struct DiskFileRow: View {
         inBlocks && !item.isPerformance
     }
 
-    /// Tagi w kolejności tęczy z menu Findera. Nazwy z listy ulubionych tagów Findera
-    /// użytkownika (`FavoriteTagNames`, ta sama kolejność; u użytkownika po polsku:
-    /// „Czerwony"…), żeby nadany tu tag był TYM SAMYM tagiem co w Finderze, a nie nowym
-    /// „Red" obok „Czerwony" — `NSWorkspace.fileLabels` daje angielskie nazwy nawet na
-    /// polskim systemie (sprawdzone 2026-09-16). Ikon w menu nie ma (macOS 15 ich nie
-    /// pokazuje) — kolor widać na wierszu zaraz po kliknięciu.
+    /// Tagi w kolejności tęczy z menu Findera. W menu angielska nazwa koloru (UI po
+    /// angielsku), ale do pliku idzie nazwa z listy ulubionych tagów Findera użytkownika
+    /// (`FavoriteTagNames`, ta sama kolejność; u użytkownika po polsku: „Czerwony"…), żeby
+    /// nadany tu tag był TYM SAMYM tagiem co w Finderze, a nie nowym „Red" obok
+    /// „Czerwony" — `NSWorkspace.fileLabels` daje angielskie nazwy nawet na polskim
+    /// systemie (sprawdzone 2026-09-16). Przy nazwie kolorowa kropka jak w Finderze.
     @ViewBuilder
     private var menu: some View {
         Button("Rename…", action: rename)
@@ -1240,8 +1240,14 @@ private struct DiskFileRow: View {
         }
         Section("Tags") {
             ForEach(Self.rainbow, id: \.self) { color in
-                let name = Self.tagName(color: color)
-                Toggle(name, isOn: tagBinding(color: color, name: name))
+                Toggle(isOn: tagBinding(color: color, name: Self.tagName(color: color))) {
+                    Label {
+                        Text(FinderTag.colorNames[color])
+                    } icon: {
+                        Image(nsImage: Self.menuDot(color: color))
+                    }
+                    .labelStyle(.titleAndIcon)
+                }
             }
         }
         Section {
@@ -1254,6 +1260,19 @@ private struct DiskFileRow: View {
     /// Numery kolorów Findera w kolejności jego menu: czerwony → szary.
     private static let rainbow = [6, 7, 5, 2, 4, 3, 1]
 
+    /// Kropka koloru tagu do menu — gotowy obrazek, nie symbol SF: menu macOS rysuje
+    /// symbole jednym kolorem tekstu, a obrazek z `isTemplate = false` zostaje kolorowy.
+    private static func menuDot(color: Int) -> NSImage {
+        let fill = NSWorkspace.shared.fileLabelColors[color]
+        let image = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
+            fill.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
     private static func tagName(color: Int) -> String {
         let rank = FinderTag(name: "", color: color).rainbowRank
         if let favourites = UserDefaults(suiteName: "com.apple.finder")?.stringArray(forKey: "FavoriteTagNames"),
@@ -1263,6 +1282,12 @@ private struct DiskFileRow: View {
         }
         let labels = NSWorkspace.shared.fileLabels
         return color < labels.count ? labels[color] : "Tag \(color)"
+    }
+
+    /// Tag koloru o nazwie z Findera („Czerwony") pokazany po angielsku; tag z własną
+    /// nazwą użytkownika — pod tą nazwą.
+    private static func displayName(_ tag: FinderTag) -> String {
+        tag.colorName.isEmpty || tag.name != tagName(color: tag.color) ? tag.name : tag.colorName
     }
 
     private func tagBinding(color: Int, name: String) -> Binding<Bool> {
@@ -1325,7 +1350,7 @@ private struct DiskFileRow: View {
         }
         lines += summary?.lines ?? []
         if !item.tags.isEmpty {
-            lines.append("Tags: " + item.tags.map(\.name).joined(separator: ", "))
+            lines.append("Tags: " + item.tags.map(Self.displayName).joined(separator: ", "))
         }
         lines.append(item.url.path)
         if isBlock {

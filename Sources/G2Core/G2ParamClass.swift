@@ -50,6 +50,13 @@ public struct G2ParamClass: Hashable, Sendable {
         return G2ParamClass(rawValue: classes[paramIndex])
     }
 
+    /// Górna granica skali parametru w oryginalnym edytorze (bajt +0x0B opisu) albo
+    /// `nil`, gdy oryginał tego modułu nie zna.
+    public static func maximum(moduleTypeID: Int, paramIndex: Int) -> Int? {
+        guard let values = maxima[moduleTypeID], paramIndex < values.count else { return nil }
+        return Int(values[paramIndex])
+    }
+
     // MARK: Mutator
 
     /// Klasy, których mutator nie rusza — lista z Muta Synth Data (IsEnabled),

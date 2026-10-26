@@ -178,6 +178,7 @@ final class DiskBankLibraryTests: XCTestCase {
         try tag("Leads/saw.pch2", ["Czerwony\n6"])
         let library = await library()
         XCTAssertEqual(library.items(matching: "czerw").map(\.name), ["saw"])
+        XCTAssertEqual(library.items(matching: "red").map(\.name), ["saw"], "English colour name shown in the menu")
     }
 
     /// Cztery kolejności jak w Finderze: nazwa rosnąco, data i rozmiar od największych,

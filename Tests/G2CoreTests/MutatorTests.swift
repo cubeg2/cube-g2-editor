@@ -436,6 +436,123 @@ final class MutatorTests: XCTestCase {
         XCTAssertTrue(values.contains(1))
     }
 
+    /// Patch z jednym SeqNote o długości 16 (`Length` = 15).
+    private func seqNotePatch() -> G2Patch {
+        var patch = G2Patch()
+        var sequencer = G2Module(id: 1, typeID: 121, area: .voice) // SeqNote
+        sequencer.parameters = Array(repeating: 64, count: 37)
+        sequencer.parameters[33] = 15
+        sequencer.parameterVariations = Array(repeating: sequencer.parameters,
+                                              count: G2Patch.runtimeVariationCount)
+        sequencer.hasParameterEntry = true
+        patch.add(module: sequencer)
+        return patch
+    }
+
+    /// Zgłoszenie 2026-10-26: długość SeqNote ustawiona na 8 przy słuchanym dziecku
+    /// wracała po Randomize do 16. Randomize losuje z kratki z focusem, a ręczna zmiana
+    /// szła tylko do bufora odsłuchu — kratka pamiętała 16. Oryginał
+    /// (`SetParamValue`) wpisuje taką zmianę także do kratki z focusem.
+    func testEditWhileAuditioningGoesIntoTheFocusedBox() {
+        let state = makeState(seqNotePatch())
+        undoStep(on: state) { state.mutatorRandomize() }
+        XCTAssertTrue(state.isAuditioningMutation)
+
+        undoStep(on: state) { state.setParameter(moduleID: 1, paramIndex: 33, value: 7, area: .voice) }
+        let length = G2Individual.Key(area: .voice, moduleID: 1, paramIndex: 33)
+        XCTAssertEqual(state.mutatorParents[0]?[length], 7, "kratka z focusem gra 8 kroków")
+
+        undoStep(on: state) { state.mutatorRandomize() }
+        let children = state.mutatorParents.prefix(G2Mutator.childCount).compactMap(\.self)
+        XCTAssertEqual(children.count, G2Mutator.childCount)
+        XCTAssertTrue(children.allSatisfy { $0[length] == 7 }, "Length nie jest losowany — zostaje 8")
+
+        state.undoManager.undo() // drugi Randomize
+        state.undoManager.undo() // zmiana Length
+        XCTAssertEqual(state.mutatorParents[0]?[length], 15, "undo cofa też kratkę")
+    }
+
+    /// Zgłoszenie 2026-10-26: SeqLev dodany po pierwszym Randomize nie losował się wcale
+    /// — kratki go nie znały, a operacje pomijają parametry, których rodzic nie ma.
+    /// Oryginał (`AddModule`) dopisuje nowy moduł do wszystkich kratek.
+    func testModuleAddedAfterBreedingIsRandomizedToo() throws {
+        let state = makeState(seqNotePatch())
+        undoStep(on: state) { state.mutatorRandomize() }
+        var added: Int?
+        undoStep(on: state) { added = state.addModule(typeID: 146, area: .voice) } // SeqLev
+        let id = try XCTUnwrap(added)
+
+        undoStep(on: state) { state.mutatorRandomize() }
+        let steps = (0 ..< 16).map { G2Individual.Key(area: .voice, moduleID: id, paramIndex: $0) }
+        let children = state.mutatorParents.prefix(G2Mutator.childCount).compactMap(\.self)
+        let rows = children.map { child in steps.map { child[$0] } }
+        XCTAssertTrue(rows.allSatisfy { $0.allSatisfy { $0 != nil } }, "dzieci znają SeqLev")
+        XCTAssertGreaterThan(Set(rows).count, 1, "kroki SeqLev się losują")
+    }
+
+    /// Patch z jednym modułem każdego typu, który oryginał zna — parametry na zerze.
+    private func everyModulePatch() -> G2Patch {
+        var patch = G2Patch()
+        for (index, def) in ModuleDatabase.all.enumerated()
+            where G2ParamClass.maximum(moduleTypeID: def.id, paramIndex: 0) != nil
+        {
+            var module = G2Module(id: index + 1, typeID: def.id, area: .voice)
+            module.parameters = Array(repeating: 0, count: def.paramNames.count)
+            module.parameterVariations = Array(repeating: module.parameters,
+                                               count: G2Patch.runtimeVariationCount)
+            patch.add(module: module)
+        }
+        return patch
+    }
+
+    /// Skala każdego parametru = maksimum z opisu parametru w oryginale (bajt +0x0B),
+    /// z którego losuje `CopyRandomizeContext`. Przegląd 2026-10-26: na 903 parametry
+    /// różniło się 16, w tym `LevConv.OutputType` (6 pozycji) losowany z 0…127.
+    func testGenomeScaleMatchesTheOriginalForEveryParameter() {
+        let patch = everyModulePatch()
+        let types = Dictionary(uniqueKeysWithValues: patch.modules(in: .voice).map { ($0.id, $0.typeID) })
+        let genome = G2MutatorGenome(patch: patch)
+        var mismatches: [String] = []
+        for gene in genome.genes {
+            guard let typeID = types[gene.moduleID],
+                  let maximum = G2ParamClass.maximum(moduleTypeID: typeID, paramIndex: gene.paramIndex)
+            else { continue }
+            if gene.maxValue != max(1, maximum) {
+                mismatches.append("\(typeID).\(gene.paramIndex): \(gene.maxValue) ≠ \(maximum)")
+            }
+        }
+        XCTAssertGreaterThan(genome.genes.count, 900)
+        XCTAssertEqual(mismatches, [])
+    }
+
+    /// Randomize i Mutate przy zdjętych blokadach: każdy parametr, który wolno ruszać,
+    /// dostaje różne wartości i nigdy nie wychodzi poza swoją skalę; pozostałe zostają
+    /// — także w modułach wyłączonych z mutacji z góry (wejścia, wyjścia, MIDI…).
+    func testRandomizeAndMutateReachEveryMutableParameterInsideItsScale() {
+        let patch = everyModulePatch()
+        let genome = G2MutatorGenome(patch: patch)
+        let base = G2Mutator.individual(from: patch, variation: 0, genome: genome)
+        var generator = SeededGenerator(seed: 26)
+        var children: [G2Individual] = []
+        for _ in 0 ..< 20 {
+            children += G2Mutator.randomize(base: base, genome: genome, locks: allOpen, using: &generator)
+            children += G2Mutator.mutate(parent: base, genome: genome, settings: G2MutatorSettings(),
+                                         locks: allOpen, using: &generator)
+        }
+        var problems: [String] = []
+        for gene in genome.genes {
+            let values = Set(children.compactMap { $0[gene.key] })
+            let name = "\(gene.moduleID).\(gene.paramIndex)"
+            if values.contains(where: { $0 < 0 || $0 > Double(gene.maxValue) }) {
+                problems.append("\(name) poza 0…\(gene.maxValue): \(values.sorted())")
+            }
+            let enabled = G2Mutator.isEnabled(gene, locks: allOpen)
+            if enabled, values.count < 2 { problems.append("\(name) się nie zmienia") }
+            if !enabled, values != [0] { problems.append("\(name) zablokowany, a ruszony") }
+        }
+        XCTAssertEqual(problems, [])
+    }
+
     /// Gen z fixture o zadanej krzywej — do testów rozkładu Randomize.
     private func gene(_ curve: G2ParamClass.Curve, in genome: G2MutatorGenome) throws -> G2MutatorGenome.Gene {
         try XCTUnwrap(genome.genes.first { $0.curve == curve && $0.maxValue == 127 && !$0.moduleExcluded })

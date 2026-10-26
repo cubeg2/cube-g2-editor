@@ -1,3 +1,10 @@
+## 0.1.5 — October 26, 2026
+- **The Mutator keeps your edits.** If you change a parameter while you listen to a child, that child changes too, so the next Randomize no longer brings the old value back. A SeqNote length set to 8 now stays 8 instead of returning to 16.
+- **Mutator: modules added later are mutated too.** Modules you add after breeding (for example SeqLev, SeqVal, ClkDiv or Pulse) now take part in Mutate and Randomize.
+- **The Mutator uses the original value range of every parameter.** All 903 module parameters were checked against the original editor. LevConv's Output Type no longer gets values outside its six positions.
+- **Clearer message when the G2 goes silent.** When the G2 stops responding during an upload, the bar now suggests switching it off and on (the editor reconnects by itself) instead of blaming a long Textpad note.
+- **The tag menu in the Patches drawer is in English**, with a coloured dot next to every colour. Searching for "red" also finds patches tagged in another language in the Finder.
+
 ## 0.1.4 — October 25, 2026
 - **Big patch folders no longer slow the editor down.** With a folder of thousands of patches open in the Patches drawer, every click anywhere in the window could spin the wait cursor for several seconds, and restarting did not help because the editor reopens the last folder. With 6,500 patches in one folder a click took over 4 seconds; now clicks and stepping through patches are instant again.
 - **The patch list appears much sooner after launch.** Reading a library of 45,000 files took almost 7 seconds; it now takes about 1.5. The editor no longer asks macOS about iCloud for every single file when the folder is not in iCloud, and reads the files on all processor cores.

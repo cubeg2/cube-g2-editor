@@ -198,14 +198,20 @@ public struct G2MutatorGenome: Sendable {
     ///
     /// 1. potwierdzony zakres sprzętowy, gdy baza go zna (`2-Out Dest` ma sześć
     ///    napisów, a sprzęt dwa stany);
-    /// 2. liczba stanów przycisku albo selektora — stąd wiadomo, że krok `Evnt`
+    /// 2. maksimum z opisu parametru w oryginale (`G2ParamClass.maximum`) — to samo,
+    ///    z którego losuje `CopyRandomizeContext`. Do 2026-10-26 go nie było i
+    ///    `LevConv.OutputType` (sześć pozycji) losował się z 0…127;
+    /// 3. liczba stanów przycisku albo selektora — stąd wiadomo, że krok `Evnt`
     ///    sekwencera ma dwa stany, a nie 128. Bez tego Randomize losował z pełnej
     ///    skali i zapalał krok w 127 przypadkach na 128, więc wszystkie kroki
     ///    wychodziły jednakowo włączone;
-    /// 3. pełna skala gałki.
+    /// 4. pełna skala gałki.
     static func maxValue(moduleTypeID: Int, paramIndex: Int) -> Int {
         if let range = ParameterRangeDatabase.range(moduleTypeID: moduleTypeID, codeRef: paramIndex) {
             return range.upperBound
+        }
+        if let maximum = G2ParamClass.maximum(moduleTypeID: moduleTypeID, paramIndex: paramIndex) {
+            return maximum
         }
         if let options = G2ParameterText.buttonOptions(moduleTypeID: moduleTypeID, paramIndex: paramIndex) {
             return Swift.max(0, options.count - 1)

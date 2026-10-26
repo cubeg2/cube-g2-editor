@@ -1002,10 +1002,7 @@ public final class DeviceConnection {
                 // wiadomo, co w nim gra. Ale użytkownik musi to zobaczyć, a slot nie może
                 // dostawać zmian na żywo, jakby wszystko było w porządku.
                 unconfirmedSlots[slot] = slotFiles.indices.contains(offset) ? slotFiles[offset] : nil
-                uploadFailure = "Slot \(Self.slotLabels[slot]): the G2 did not accept this patch, so the slot "
-                    + "is silent. One known cause: a patch note (Textpad) longer than about 1000 characters. "
-                    + "After fixing it, use Patch ▸ Download To Slot — a change to modules or cables also "
-                    + "sends the patch again."
+                uploadFailure = Self.uploadFailureMessage(slot: slot, error: error)
                 // Bez `status = .error`, tak jak przy `bankLoadError`: odrzucony patch to nie
                 // zerwane połączenie, a błąd blokował na 2 s (do `tick`) każdą wysyłkę —
                 // także tę z poprawionym patchem. Zerwany kabel i tak wykryje `tick`.
@@ -1460,6 +1457,20 @@ public final class DeviceConnection {
 
     public func dismissUploadFailure() {
         uploadFailure = nil
+    }
+
+    /// Tekst paska po nieudanej wysyłce. Odmowa `0x7E` i milczenie to różne sytuacje: po
+    /// odmowie Nord żyje i czeka na poprawiony patch, a milczący bywa zawieszony i pomaga
+    /// dopiero wyłączenie i włączenie. Do 2026-10-25 oba dostawały radę o notatce (#157).
+    static func uploadFailureMessage(slot: Int, error: Error) -> String {
+        let label = slotLabels[slot]
+        if case .rejected? = error as? G2UsbError {
+            return "Slot \(label): the G2 did not accept this patch, so the slot is silent. One known cause: "
+                + "a patch note (Textpad) longer than about 1000 characters. After fixing it, use "
+                + "Patch ▸ Download To Slot — a change to modules or cables also sends the patch again."
+        }
+        return "Slot \(label): the G2 stopped responding while receiving this patch. If its display and "
+            + "buttons no longer react, switch the G2 off and on — the editor reconnects by itself."
     }
 
     /// Czy slot ma w Nordzie potwierdzoną zawartość — tylko wtedy wolno wysyłać do niego

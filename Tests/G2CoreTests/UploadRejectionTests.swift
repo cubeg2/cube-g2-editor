@@ -96,6 +96,8 @@ final class UploadRejectionTests: XCTestCase {
         // Odmowa rozpoznana od razu, a nie po 10 s czekania na potwierdzenie.
         XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
         XCTAssertNotNil(device.uploadFailure, "użytkownik ma zobaczyć, że Nord nie przyjął patcha")
+        XCTAssertTrue(device.uploadFailure?.contains("did not accept") == true,
+                      "odmowa dostaje tekst o odmowie, nie radę o zawieszonym Nordzie")
         XCTAssertFalse(device.isSlotConfirmed(0))
         XCTAssertEqual(device.status, .connected, "odrzucony patch to nie zerwane połączenie")
         XCTAssertEqual(transport.written.count, 2, "SelectSlot + SetPatch — bez włączania niepotwierdzonego slotu")
@@ -116,5 +118,23 @@ final class UploadRejectionTests: XCTestCase {
         XCTAssertEqual(transport.written.count, 6, "SelectSlot, SetPatch, selekcja slotów, SelectSlot")
         XCTAssertNil(device.uploadFailure)
         XCTAssertTrue(device.isSlotConfirmed(0))
+    }
+
+    /// #157: Nord zamilkł przy `0x37` (bez odmowy) i trzeba go było wyłączyć — a pasek
+    /// radził skrócić notatkę, której patch nie miał. Milczenie dostaje radę o restarcie.
+    /// Sama wiadomość, bez transportu: prawdziwe milczenie kosztowałoby 10 s czekania.
+    func testSilentDeviceGetsRestartAdviceInsteadOfTheTextpadHint() {
+        let silent = DeviceConnection.uploadFailureMessage(
+            slot: 0, error: G2UsbError.badResponse("the device did not acknowledge the patch upload to slot 0")
+        )
+        XCTAssertTrue(silent.hasPrefix("Slot A:"))
+        XCTAssertTrue(silent.contains("switch the G2 off and on"))
+        XCTAssertFalse(silent.contains("Textpad"))
+
+        let refused = DeviceConnection.uploadFailureMessage(
+            slot: 1, error: G2UsbError.rejected("the patch upload to slot 1")
+        )
+        XCTAssertTrue(refused.hasPrefix("Slot B:"))
+        XCTAssertTrue(refused.contains("Textpad"))
     }
 }

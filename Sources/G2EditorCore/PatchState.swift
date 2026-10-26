@@ -550,6 +550,8 @@ public final class PatchState {
             slots[slot].setMode(moduleID: moduleID, modeIndex: index, value: clamped, in: area)
         } else {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: index, value: clamped, in: area)
+            storeInFocusedBox(slot: slot, area: area, moduleID: moduleID, paramIndex: index,
+                              value: clamped, variation: slots[slot].activeVariation)
             if !fromAdjuster {
                 updateAdjusterBaseline(slot: slot, area: area, moduleID: moduleID, paramIndex: index,
                                        value: clamped, variation: slots[slot].activeVariation)
@@ -1173,7 +1175,7 @@ public final class PatchState {
     private func mutatorMutate(seed: G2Individual?) {
         beginMutatorEdit("Mutate")
         if let seed {
-            mutatorParents[G2Mutator.motherIndex] = seed
+            mutatorParents[G2Mutator.motherIndex] = knowingAllModules(seed)
         } else if mutatorParents[G2Mutator.motherIndex] == nil {
             mutatorParents[G2Mutator.motherIndex] = currentIndividual()
         }
@@ -1310,8 +1312,8 @@ public final class PatchState {
     }
 
     private func placeParents(_ first: G2Individual?, _ second: G2Individual?) -> Bool {
-        if let first { mutatorParents[G2Mutator.motherIndex] = first }
-        if let second { mutatorParents[G2Mutator.fatherIndex] = second }
+        if let first { mutatorParents[G2Mutator.motherIndex] = knowingAllModules(first) }
+        if let second { mutatorParents[G2Mutator.fatherIndex] = knowingAllModules(second) }
         return mutatorHasBothParents
     }
 
@@ -1688,6 +1690,40 @@ public final class PatchState {
         audition(individual)
     }
 
+    /// Zmiana parametru, gdy slot gra z bufora odsłuchu, trafia też do kratki z focusem
+    /// — jak `SetParamValue` oryginału. Bez tego kratka pamiętała dźwięk
+    /// sprzed zmiany i następne Randomize/Mutate cofały ją po cichu: długość SeqNote
+    /// ustawiona na 8 wracała do 16 (zgłoszenie 2026-10-26).
+    private func storeInFocusedBox(slot: Int, area: PatchArea, moduleID: Int, paramIndex: Int,
+                                   value: Int, variation: Int)
+    {
+        guard slot == selectedSlot, variation == G2Patch.mutatorVariation, let focus = mutatorFocus
+        else { return }
+        let key = G2Individual.Key(area: area, moduleID: moduleID, paramIndex: paramIndex)
+        switch focus.kind {
+        case .parents where mutatorParents.indices.contains(focus.index):
+            mutatorParents[focus.index]?[key] = Double(value)
+        case .storage where mutatorStorage.indices.contains(focus.index):
+            mutatorStorage[focus.index]?[key] = Double(value)
+        default:
+            break
+        }
+    }
+
+    /// Kratka uzupełniona o moduły dodane do patcha po jej powstaniu — z ich bieżącymi
+    /// wartościami, jak `AddModule` oryginału. Bez tego Mutate i Randomize
+    /// pomijały taki moduł w całości, bo rodzic nie miał jego parametrów.
+    private func knowingAllModules(_ individual: G2Individual) -> G2Individual {
+        let genome = mutatorGenome
+        guard genome.genes.contains(where: { individual[$0.key] == nil }) else { return individual }
+        let current = currentIndividual()
+        var result = individual
+        for gene in genome.genes where result[gene.key] == nil {
+            result[gene.key] = current[gene.key]
+        }
+        return result
+    }
+
     /// Kratka zapalona w oknie mutatora — to, co gra oglądany slot. Gra wariację: zapalona
     /// ta sama kratka co w górnym pasku, także w świeżo otwartym oknie. Gra bufor
     /// odsłuchu: kratka, z której ten dźwięk przyszedł.
@@ -1928,6 +1964,10 @@ public final class PatchState {
                                        focus: focus, parentCount: parentCount, name: name)
         }
         undoManager.setActionName(name)
+        // Kratki poznają moduły dodane od ich powstania; po zapisie undo, więc
+        // cofnięcie wraca do kratek sprzed uzupełnienia.
+        mutatorParents = mutatorParents.map { $0.map(knowingAllModules) }
+        mutatorStorage = mutatorStorage.map { $0.map(knowingAllModules) }
     }
 
     private func restoreMutatorBoxes(parents: [G2Individual?], storage: [G2Individual?],
@@ -3293,6 +3333,8 @@ public final class PatchState {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: paramIndex,
                                      value: value, in: area, variation: variation)
         }
+        storeInFocusedBox(slot: slot, area: area, moduleID: moduleID, paramIndex: paramIndex,
+                          value: max(0, min(127, value)), variation: variation)
         updateAdjusterBaseline(slot: slot, area: area, moduleID: moduleID, paramIndex: paramIndex,
                                value: max(0, min(127, value)), variation: variation)
     }

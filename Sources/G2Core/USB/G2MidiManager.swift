@@ -13,6 +13,8 @@ public enum G2UsbError: LocalizedError {
     case claimInterfaceFailed
     case transferFailed(String)
     case badResponse(String)
+    /// Urządzenie odpowiedziało odmową `0x7E` — żyje, tylko komendy nie przyjęło.
+    case rejected(String)
     case notConnected
 
     public var errorDescription: String? {
@@ -23,6 +25,7 @@ public enum G2UsbError: LocalizedError {
         case .claimInterfaceFailed: "Could not claim USB interface 0"
         case let .transferFailed(reason): "USB transfer failed: \(reason)"
         case let .badResponse(reason): "Unexpected device response: \(reason)"
+        case let .rejected(reason): "The device refused \(reason)"
         case .notConnected: "G2 is not connected"
         }
     }
@@ -530,7 +533,8 @@ public actor G2MidiManager {
         let payload = G2UsbProtocol.setPatchPayload(slot: slot, version: slotVersions[Int(slot)],
                                                     patchName: name, sectionBytes: sectionBytes)
         guard let response = try await performWrite(payload, label: label, timeout: 10.0,
-                                                    expecting: G2UsbProtocol.subPatchVersionResponse)
+                                                    expecting: G2UsbProtocol.subPatchVersionResponse,
+                                                    rejection: .rejected("the patch upload to slot \(slot)"))
         else {
             throw G2UsbError.badResponse("the device did not acknowledge the patch upload to slot \(slot)")
         }
@@ -1891,8 +1895,11 @@ public actor G2MidiManager {
     /// `expecting` to podkomenda uznawana wtedy za poprawną odpowiedź (bez niej każda inna
     /// niż `OK` jest tylko odnotowywana w logu jako podejrzana).
     /// Zwraca `nil`, gdy urządzenie nie odpowiedziało albo odrzuciło komendę (0x7E).
+    /// Z `rejection` odmowa rzuca tym błędem — wołający odróżni ją wtedy od milczenia,
+    /// które przy wgrywaniu patcha bywa zawieszonym Nordem (#157).
     private func performWrite(_ payload: [UInt8], label: String, timeout: TimeInterval,
-                              expecting: UInt8?) async throws -> G2UsbProtocol.DecodedResponse?
+                              expecting: UInt8?,
+                              rejection: G2UsbError? = nil) async throws -> G2UsbProtocol.DecodedResponse?
     {
         try sendFrame(payload)
         // Odpowiedzią zapisu jest `OK` albo `ERROR` — i nic innego. `expecting` dokłada
@@ -1910,6 +1917,7 @@ public actor G2MidiManager {
         }
         if response.subCommand == G2UsbProtocol.subResponseError {
             log?("    ! \(label): device REJECTED the command (0x7E), payload \(hex(response.payload))")
+            if let rejection { throw rejection }
             return nil
         }
         return response

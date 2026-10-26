@@ -29,6 +29,15 @@ public struct FinderTag: Sendable, Equatable, Hashable {
         self.color = color
     }
 
+    /// Angielskie nazwy kolorów Findera, indeks = `color`. Edytor pokazuje tylko je — nazwa
+    /// zapisana w pliku bywa w języku systemu („Czerwony"), a UI ma być po angielsku.
+    public static let colorNames = ["", "Gray", "Green", "Purple", "Blue", "Yellow", "Red", "Orange"]
+
+    /// Angielska nazwa koloru tagu; tag bez koloru (lub spoza listy) — pusta.
+    public var colorName: String {
+        color > 0 && color < Self.colorNames.count ? Self.colorNames[color] : ""
+    }
+
     /// Pozycja w tęczy z menu Findera (czerwony → szary), bez koloru na końcu — po tym
     /// sortuje „by tags", bo alfabet nazw dałby kolejność zależną od języka systemu.
     public var rainbowRank: Int {
@@ -407,14 +416,11 @@ public final class DiskBankLibrary {
         if let info = extendedAttribute("com.apple.FinderInfo", at: url), info.count >= 10 {
             let color = Int(info[9] >> 1) & 7
             if color > 0 {
-                return [FinderTag(name: Self.labelNames[color], color: color)]
+                return [FinderTag(name: FinderTag.colorNames[color], color: color)]
             }
         }
         return []
     }
-
-    /// Nazwy starych etykiet — Finder nie trzyma ich przy pliku, więc angielskie na stałe.
-    private nonisolated static let labelNames = ["", "Gray", "Green", "Purple", "Blue", "Yellow", "Red", "Orange"]
 
     private nonisolated static func extendedAttribute(_ name: String, at url: URL) -> Data? {
         let length = getxattr(url.path, name, nil, 0, 0, 0)
@@ -667,8 +673,9 @@ public final class DiskBankLibrary {
         return String(path[path.startIndex ..< slash])
     }
 
-    /// Filtr po nazwie, folderze i nazwie tagu — bez rozróżniania wielkości liter i znaków
-    /// diakrytycznych. Wynik w bieżącej kolejności.
+    /// Filtr po nazwie, folderze, nazwie tagu i angielskiej nazwie jego koloru (tę widać
+    /// w menu, nawet gdy w pliku tag nazywa się „Czerwony") — bez rozróżniania wielkości
+    /// liter i znaków diakrytycznych. Wynik w bieżącej kolejności.
     public func items(matching query: String) -> [DiskBankItem] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         let shown = items.filter(passesFilter)
@@ -676,7 +683,10 @@ public final class DiskBankLibrary {
         return Self.sorted(shown.filter {
             $0.name.localizedCaseInsensitiveContains(trimmed)
                 || $0.relativeFolder.localizedCaseInsensitiveContains(trimmed)
-                || $0.tags.contains { $0.name.localizedCaseInsensitiveContains(trimmed) }
+                || $0.tags.contains {
+                    $0.name.localizedCaseInsensitiveContains(trimmed)
+                        || $0.colorName.localizedCaseInsensitiveContains(trimmed)
+                }
                 || ($0.category > 0 && G2PatchCategory.name($0.category).localizedCaseInsensitiveContains(trimmed))
         }, by: sortOrder, reversed: sortReversed)
     }
