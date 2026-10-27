@@ -769,6 +769,11 @@ public actor G2MidiManager {
             {
                 slotVersions[Int(entry.slot)] = entry.version
             }
+            // `0x1F` to u Clavii „performance zwolniony": `HandlePerformanceRelease`
+            // ustawia stan synchronizacji na 1, a `CleanDirtyData` kończy go odblokowaniem
+            // synchronizacji edytora, czyli `7D 00`. Bez tego Nord przestawał nadawać diody
+            // i wskaźniki aż do wyłączenia (#163, log z 2026-10-27).
+            _ = try? await performStep(G2UsbProtocol.startPayload())
         }
     }
 

@@ -1,3 +1,7 @@
+## 0.1.6 — October 27, 2026
+- **LEDs and meters keep moving after you open a patch from disk.** After switching the G2 on, the first patch opened from disk switches it from Performance to Patch mode. From then on the G2 stopped sending its LED and meter data, so LFO and envelope LEDs and sequencer steps stood still until the G2 was switched off and on. Patches loaded from the G2's own memory were fine. The editor now finishes the mode switch the way the original editor does.
+- **The USB log can include LED and meter data.** Settings ▸ USB Log ▸ Include LED and meter data. Switch it on before the problem happens; it fills the log quickly.
+
 ## 0.1.5 — October 26, 2026
 - **The Mutator keeps your edits.** If you change a parameter while you listen to a child, that child changes too, so the next Randomize no longer brings the old value back. A SeqNote length set to 8 now stays 8 instead of returning to 16.
 - **Mutator: modules added later are mutated too.** Modules you add after breeding (for example SeqLev, SeqVal, ClkDiv or Pulse) now take part in Mutate and Randomize.

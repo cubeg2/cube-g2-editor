@@ -132,6 +132,25 @@ final class ExtendedStreamTests: XCTestCase {
         }
         XCTAssertEqual(versions, [0x10, 0x18, 0x12, 0x0C])
     }
+
+    /// #163: po `0x1F` Nord czeka na `7D 00` (u Clavii odblokowanie synchronizacji edytora na
+    /// końcu `CleanDirtyData`). Bez niego przestawał nadawać diody i wskaźniki aż do
+    /// wyłączenia — log z 2026-10-27: 46 s bez jednego pakietu po `0x3E 00`.
+    func testPerformanceModeUnlocksEditorSyncAfterRelease() async throws {
+        let release: [UInt8] = [0x01, 0x0C, 0x40, 0x1F, 0x05, 0x36, 0x00, 0x10, 0x36, 0x01,
+                                0x18, 0x36, 0x02, 0x12, 0x36, 0x03, 0x0C, 0xCE, 0xC4]
+        let transport = ScriptedTransport()
+        transport.queues[G2UsbProtocol.endpointInterrupt] = [announcement(length: release.count), embedded(okFrame)]
+        transport.queues[G2UsbProtocol.endpointExtended] = [release]
+
+        let manager = G2MidiManager()
+        await manager.attachTransportForTesting(transport)
+
+        try await manager.setPerformanceMode(false)
+        let unlock = G2UsbProtocol.startPayload()
+        XCTAssertTrue(transport.written.contains { $0.count >= 2 + unlock.count && Array($0[2 ..< 2 + unlock.count]) == unlock },
+                      "po przełączeniu trybu ma pójść 7D 00")
+    }
 }
 
 /// #129: po wgraniu performance'u lustro `patches[]` zostawało przy poprzedniej zawartości,

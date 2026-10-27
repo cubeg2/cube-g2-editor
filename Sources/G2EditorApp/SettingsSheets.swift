@@ -524,6 +524,9 @@ struct FeedbackSettingsTab: View {
                             + "switch the log on after the problem happened.")
                             .fixedSize(horizontal: false, vertical: true)
                         Toggle("Write USB log to file", isOn: $device.usbLogEnabled)
+                        Toggle("Include LED and meter data", isOn: $device.usbLogIncludesVisuals)
+                            .help("Also log the LED and meter stream from the G2 (about 80 lines per second). "
+                                + "Switch it on before the problem happens.")
                         Button("Reveal USB Log in Finder") {
                             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: device.usbLogPath)])
                         }
@@ -724,6 +727,9 @@ struct ConnectionSettingsTab: View {
                                      width: cardWidth(3))
                         {
                             Toggle("Write USB log to file", isOn: $device.usbLogEnabled)
+                            Toggle("Include LED and meter data", isOn: $device.usbLogIncludesVisuals)
+                                .help("Also log the LED and meter stream from the G2 (about 80 lines per second). "
+                                    + "Switch it on before the problem happens.")
                             Button("Reveal USB Log in Finder") {
                                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: device.usbLogPath)])
                             }
