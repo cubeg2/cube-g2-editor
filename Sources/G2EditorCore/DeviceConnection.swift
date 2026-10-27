@@ -200,20 +200,7 @@ public final class DeviceConnection {
         didSet {
             guard usbLogEnabled != oldValue else { return }
             let enabled = usbLogEnabled
-            let visuals = usbLogIncludesVisuals
-            Task { [weak self] in await self?.setLogging(enabled, includeNotifications: visuals) }
-        }
-    }
-
-    /// Do logu idzie też strumień diod i wskaźników (`0x39`/`0x3A`, ~80 linii/s). Bez tego
-    /// log nie odróżni „Nord przestał nadawać diody" od „edytor ich nie pokazuje" (zgłoszenie
-    /// 2026-10-27). Pierścień 20 000 linii mieści wtedy ok. 4 minut, więc domyślnie wyłączone.
-    public var usbLogIncludesVisuals = false {
-        didSet {
-            guard usbLogIncludesVisuals != oldValue else { return }
-            let enabled = usbLogEnabled
-            let visuals = usbLogIncludesVisuals
-            Task { [weak self] in await self?.setLogging(enabled, includeNotifications: visuals) }
+            Task { [weak self] in await self?.setLogging(enabled) }
         }
     }
 
@@ -356,7 +343,7 @@ public final class DeviceConnection {
         // otwiera port na ułamek sekundy — pokazywane wtedy „Connecting…" (dłuższe niż
         // „No G2") przesuwało co chwilę wszystko na prawo od wskaźnika w pasku.
         do {
-            await setLogging(usbLogEnabled, includeNotifications: usbLogIncludesVisuals)
+            await setLogging(usbLogEnabled)
             // Wskaźniki chodzą ZAWSZE. Przełącznik „Live Meters" zniknął z belki
             // 2026-09-11: wyłączenie ich nic nie przyspieszało, a odbierało edytorowi
             // jedyny podgląd tego, co naprawdę gra. Zawór u źródła
