@@ -74,6 +74,10 @@ public struct G2SilenceGuard {
     private let sources: [Node: [Node]]
     private let sinks: [Node]
     private let strictness: Strictness
+    /// Zawory głośności na drodze do wyjścia: parametr → +1, gdy wyżej znaczy głośniej,
+    /// −1, gdy niżej znaczy głośniej (atak obwiedni, cutoff górnoprzepustu), 0 dla wyboru
+    /// przełącznika, którędy idzie dźwięk (zostaje jak w rodzicu) → `protect`.
+    public private(set) var loudnessValves: [G2Individual.Key: Double] = [:]
 
     private static let sinkTypes: Set<String> = ["2-Out", "4-Out"]
 
@@ -117,6 +121,7 @@ public struct G2SilenceGuard {
         self.modules = modules
         self.sources = sources
         self.sinks = sinks
+        loudnessValves = findLoudnessValves()
     }
 
     /// Czy dźwięk `individual` na pewno nic nie zagra wg reguł z nagłówka.
@@ -264,6 +269,169 @@ public struct G2SilenceGuard {
         var valves = ["LevMaster"]
         valves += number.isEmpty ? ["Lev", "On"] : ["Lev\(number)", "On\(number)"]
         return !valves.contains { isClosed(entry, param: $0, individual) }
+    }
+
+    // MARK: - Zawory głośności (gałka „Not silent" powyżej zera)
+
+    /// Dziecko, w którym zawory głośności idą w stronę ciszy tylko o `1 − amount` drogi
+    /// wylosowanej przez mutację; w stronę „głośniej" ruszają się swobodnie. Przy `amount`
+    /// = 1 żaden zawór nie robi kroku w stronę ciszy, a reszta patcha mutuje normalnie.
+    public func protect(_ child: G2Individual, parent: G2Individual, amount: Double) -> G2Individual {
+        let keep = 1 - min(1, max(0, amount))
+        guard keep < 1 else { return child }
+        var result = child
+        for (key, louder) in loudnessValves {
+            guard let base = parent[key], let value = child[key] else { continue }
+            if louder == 0 {
+                // Przełącznik drogi: kierunku „głośniej" nie ma — od połowy gałki zostaje jak w rodzicu.
+                if keep <= 0.5 { result[key] = base }
+            } else if (value - base) * louder < 0 {
+                result[key] = base + (value - base) * keep
+            }
+        }
+        return result
+    }
+
+    private struct ModuleRef: Hashable {
+        let area: PatchArea
+        let module: Int
+    }
+
+    /// Parametry, których dół skali przycisza wszystko, co przez moduł idzie — zawory
+    /// strażnika i poziomy generatorów, które potrafią zgasić same siebie.
+    private static let louderUp: [String: [String]] = moduleValves.merging([
+        "Clip": ["ClipLev"],
+        "OscDual": ["SqrLevel", "SawLevel", "SubOctLevel"],
+        "DrumSynth": ["MasterLevel", "SlaveLevel"],
+    ]) { $0 + $1 }
+
+    /// Obwiednie: atak w dół = głośniej (liczy się zawsze), reszta kształtu w górę —
+    /// tylko gdy obwiednia sama jest na drodze albo steruje amplitudą (`amplitudeInputs`).
+    private static let envelopeShape: [String: [String]] = [
+        "EnvADSR": ["Decay", "Sustain"], "ModADSR": ["Decay", "Sustain"],
+        "EnvAHD": ["Hold", "Decay"], "ModAHD": ["Hold", "Decay"],
+        "EnvADDSR": ["Decay1", "Level1", "Decay2", "Level2"],
+        "EnvD": ["Decay"], "EnvH": ["Hold"], "EnvADR": [],
+    ]
+
+    private static let amplitudeInputs: Set<String> = ["Mod", "AM"]
+
+    /// Wstecz od wyjść po wejściach sygnałowych (bez względu na stan zaworów — mutacja może
+    /// je otworzyć), potem obwiednie i bramki, które sterują modułami na tej drodze.
+    private func findLoudnessValves() -> [G2Individual.Key: Double] {
+        var valves: [G2Individual.Key: Double] = [
+            .setting(module: G2PatchSetting.patchVolume.module, param: G2PatchSetting.patchVolume.param): 1,
+        ]
+        var used: [ModuleRef: Set<String>] = [:]
+        var expanded: Set<ModuleRef> = []
+        var queue = sinks
+        var seen = Set(sinks)
+        while let input = queue.popLast() {
+            for output in sources[input] ?? [] {
+                guard let entry = modules[output.area]?[output.module],
+                      entry.def.outputs.indices.contains(output.index) else { continue }
+                let ref = ModuleRef(area: output.area, module: output.module)
+                let name = entry.def.outputs[output.index].name
+                used[ref, default: []].insert(name)
+                guard !Self.isGenerator(entry.def), Self.carriesSignal(entry.def, name),
+                      expanded.insert(ref).inserted else { continue }
+                for (index, port) in entry.def.inputs.enumerated() where Self.isSignal(port.name) {
+                    let node = Node(area: output.area, module: output.module, isOutput: false, index: index)
+                    if seen.insert(node).inserted { queue.append(node) }
+                }
+            }
+        }
+
+        func add(_ ref: ModuleRef, _ entry: Entry, _ param: String, _ louder: Double) {
+            guard let index = entry.def.paramNames.firstIndex(of: param) else { return }
+            valves[G2Individual.Key(area: ref.area, moduleID: ref.module, paramIndex: index)] = louder
+        }
+        func cabled(_ ref: ModuleRef, _ entry: Entry, _ input: String) -> Bool {
+            guard let index = entry.def.inputs.firstIndex(where: { $0.name == input }) else { return false }
+            return sources[Node(area: ref.area, module: ref.module, isOutput: false, index: index)] != nil
+        }
+        func addEnvelope(_ ref: ModuleRef, _ entry: Entry, wholeShape: Bool) {
+            guard let shape = Self.envelopeShape[entry.def.shortName] else { return }
+            add(ref, entry, "Attack", -1)
+            guard wholeShape else { return }
+            shape.forEach { add(ref, entry, $0, 1) }
+            // Bramka z RndTrig: niskie prawdopodobieństwo = obwiednia prawie nie startuje.
+            for (index, port) in entry.def.inputs.enumerated() where !Self.isSignal(port.name) {
+                for source in sources[Node(area: ref.area, module: ref.module, isOutput: false, index: index)] ?? [] {
+                    guard let trigger = modules[source.area]?[source.module],
+                          trigger.def.shortName == "RndTrig" else { continue }
+                    add(ModuleRef(area: source.area, module: source.module), trigger, "StepProb", 1)
+                }
+            }
+        }
+
+        // Przełącznik: wybór wejścia/wyjścia zostaje jak w rodzicu, włącznik się nie wyłącza.
+        func addSwitch(_ ref: ModuleRef, _ entry: Entry) {
+            add(ref, entry, "Sel", 0)
+            add(ref, entry, "On", 1)
+        }
+        // Łańcuch sterowania amplitudą (np. gniazda replik: przełącznik → LevMult → VCA.Mod):
+        // przez moduły Level, Mixer i Switch wstecz, przełączniki po drodze nie zmieniają wyboru.
+        var visitedControl: Set<ModuleRef> = []
+        func addControlSwitches(from ref: ModuleRef, depth: Int) {
+            guard depth > 0, visitedControl.insert(ref).inserted,
+                  let entry = modules[ref.area]?[ref.module],
+                  ["Level", "Mixer", "Switch"].contains(entry.def.page) else { return }
+            if entry.def.page == "Switch" {
+                addSwitch(ref, entry)
+            }
+            for index in entry.def.inputs.indices {
+                for source in sources[Node(area: ref.area, module: ref.module, isOutput: false, index: index)] ?? [] {
+                    addControlSwitches(from: ModuleRef(area: source.area, module: source.module), depth: depth - 1)
+                }
+            }
+        }
+
+        for (ref, outputs) in used {
+            guard let entry = modules[ref.area]?[ref.module] else { continue }
+            let type = entry.def.shortName
+            if entry.def.page == "Mixer" {
+                for param in entry.def.paramNames
+                    where param == "LevMaster" || param.range(of: "^(Lev|On)[0-9]*$", options: .regularExpression) != nil
+                {
+                    add(ref, entry, param, 1)
+                }
+            }
+            if entry.def.page == "Switch" {
+                addSwitch(ref, entry)
+            }
+            Self.louderUp[type]?.forEach { add(ref, entry, $0, 1) }
+            if outputs.contains(where: { $0.hasPrefix("Out") }) {
+                addEnvelope(ref, entry, wholeShape: true)
+            }
+            if let filter = Self.lowPassFilters[type], filter.output == nil || outputs == [filter.output!] {
+                let lowPass = filter.type.flatMap { entry.def.paramNames.firstIndex(of: $0) }
+                    .map { $0 < entry.module.parameters.count && entry.module.parameters[$0] == 0 } ?? true
+                if lowPass { add(ref, entry, filter.frequency, 1) }
+            }
+            if type == "FltHP" || (type == "FltMulti" && outputs == ["HP"]) {
+                add(ref, entry, "Freq", -1)
+            }
+            if type == "X-Fade" || type == "Fade2-1" {
+                switch (cabled(ref, entry, "In1"), cabled(ref, entry, "In2")) {
+                case (true, false): add(ref, entry, "Mix", -1)
+                case (false, true): add(ref, entry, "Mix", 1)
+                default: break
+                }
+            }
+            // Obwiednie sterujące modułem na drodze: atak zawsze, cały kształt przy amplitudzie.
+            for (index, port) in entry.def.inputs.enumerated() where !Self.isSignal(port.name) {
+                for source in sources[Node(area: ref.area, module: ref.module, isOutput: false, index: index)] ?? [] {
+                    let envelope = ModuleRef(area: source.area, module: source.module)
+                    guard let envEntry = modules[source.area]?[source.module] else { continue }
+                    addEnvelope(envelope, envEntry, wholeShape: Self.amplitudeInputs.contains(port.name))
+                    if Self.amplitudeInputs.contains(port.name) {
+                        addControlSwitches(from: envelope, depth: 4)
+                    }
+                }
+            }
+        }
+        return valves
     }
 
     private func value(_ entry: Entry, _ index: Int, _ individual: G2Individual) -> Int {

@@ -222,4 +222,101 @@ final class SilenceGuardTests: XCTestCase {
         XCTAssertEqual(hopeless, [silent])
         XCTAssertEqual(retries, PatchState.silentRetries, "limit prób — przycisk się nie zawiesza")
     }
+
+    // MARK: - Zawory głośności (gałka powyżej zera)
+
+    /// Na drodze OscA → Mix4-1B → FltLP → 2-Out zaworami są poziomy miksera, cutoff
+    /// dolnoprzepustu i głośność patcha; LFO na Pitch filtra nim nie jest.
+    func testLoudnessValvesFollowTheSignalPath() throws {
+        let patch = try patch()
+        let valves = G2SilenceGuard(patch: patch).loudnessValves
+        XCTAssertEqual(try valves[lev1Key()], 1)
+        XCTAssertEqual(try valves[key(ModuleID.mixer, "Mix4-1B", "Lev4")], 1)
+        XCTAssertEqual(try valves[key(ModuleID.filter, "FltLP", "Freq")], 1)
+        XCTAssertEqual(valves[.setting(module: G2PatchSetting.patchVolume.module,
+                                       param: G2PatchSetting.patchVolume.param)], 1)
+        XCTAssertNil(try valves[key(ModuleID.lfo, "LfoA", "Rate")])
+        XCTAssertNil(try valves[key(ModuleID.osc, "OscA", "FreqCoarse")])
+    }
+
+    /// Krok w stronę ciszy skrócony o gałkę, krok w stronę „głośniej" i inne parametry bez zmian.
+    func testProtectShortensOnlyStepsTowardSilence() throws {
+        let patch = try patch()
+        let parent = sound(patch)
+        let silence = G2SilenceGuard(patch: patch)
+        var child = parent
+        try child[lev1Key()] = 20
+        try child[key(ModuleID.filter, "FltLP", "Freq")] = 120
+        try child[key(ModuleID.osc, "OscA", "FreqCoarse")] = 10
+
+        let half = silence.protect(child, parent: parent, amount: 0.5)
+        XCTAssertEqual(try half[lev1Key()], 60, "100 → 20 skrócone do połowy drogi")
+        XCTAssertEqual(try half[key(ModuleID.filter, "FltLP", "Freq")], 120, "głośniej — bez zmian")
+        XCTAssertEqual(try half[key(ModuleID.osc, "OscA", "FreqCoarse")], 10, "to nie zawór")
+
+        XCTAssertEqual(try silence.protect(child, parent: parent, amount: 1)[lev1Key()], 100)
+        XCTAssertEqual(silence.protect(child, parent: parent, amount: 0), child)
+    }
+
+    /// Obwiednia sterująca amplitudą (LevMult.Mod): atak w dół = głośniej, sustain w górę.
+    /// Obwiednia na wejściu Pitch filtra chroni tylko atak.
+    func testEnvelopesOnTheAmplitudeAreValves() throws {
+        var patch = G2Patch()
+        patch.voiceModules = try [module(1, "OscA"), module(2, "LevMult"), module(3, "2-Out"),
+                                  module(4, "EnvADSR"), module(5, "FltLP"), module(6, "EnvADSR")]
+        patch.voiceCables = try [
+            G2Cable(fromModule: 1, fromConnector: 0, toModule: 5, toConnector: input("In", of: "FltLP"),
+                    color: .red, area: .voice),
+            G2Cable(fromModule: 5, fromConnector: 0, toModule: 2, toConnector: input("In", of: "LevMult"),
+                    color: .red, area: .voice),
+            G2Cable(fromModule: 2, fromConnector: 0, toModule: 3, toConnector: input("InL", of: "2-Out"),
+                    color: .red, area: .voice),
+            G2Cable(fromModule: 4, fromConnector: 0, toModule: 2, toConnector: input("Mod", of: "LevMult"),
+                    color: .blue, area: .voice),
+            G2Cable(fromModule: 6, fromConnector: 0, toModule: 5, toConnector: input("Pitch", of: "FltLP"),
+                    color: .blue, area: .voice),
+        ]
+        let valves = G2SilenceGuard(patch: patch).loudnessValves
+        XCTAssertEqual(try valves[key(4, "EnvADSR", "Attack")], -1)
+        XCTAssertEqual(try valves[key(4, "EnvADSR", "Sustain")], 1)
+        XCTAssertEqual(try valves[key(6, "EnvADSR", "Attack")], -1)
+        XCTAssertNil(try valves[key(6, "EnvADSR", "Sustain")], "obwiednia filtra kształtu nie chroni")
+    }
+
+    /// Sam przycisk daje połowę ochrony, gałka dokłada resztę; zgaszony przycisk nic nie zmienia.
+    func testButtonAloneGivesHalfTheProtection() throws {
+        let patch = try patch()
+        let state = PatchState()
+        state.slots = [patch]
+        let mother = sound(patch)
+        var child = mother
+        try child[lev1Key()] = 20
+
+        XCTAssertEqual(try state.loudnessProtection(mother: mother)(child)[lev1Key()], 20, "przycisk zgaszony")
+        state.mutatorSettings.notSilent = true
+        XCTAssertEqual(try state.loudnessProtection(mother: mother)(child)[lev1Key()], 60, "gałka na zerze")
+        state.mutatorSettings.silenceSensitivity = 1
+        XCTAssertEqual(try state.loudnessProtection(mother: mother)(child)[lev1Key()], 100, "gałka na maksimum")
+    }
+
+    /// Przełącznik na drodze do wyjścia: od połowy ochrony zostaje na wejściu wybranym w rodzicu.
+    func testSwitchOnThePathKeepsTheParentsChoice() throws {
+        var patch = G2Patch()
+        patch.voiceModules = try [module(1, "OscA"), module(2, "Sw2-1"), module(3, "2-Out")]
+        patch.voiceCables = try [
+            G2Cable(fromModule: 1, fromConnector: 0, toModule: 2, toConnector: input("In1", of: "Sw2-1"),
+                    color: .red, area: .voice),
+            G2Cable(fromModule: 2, fromConnector: 0, toModule: 3, toConnector: input("InL", of: "2-Out"),
+                    color: .red, area: .voice),
+        ]
+        let silence = G2SilenceGuard(patch: patch)
+        let select = try key(2, "Sw2-1", "Sel")
+        XCTAssertEqual(silence.loudnessValves[select], 0)
+        var parent = sound(patch)
+        parent[select] = 0
+        var child = parent
+        child[select] = 1
+        XCTAssertEqual(silence.protect(child, parent: parent, amount: 0.5)[select], 0)
+        XCTAssertEqual(silence.protect(child, parent: parent, amount: 0.25)[select], 1, "poniżej połowy wolno")
+    }
 }

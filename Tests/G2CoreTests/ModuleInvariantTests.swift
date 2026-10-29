@@ -208,6 +208,43 @@ final class ModuleInvariantTests: XCTestCase {
         }
     }
 
+    /// Długa nazwa to podpis modułu w bibliotece i w menu „Replace with…” — dwa moduły
+    /// o tej samej nazwie są tam nie do odróżnienia. Mix2-1B nazywał się „Scratch”
+    /// (pomyłka przejęta z g2ools); oryginalny edytor podaje „Mixer 2-1 B”.
+    func testLongNamesAreUnique() {
+        let byName = Dictionary(grouping: ModuleDatabase.all, by: \.longName)
+        let duplicates = byName.filter { $0.value.count > 1 }
+            .map { "\($0.key): " + $0.value.map(\.shortName).joined(separator: ", ") }
+        XCTAssertTrue(duplicates.isEmpty, "powtórzone długie nazwy — \(duplicates)")
+        XCTAssertEqual(ModuleDatabase.module(id: 66)?.longName, "Mixer 2-1 B")
+    }
+
+    /// Długa nazwa jest podpisem z panelu modułu (`Tooltip:`), jak w oryginalnym edytorze.
+    /// Baza powstała z g2ools, który miał własne warianty („Envelop ADSR”, „Fade 1-2”,
+    /// „PM Driver”); panele trzymają nazwy oryginału.
+    func testLongNamesMatchPanelTooltips() throws {
+        let folder = try XCTUnwrap(Bundle.g2Core.url(forResource: "Modules", withExtension: nil))
+        var tooltips: [String: String] = [:]
+        for url in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            where url.pathExtension == "txt"
+        {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            func field(_ name: String) -> String? {
+                guard let range = text.range(of: "\(name):\"[^\"]*\"", options: .regularExpression) else {
+                    return nil
+                }
+                return String(text[range].dropFirst(name.count + 2).dropLast())
+            }
+            // Klucz to FileName — dwa panele mogą mieć tę samą Name (Delay: logiczny i audio).
+            if let fileName = field("FileName"), let tooltip = field("Tooltip") {
+                tooltips[fileName] = tooltip
+            }
+        }
+        eachModule { def, ui in
+            XCTAssertEqual(def.longName, tooltips[ui.fileName], "\(def.shortName) (\(def.id))")
+        }
+    }
+
     /// Wartości domyślne opisują dokładnie tyle parametrów, ile moduł ma.
     func testDefaultsCoverEveryParameter() {
         for def in ModuleDatabase.all {

@@ -1183,17 +1183,19 @@ public final class PatchState {
         var generator = SystemRandomNumberGenerator()
         let audibility = mutatorAudibility(of: mother)
         let anchoring = mutatorAnchoring()
+        let protect = loudnessProtection(mother: mother)
         let children = pooled(.mutate, parents: [mother], audibility: audibility) {
             anchoring.apply(G2Mutator.mutate(parent: mother, genome: mutatorGenome, settings: mutatorSettings,
                                              locks: mutatorLocks, audibility: audibility,
                                              groups: mutatorPanel.groupWeights, using: &generator),
-                            mother: mother)
+                            mother: mother).map(protect)
         }
         finishBreeding(keepAudible(children, parents: [mother]) {
-            anchoring.apply(G2Mutator.mutateOnce(parent: mother, genome: mutatorGenome, settings: mutatorSettings,
-                                                 locks: mutatorLocks, audibility: audibility,
-                                                 groups: mutatorPanel.groupWeights, using: &generator),
-                            mother: mother)
+            protect(anchoring.apply(G2Mutator.mutateOnce(parent: mother, genome: mutatorGenome,
+                                                         settings: mutatorSettings, locks: mutatorLocks,
+                                                         audibility: audibility,
+                                                         groups: mutatorPanel.groupWeights, using: &generator),
+                                    mother: mother))
         }, parents: [mother], origin: .mutate)
     }
 
@@ -1206,17 +1208,18 @@ public final class PatchState {
         var generator = SystemRandomNumberGenerator()
         let audibility = mutatorAudibility(of: base)
         let anchoring = mutatorAnchoring()
+        let protect = loudnessProtection(mother: base)
         let children = pooled(.randomize, parents: [base], audibility: audibility) {
             anchoring.apply(G2Mutator.randomize(base: base, genome: mutatorGenome, locks: mutatorLocks,
                                                 audibility: audibility, groups: mutatorPanel.groupWeights,
                                                 using: &generator),
-                            mother: base)
+                            mother: base).map(protect)
         }
         finishBreeding(keepAudible(children, parents: [base]) {
-            anchoring.apply(G2Mutator.randomize(base: base, genome: mutatorGenome, locks: mutatorLocks,
-                                                audibility: audibility, groups: mutatorPanel.groupWeights,
-                                                using: &generator)[0],
-                            mother: base)
+            protect(anchoring.apply(G2Mutator.randomize(base: base, genome: mutatorGenome, locks: mutatorLocks,
+                                                        audibility: audibility, groups: mutatorPanel.groupWeights,
+                                                        using: &generator)[0],
+                                    mother: base))
         }, parents: [base], origin: .randomize)
     }
 
@@ -1260,15 +1263,16 @@ public final class PatchState {
               let father = mutatorParents[G2Mutator.fatherIndex] else { return }
         var generator = SystemRandomNumberGenerator()
         let anchoring = mutatorAnchoring()
+        let protect = loudnessProtection(mother: mother)
         let children = pooled(.cross, parents: [mother, father], audibility: nil) {
             anchoring.apply(G2Mutator.cross(mother: mother, father: father, genome: mutatorGenome,
                                             settings: mutatorSettings, using: &generator),
-                            mother: mother)
+                            mother: mother).map(protect)
         }
         finishBreeding(keepAudible(children, parents: [mother, father]) {
-            anchoring.apply(G2Mutator.cross(mother: mother, father: father, genome: mutatorGenome,
-                                            settings: mutatorSettings, using: &generator)[0],
-                            mother: mother)
+            protect(anchoring.apply(G2Mutator.cross(mother: mother, father: father, genome: mutatorGenome,
+                                                    settings: mutatorSettings, using: &generator)[0],
+                                    mother: mother))
         }, parents: [mother, father], origin: .cross)
     }
 
@@ -1338,6 +1342,21 @@ public final class PatchState {
     }
 
     static let silentRetries = 24
+
+    /// „Not silent": zawory głośności na drodze do wyjścia (poziomy, filtry, obwiednie VCA…)
+    /// idą w stronę ciszy najwyżej o połowę wylosowanej drogi już przy samym przycisku,
+    /// a gałka skraca ten krok do zera. Pomiar 2026-10-29 (96 dzieci Randomize):
+    /// cichych 21 % bez ochrony, 11 % przy połowie, 8 % przy pełnej. Punktem odniesienia
+    /// jest Mother, jak przy anchorach.
+    func loudnessProtection(mother: G2Individual) -> (G2Individual) -> G2Individual {
+        guard mutatorSettings.notSilent else { return { $0 } }
+        let amount = Self.baseLoudnessProtection
+            + (1 - Self.baseLoudnessProtection) * mutatorSettings.silenceSensitivity
+        let silence = silenceGuard()
+        return { silence.protect($0, parent: mother, amount: amount) }
+    }
+
+    static let baseLoudnessProtection = 0.5
 
     /// Strażnik ciszy z progiem spod gałki „Not silent sensitivity".
     func silenceGuard() -> G2SilenceGuard {
@@ -3466,6 +3485,7 @@ public final class PatchState {
             let parsed = try PatchParser.parseFile(data: data)
             slots = fourSlots(parsed.patches.map { patch in
                 var patch = patch
+                patch.upgradeLegacyModules()
                 patch.fillMissingParameters()
                 patch.recomputeUprates()
                 return patch
@@ -3481,6 +3501,7 @@ public final class PatchState {
             performanceName = url.deletingPathExtension().lastPathComponent
             if let loaded = parsed.performance {
                 performance = loaded
+                performance.dropGlobalKnobs(removedFrom: parsed.patches, upgraded: slots)
                 hasPerformanceSettings = true
                 // Pole `focus` mówi, na którym slocie performance ma się otworzyć.
                 selectedSlot = min(max(loaded.focusedSlot, 0), slots.count - 1)
@@ -3520,6 +3541,8 @@ public final class PatchState {
         do {
             let data = try Data(contentsOf: url)
             guard var patch = try PatchParser.parseFile(data: data).patches.first else { return }
+            // Moduły ze starych OS-ów w postaci, którą Nord zna (#168) — jak oryginał przy otwarciu.
+            patch.upgradeLegacyModules()
             patch.fillMissingParameters()
             // Pliki z bety 0.1 mają uprate 0 tam, gdzie oryginał ma 1 (bug-history #141).
             // Poprawiamy po cichu, zanim slot zostanie oznaczony jako zapisany.
@@ -3661,6 +3684,18 @@ public final class PatchState {
         let name = slots.indices.contains(slot) ? slots[slot].name : ""
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? Self.emptyPatchName : trimmed
+    }
+
+    /// Folder, w którym otwiera się okno zapisu slotu: tam, skąd pochodzi plik slotu, a bez
+    /// niego — plik performance'u. `nil` = brak pliku, macOS pokaże ostatnio używany.
+    public func saveFolder(slot: Int) -> URL? {
+        let slotFile = slotFileURLs.indices.contains(slot) ? slotFileURLs[slot] : nil
+        return (slotFile ?? performanceFileURL)?.deletingLastPathComponent()
+    }
+
+    /// To samo dla okna zapisu performance'u: najpierw jego `.prf2`, potem oglądany plik.
+    public var performanceSaveFolder: URL? {
+        (performanceFileURL ?? fileURL)?.deletingLastPathComponent()
     }
 
     /// Nazwa proponowana w oknie zapisu performance'u.

@@ -7,8 +7,9 @@
 // (patrz `G2PatchLoad`).
 //
 // Bez podłączonego Norda ten sam odczyt liczy `G2PatchLoad.estimate` ze zmierzonej tabeli
-// kosztów modułów. Pierwszeństwo ma zawsze urządzenie: ono podaje stan faktyczny, a tabela
-// nie zna kosztu kabli ani nastawy czasu w delayach.
+// kosztów modułów. Pierwszeństwo ma zawsze urządzenie: ono podaje stan faktyczny. Slot bez
+// raportu (Nord odłączony, raport jeszcze nie doszedł, slot nie gra — #167) dostaje
+// dopisek „estimated” w nagłówku; wspólny napis na dole kłamał, gdy sloty się różniły.
 
 import G2Core
 import G2EditorCore
@@ -24,7 +25,6 @@ struct DSPLoadPanel: View {
                 ForEach(slots, id: \.self) { slot in
                     slotSection(slot)
                 }
-                footnote
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -46,6 +46,11 @@ struct DSPLoadPanel: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
+                if let note = estimateNote(slot) {
+                    Text(note)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
             }
             areaRows(slot: slot, area: .voice, title: "Voice")
             areaRows(slot: slot, area: .fx, title: "FX")
@@ -60,14 +65,18 @@ struct DSPLoadPanel: View {
     private func load(slot: Int, area: PatchArea) -> G2PatchLoad? {
         if let reported = device.patchLoad(slot: slot, area: area) { return reported }
         guard state.slots.indices.contains(slot) else { return nil }
-        return .estimate(area: area, modules: state.slots[slot].modules(in: area))
+        return .estimate(area: area, modules: state.slots[slot].modules(in: area),
+                         cables: state.slots[slot].cables(in: area))
     }
 
-    /// Czy liczby w panelu pochodzą z urządzenia, czy z naszej tabeli kosztów.
-    private var readsFromDevice: Bool {
-        slots.contains { slot in
-            [PatchArea.voice, .fx].contains { device.patchLoad(slot: slot, area: $0) != nil }
-        }
+    /// Dopisek dla slotu, którego liczby pochodzą z tabeli kosztów, a nie z Norda. Slot, który
+    /// nie gra, Nord przelicza dopiero po włączeniu — do tego czasu szacunek mówi, ile zajmie.
+    private func estimateNote(_ slot: Int) -> String? {
+        let reported = [PatchArea.voice, .fx].allSatisfy { device.patchLoad(slot: slot, area: $0) != nil }
+        guard !reported else { return nil }
+        let playing = device.devicePerformance.map { $0.slots.indices.contains(slot) ? $0.slots[slot].enabled : true }
+            ?? true
+        return device.status == .connected && !playing ? "estimated — not playing" : "estimated"
     }
 
     @ViewBuilder
@@ -136,15 +145,5 @@ struct DSPLoadPanel: View {
         case .warning: Color(red: 0.95, green: 0.6, blue: 0.0)
         case .safe: Color(red: 0.0, green: 0.75, blue: 0.3)
         }
-    }
-
-    private var footnote: some View {
-        Text(readsFromDevice
-            ? "Read from the device (0x72). Scale checked against a patch at the G2's ceiling."
-            : "Computed from module costs measured on the G2. Cables and delay time settings are not counted.")
-            .font(.system(size: 9))
-            .foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 4)
     }
 }

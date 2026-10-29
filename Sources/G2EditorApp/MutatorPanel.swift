@@ -148,13 +148,14 @@ struct MutatorPanel: View {
                 state.mutatorSettings.notSilent.toggle()
             }
             .position(x: 287, y: 46)
-            .help("Lit = children that cannot play are bred again — no way from a sound source to the output, every path shut by a level, an amplifier or a closed lowpass")
+            .help("Lit = children that cannot play are bred again — no way from a sound source to the output, every path shut by a level, an amplifier or a closed lowpass. Levels, amplifiers, filter cutoffs, crossfaders and amplitude envelopes on the way to the output also move only half as far towards silence")
 
             MutatorKnob(value: state.mutatorSettings.silenceSensitivity, maximum: 1) {
                 state.mutatorSettings.silenceSensitivity = $0
             }
             .position(x: 340, y: 46)
-            .help("Not silent sensitivity — how quiet counts as silent. Left = only a dead zero, right = anything near the bottom of the scale")
+            .opacity(state.mutatorSettings.notSilent ? 1 : 0.45)
+            .help("Not silent strength. Left = volume controls on the way to the output move half as far towards silence, and only a path shut at a dead zero counts as silent. Turning right, they move less and less — at the right end not at all — and values near the bottom of the scale count as shut too; everything else mutates as usual")
 
             MutatorKnob(value: state.mutatorSettings.probability, maximum: 1) {
                 state.mutatorSettings.setProbability($0)

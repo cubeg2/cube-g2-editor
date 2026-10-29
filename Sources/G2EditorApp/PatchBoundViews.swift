@@ -263,7 +263,8 @@ struct ToolbarPatchLoad: View {
     private func load(area: PatchArea) -> G2PatchLoad? {
         if let reported = device.patchLoad(slot: slot, area: area) { return reported }
         guard state.slots.indices.contains(slot) else { return nil }
-        return .estimate(area: area, modules: state.slots[slot].modules(in: area))
+        return .estimate(area: area, modules: state.slots[slot].modules(in: area),
+                         cables: state.slots[slot].cables(in: area))
     }
 }
 

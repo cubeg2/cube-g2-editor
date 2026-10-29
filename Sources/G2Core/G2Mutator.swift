@@ -374,8 +374,10 @@ public struct G2MutatorSettings: Equatable, Sendable {
     /// „Not silent" — dzieci, których wg `G2SilenceGuard` nic nie zagra, są losowane
     /// od nowa. Nasz dodatek, nie oryginału; domyślnie wyłączony (okno = oryginał).
     public var notSilent = false
-    /// Czułość „Not silent" (0…1) — gałka obok przycisku. 0 = tylko dokładne zero
-    /// zamyka zawór, wyżej za ciszę idą też wartości przy dole skali → `G2SilenceGuard.Strictness`.
+    /// Siła „Not silent" (0…1) — gałka obok przycisku. 0 = tylko dokładne zero
+    /// zamyka zawór, wyżej za ciszę idą też wartości przy dole skali → `G2SilenceGuard.Strictness`,
+    /// a zawory głośności na drodze do wyjścia coraz mniej schodzą w stronę ciszy (od połowy
+    /// przy zerze do wcale) → `G2SilenceGuard.protect`, `PatchState.loudnessProtection`.
     public var silenceSensitivity = 0.0
 
     public static let maxRange = 0.5

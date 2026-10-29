@@ -172,7 +172,8 @@ struct MainMenuCommands: Commands {
                 guard let state else { return }
                 guard let url = FilePanels.saveURL(
                     name: state.slots.indices.contains(slot) ? state.slots[slot].name : "Patch",
-                    extension: "pch2"
+                    extension: "pch2",
+                    directory: state.saveFolder(slot: slot)
                 ) else { return }
                 state.saveSlot(slot, to: url)
             }

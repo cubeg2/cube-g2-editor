@@ -260,6 +260,18 @@ public enum PatchOpenMode: String, CaseIterable, Sendable {
         if performanceDocument { return true }
         return choice == .keepMode ? nil : false
     }
+
+    /// Tryb Norda, gdy przy podłączeniu jedzie do niego patch edytora (Send). Sam patch
+    /// (dokument bez ustawień performance'u) idzie za tą samą opcją co otwarcie pliku —
+    /// oryginał też przechodzi wtedy w tryb Patch. Dokument z Norda albo złożony z kilku
+    /// źródeł nie mówi, w którym trybie ma grać, więc tryb zostaje.
+    public static func targetModeAtConnect(performanceFile: Bool, performanceSettings: Bool,
+                                           choice: PatchOpenMode = stored) -> Bool?
+    {
+        if performanceFile { return true }
+        if performanceSettings { return nil }
+        return targetMode(performanceDocument: false, choice: choice)
+    }
 }
 
 /// Co zrobić, gdy Nord się podłącza, a edytor ma już własny patch (plik otwarty bez Norda

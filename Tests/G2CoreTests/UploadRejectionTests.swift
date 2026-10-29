@@ -120,6 +120,51 @@ final class UploadRejectionTests: XCTestCase {
         XCTAssertTrue(device.isSlotConfirmed(0))
     }
 
+    /// #167: Nord nie nadaje `0x72` dla slotu, który nie gra, więc po wgraniu nowego patcha
+    /// do takiego slotu okno DSP Load pokazywało koszt POPRZEDNIEGO patcha. Wysyłka kasuje
+    /// odczyt slotu, do którego idzie — do nowego raportu wraca szacunek. Inne sloty zostają.
+    func testUploadDropsTheOldDeviceReadingOfTheReplacedSlot() async {
+        let transport = AnsweringTransport()
+        transport.answers = Array(repeating: [okFrame], count: 6)
+        let manager = G2MidiManager()
+        await manager.attachTransportForTesting(transport)
+        let device = DeviceConnection(connectedTo: manager)
+        let old = G2PatchLoad.estimate(area: .voice, modules: patch(moduleCount: 3).voiceModules)
+        device.setPatchLoadForTesting(old, slot: 0)
+        device.setPatchLoadForTesting(old, slot: 1)
+
+        await device.upload(patches: [patch(moduleCount: 1)], activeSlot: 0)
+
+        XCTAssertTrue(device.isSlotConfirmed(0))
+        XCTAssertNil(device.patchLoad(slot: 0, area: .voice), "odczyt starego patcha nie może zostać przy nowym")
+        XCTAssertEqual(device.patchLoad(slot: 1, area: .voice), old, "slot, do którego nic nie szło, zachowuje raport")
+    }
+
+    /// #165: odrzucony zrzut całego performance'u (`0x1A`) i tak podbija numery sesji czterech
+    /// slotów. Po błędzie rusza wysyłka slot po slocie — ma mieć nowe numery, inaczej Nord
+    /// zapisałby slotom same nazwy (#136). Odmowa to bajty z logu emulatora fw 1.62, 2026-10-28.
+    func testRejectedPerformanceDumpRefreshesSlotSessionNumbers() async {
+        let transport = AnsweringTransport()
+        let dumpRejected = padded([0x72, 0x01, 0x00, 0x03, 0x7E, 0x03, 0xE8, 0x34])
+        let sessions = (UInt8(0) ..< 4).map { [embedded([0x01, 0x0C, 0x40, 0x36, $0, 0x04])] }
+        transport.answers = [[okFrame], [dumpRejected]] + sessions + [[okFrame]]
+        let manager = G2MidiManager()
+        await manager.attachTransportForTesting(transport)
+
+        do {
+            try await manager.sendCompletePerformanceDump(
+                name: "Test", headerSection: [0x11, 0x00, 0x00], slotStreams: [[], [], [], []],
+                knobMapSection: [], patches: []
+            )
+            XCTFail("odmowa zrzutu ma się skończyć błędem — to on włącza drogę slot po slocie")
+        } catch {}
+
+        for slot in 0 ..< 4 {
+            let version = await manager.slotVersionForTesting(slot)
+            XCTAssertEqual(version, 0x04, "slot \(slot): numer sesji ogłoszony przez Norda po odmowie")
+        }
+    }
+
     /// #157: Nord zamilkł przy `0x37` (bez odmowy) i trzeba go było wyłączyć — a pasek
     /// radził skrócić notatkę, której patch nie miał. Milczenie dostaje radę o restarcie.
     /// Sama wiadomość, bez transportu: prawdziwe milczenie kosztowałoby 10 s czekania.

@@ -181,4 +181,19 @@ final class PatchOpenModeTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: PatchOpenMode.storageKey)
         XCTAssertEqual(PatchOpenMode.stored, .switchToPatch)
     }
+
+    /// Podłączenie z samym patchem w edytorze idzie za opcją otwierania (jak oryginał:
+    /// tryb Patch); `.prf2` → Performance; dokument z ustawieniami performance'u bez pliku
+    /// (np. wczytany wcześniej z Norda) trybu nie rusza.
+    func testConnectFollowsTheChoiceOnlyForASinglePatch() {
+        for choice in PatchOpenMode.allCases {
+            XCTAssertEqual(PatchOpenMode.targetModeAtConnect(performanceFile: true, performanceSettings: true,
+                                                             choice: choice), true)
+            XCTAssertNil(PatchOpenMode.targetModeAtConnect(performanceFile: false, performanceSettings: true,
+                                                           choice: choice))
+            XCTAssertEqual(PatchOpenMode.targetModeAtConnect(performanceFile: false, performanceSettings: false,
+                                                             choice: choice),
+                           PatchOpenMode.targetMode(performanceDocument: false, choice: choice))
+        }
+    }
 }

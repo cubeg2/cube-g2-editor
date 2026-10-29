@@ -733,6 +733,24 @@ final class PatchStateTests: XCTestCase {
         return url
     }
 
+    /// Okno zapisu otwiera się w folderze otwartego pliku (prośba użytkownika 2026-10-29):
+    /// slot ma pierwszeństwo, bez niego liczy się `.prf2`, a bez żadnego pliku — `nil`.
+    func testSaveFolderIsWhereTheOpenedFileLives() throws {
+        let state = makeState()
+        XCTAssertNil(state.saveFolder(slot: 0))
+        XCTAssertNil(state.performanceSaveFolder)
+
+        let performance = try temporaryPerformanceFile(named: "Folder test")
+        state.load(url: performance)
+        XCTAssertEqual(state.saveFolder(slot: 1), performance.deletingLastPathComponent())
+        XCTAssertEqual(state.performanceSaveFolder, performance.deletingLastPathComponent())
+
+        let patch = fixtureURL("simplesynth001-20240802.pch2")
+        state.load(url: patch, intoSlot: 2)
+        XCTAssertEqual(state.saveFolder(slot: 2), patch.deletingLastPathComponent())
+        XCTAssertEqual(state.saveFolder(slot: 1), performance.deletingLastPathComponent())
+    }
+
     /// Plik jak z bety 0.1: ModADSR za filtrem z wyzerowanym uprate (oryginał ma tu 1).
     private func fileWithStaleUprate(performance: Bool) throws -> URL {
         let fixture = try Data(contentsOf: fixtureURL("simplesynth001-20240802.pch2"))

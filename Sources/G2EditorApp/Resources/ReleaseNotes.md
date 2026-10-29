@@ -1,3 +1,14 @@
+## 0.1.7 — October 29, 2026
+- **Old patches no longer freeze the G2.** Some patches made with early versions of the G2 OS — for example with a FreqShift module that still has five parameters — froze the G2 every time they were sent. The editor now sends each module only the parameters it has today, like the original editor. The file on disk stays as it is.
+- **Old patch files are brought up to date when you open them, like in the original editor.** Retired modules (ClkDivFix) are removed with their cables, missing modes are added, and parameters and cables a module no longer has are dropped together with their knobs, morphs and MIDI CCs. A performance such as Rumbleinthejungl now loads all four slots instead of the G2 refusing one. The file changes only when you save it.
+- **Mutator: Not silent really avoids silent children.** With Not silent lit, levels, amplifiers, filter cutoffs, crossfaders, amplitude envelopes and the switches that route the sound to the output move only half as far towards silence; turn the knob next to it up and they stop moving towards silence at all. Everything else mutates as before. With Randomize on patches from other G2 players, silent children dropped from about one in three to one in ten. The knob is greyed out while Not silent is off.
+- **The DSP meters count like the G2.** Without a G2 connected, Cycles and Memory now include audio-rate (uprated) modules, connected inputs, module modes, the keyboard and the memory that LFOs, filters and other module groups share — the numbers match what the G2 reports after loading the patch.
+- **DSP Load window: no numbers left over from the previous patch.** A slot that gets a new patch drops the old reading, and a slot that is switched off shows "estimated — not playing".
+- **Sending a performance after the G2 refused one** no longer leaves slots with nothing but their names.
+- **Save dialogs open in the folder of the opened file** — Save As, Save Performance As and Save From ▸ Slot.
+- **Connecting the G2 while a single patch is open** switches it to Patch mode, following Settings ▸ Connection ▸ Opening a Single Patch, like the original editor.
+- **Module names in the library match the original editor** — for example Mix2-1B is now "Mixer 2-1 B" instead of "Scratch".
+
 ## 0.1.6 — October 27, 2026
 - **LEDs and meters keep moving after you open a patch from disk.** After switching the G2 on, the first patch opened from disk switches it from Performance to Patch mode. From then on the G2 stopped sending its LED and meter data, so LFO and envelope LEDs and sequencer steps stood still until the G2 was switched off and on. Patches loaded from the G2's own memory were fine. The editor now finishes the mode switch the way the original editor does.
 

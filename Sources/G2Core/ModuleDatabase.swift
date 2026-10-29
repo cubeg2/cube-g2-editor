@@ -5,6 +5,8 @@
 // repository, but this file is now maintained by hand: it carries corrections
 // that a regeneration would drop (PM modules added to match the original editor,
 // PitchTrack output order per Clavia panel P979 - see bug-history #56).
+// Long names are the panel tooltips of the original editor, not the g2ools
+// variants ("Envelop ADSR", "Fade 1-2", "Scratch" for Mix2-1B).
 // Make changes here and verify with `.codex/scripts/audit-module-defs.py`, which
 // compares this file against g2ools and knows the list of intentional deviations.
 
@@ -79,7 +81,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 3,
                 shortName: "4-Out",
-                longName: "4 outputs",
+                longName: "4 Outputs",
                 page: "In/Out",
                 height: 2,
                 inputs: [
@@ -95,7 +97,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 4,
                 shortName: "2-Out",
-                longName: "2 outputs",
+                longName: "2 Outputs",
                 page: "In/Out",
                 height: 2,
                 inputs: [
@@ -182,7 +184,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 12,
                 shortName: "Reverb",
-                longName: "reverb",
+                longName: "Reverb",
                 page: "FX",
                 height: 3,
                 inputs: [
@@ -292,7 +294,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 20,
                 shortName: "EnvADSR",
-                longName: "Envelop ADSR",
+                longName: "Envelope ADSR",
                 page: "Env",
                 height: 4,
                 inputs: [
@@ -454,7 +456,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 29,
                 shortName: "MetNoise",
-                longName: "Metallic Noise Oscillator",
+                longName: "Metallic noise oscillator",
                 page: "Osc",
                 height: 2,
                 inputs: [
@@ -994,7 +996,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 66,
                 shortName: "Mix2-1B",
-                longName: "Scratch",
+                longName: "Mixer 2-1 B",
                 page: "Mixer",
                 height: 2,
                 inputs: [
@@ -1106,7 +1108,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 76,
                 shortName: "SwOnOffT",
-                longName: "Switch On/Off Toggle",
+                longName: "Switch On/Off Toggling",
                 page: "Switch",
                 height: 2,
                 inputs: [
@@ -1209,7 +1211,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 84,
                 shortName: "EnvADR",
-                longName: "Envelope ADR",
+                longName: "Envelope AD/R",
                 page: "Env",
                 height: 3,
                 inputs: [
@@ -1502,7 +1504,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 106,
                 shortName: "OscNoise",
-                longName: "Oscillator Noise",
+                longName: "Noise oscillator",
                 page: "Osc",
                 height: 3,
                 inputs: [
@@ -1550,7 +1552,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 113,
                 shortName: "Fade1-2",
-                longName: "Fade 1-2",
+                longName: "Fader 1-2",
                 page: "Mixer",
                 height: 2,
                 inputs: [
@@ -1567,7 +1569,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 114,
                 shortName: "Fade2-1",
-                longName: "Fade 2-1",
+                longName: "Fader 2-1",
                 page: "Mixer",
                 height: 2,
                 inputs: [
@@ -1601,7 +1603,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 116,
                 shortName: "Mix8-1A",
-                longName: "Mix 8-1 A",
+                longName: "Mixer 8-1 A",
                 page: "Mixer",
                 height: 2,
                 inputs: [
@@ -1656,7 +1658,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 119,
                 shortName: "EnvADDSR",
-                longName: "Envelope ADDSR",
+                longName: "Envelope ADBDSR",
                 page: "Env",
                 height: 5,
                 inputs: [
@@ -1969,7 +1971,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 144,
                 shortName: "SeqEvent",
-                longName: "Seq Event",
+                longName: "Sequencer Event",
                 page: "Seq",
                 height: 5,
                 inputs: [
@@ -2285,7 +2287,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 165,
                 shortName: "DXRouter",
-                longName: "DX Style Router",
+                longName: "DX style router",
                 page: "Osc",
                 height: 6,
                 inputs: [
@@ -2348,7 +2350,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 170,
                 shortName: "2-In",
-                longName: "2 inputs",
+                longName: "2 Inputs",
                 page: "In/Out",
                 height: 2,
                 inputs: [],
@@ -2362,7 +2364,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 171,
                 shortName: "4-In",
-                longName: "4 inputs",
+                longName: "4 Inputs",
                 page: "In/Out",
                 height: 2,
                 inputs: [],
@@ -2813,7 +2815,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 198,
                 shortName: "PitchTrack",
-                longName: "Pitch Tracker",
+                longName: "Pitch tracker",
                 page: "Note",
                 height: 2,
                 inputs: [
@@ -2961,7 +2963,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 35,
                 shortName: "Driver",
-                longName: "PM Driver",
+                longName: "Driver",
                 page: "PM",
                 height: 3,
                 inputs: [
@@ -2979,7 +2981,7 @@ public enum ModuleDatabase {
             ModuleDef(
                 id: 56,
                 shortName: "Resonator",
-                longName: "PM Resonator",
+                longName: "Resonator",
                 page: "PM",
                 height: 5,
                 inputs: [

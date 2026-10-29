@@ -481,8 +481,8 @@ public final class DiskBankLibrary {
                 label: isPerformance ? "ABCD".map(String.init)[min(index, 3)] : nil,
                 name: isPerformance ? patch.name : nil,
                 modules: voice.count + fx.count,
-                voiceLoad: G2PatchLoad.estimate(area: .voice, modules: voice).dspPercent,
-                fxLoad: G2PatchLoad.estimate(area: .fx, modules: fx).dspPercent
+                voiceLoad: G2PatchLoad.estimate(area: .voice, patch: patch).dspPercent,
+                fxLoad: G2PatchLoad.estimate(area: .fx, patch: patch).dspPercent
             )
         }
         return DiskFileSummary(slots: slots)

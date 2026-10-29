@@ -59,7 +59,8 @@ enum BuildingBlockInsert {
                        column: Int, row: Int) -> Set<Int>
     {
         do {
-            guard let block = try PatchParser.parse(url: url).first else { return [] }
+            guard var block = try PatchParser.parse(url: url).first else { return [] }
+            block.upgradeLegacyModules()
             let name = url.deletingPathExtension().lastPathComponent
             guard let kinds = chooseAssignments(for: state.patch.blockAssignmentPreview(block), name: name)
             else { return [] }
@@ -327,7 +328,7 @@ struct BanksPanel: View {
         let slot = state.selectedSlot
         func load(_ area: PatchArea) -> G2PatchLoad {
             let now = device.patchLoad(slot: slot, area: area)
-                ?? .estimate(area: area, modules: state.patch.modules(in: area))
+                ?? .estimate(area: area, modules: state.patch.modules(in: area), cables: state.patch.cables(in: area))
             return now.adding(block.modules(in: area))
         }
         return (load(.voice), load(.fx))

@@ -641,6 +641,28 @@ public struct G2Patch: Equatable {
         }
     }
 
+    /// Kopia do wysyłki: każdy moduł ma najwyżej tyle parametrów, ile zna jego definicja.
+    /// Pliki z najstarszego OS-u niosą FreqShift z 5 parametrami (dziś 4) i taki patch
+    /// zawieszał Norda (#157). Oryginalny edytor buduje wysyłkę z definicji modułu, więc
+    /// nadmiar u niego nie wychodzi; plik na dysku zostaje taki, jaki był.
+    public func trimmedToModuleDefinitions() -> G2Patch {
+        func trim(_ modules: [G2Module]) -> [G2Module] {
+            modules.map { module in
+                guard let count = ModuleDatabase.module(id: module.typeID)?.paramNames.count,
+                      module.parameters.count > count
+                else { return module }
+                var trimmed = module
+                trimmed.parameters = Array(module.parameters.prefix(count))
+                trimmed.parameterVariations = module.parameterVariations.map { Array($0.prefix(count)) }
+                return trimmed
+            }
+        }
+        var copy = self
+        copy.voiceModules = trim(voiceModules)
+        copy.fxModules = trim(fxModules)
+        return copy
+    }
+
     /// Podmienia typ modułu według reguł Clavii, zachowując możliwe parametry i kable.
     @discardableResult
     public mutating func replaceModule(moduleID: Int, with targetTypeID: Int, in area: PatchArea) -> Bool {

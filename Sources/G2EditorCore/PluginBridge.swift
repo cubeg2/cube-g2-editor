@@ -368,6 +368,7 @@ public final class PluginBridge {
         else {
             throw Refusal(code: "bad_patch", message: "\"patch\" must be base64 of a .pch2 file")
         }
+        patch.upgradeLegacyModules()
         patch.fillMissingParameters()
         // Plik `.pch2` nie ma pola na nazwę patcha — przychodzi obok.
         if let name = message["name"] as? String {

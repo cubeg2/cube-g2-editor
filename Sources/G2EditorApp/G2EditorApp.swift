@@ -284,7 +284,8 @@ enum SaveActions {
     static func saveAs(_ state: PatchState, slot: Int? = nil) -> Bool {
         let slot = slot ?? state.selectedSlot
         guard let url = FilePanels.saveURL(name: state.suggestedFileName(slot: slot),
-                                           extension: "pch2") else { return false }
+                                           extension: "pch2",
+                                           directory: state.saveFolder(slot: slot)) else { return false }
         state.save(slot: slot, as: url)
         return true
     }
@@ -301,7 +302,8 @@ enum SaveActions {
     @discardableResult
     static func savePerformanceAs(_ state: PatchState) -> Bool {
         guard let url = FilePanels.saveURL(name: state.suggestedPerformanceFileName,
-                                           extension: "prf2") else { return false }
+                                           extension: "prf2",
+                                           directory: state.performanceSaveFolder) else { return false }
         state.savePerformance(as: url)
         return true
     }

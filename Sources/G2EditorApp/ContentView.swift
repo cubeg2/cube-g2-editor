@@ -880,7 +880,8 @@ struct ContentView: View {
     private func dspLoad(area: PatchArea) -> G2PatchLoad? {
         if let reported = device.patchLoad(slot: slot, area: area) { return reported }
         guard state.slots.indices.contains(slot) else { return nil }
-        return .estimate(area: area, modules: state.slots[slot].modules(in: area))
+        return .estimate(area: area, modules: state.slots[slot].modules(in: area),
+                         cables: state.slots[slot].cables(in: area))
     }
 
     /// Dodaje typeID na początek listy ostatnio używanych (max 10, bez duplikatów).
@@ -1118,9 +1119,7 @@ private enum EditorContentAtConnect {
             guard UnsavedChangesGuard.shared.confirmDiscard() else { return }
             await device.loadDeviceContentIntoEditor()
         case .sendToDevice, .ask:
-            // Tryb Norda zmieniamy tylko dla otwartego `.prf2`. Dokument złożony z pojedynczych
-            // patchy nie mówi jednoznacznie, w którym trybie ma grać — wtedy tryb zostaje.
-            await device.send(state, followDocument: state.performanceFileURL != nil)
+            await device.sendAtConnect(state)
         }
     }
 

@@ -289,6 +289,11 @@ public final class DeviceConnection {
         await structureSyncTask?.value
     }
 
+    /// Testy: odczyt `0x72`, jakby Nord przysłał go wcześniej.
+    func setPatchLoadForTesting(_ reading: G2PatchLoad, slot: Int) {
+        patchLoad[slot, default: [:]][reading.area] = reading
+    }
+
     // MARK: - Samoczynne łączenie
 
     /// Uruchamia pętlę, która pilnuje połączenia: łączy, gdy Nord się pojawi, i wraca
@@ -588,6 +593,10 @@ public final class DeviceConnection {
 
         case G2UsbProtocol.subResponsePerformanceRelease:
             guard !isSending, !isEchoOfOwnUpload else { return }
+            // Nord zwolnił cały performance, więc stare raporty `0x72` opisują patche,
+            // których już nie ma (#167). Nowe raporty przychodzą po `0x1F` (sprawdzone
+            // na G2 37, fw 1.62, 2026-10-28: grające sloty mają odczyt z urządzenia).
+            patchLoad = [:]
             scheduleReloadAll()
 
         default:
@@ -937,6 +946,8 @@ public final class DeviceConnection {
     private func sectionStreams(fileData: Data?, slotFiles: [Data?], patches: [G2Patch],
                                 performance: G2PerformanceSettings?) -> [[UInt8]]
     {
+        // Bez parametrów spoza definicji modułu — patrz `trimmedToModuleDefinitions` (#157).
+        let patches = patches.map { $0.trimmedToModuleDefinitions() }
         do {
             guard let fileData else {
                 return try patches.indices.map { index in
@@ -982,11 +993,15 @@ public final class DeviceConnection {
             do {
                 // `sendPatch` sam zaczyna od `SelectSlot`, więc urządzenie zostaje na
                 // ostatnim zapisanym slocie — stąd korekta na końcu pętli.
-                var named = patch
+                var named = patch.trimmedToModuleDefinitions()
                 if named.name.isEmpty { named.name = fallbackName }
                 // Pusty strumień znaczy „nie umiem zbudować tego slotu z pliku", nie
                 // „wgraj pusty patch" — wtedy wracamy do wysyłki molekułami.
                 let stream = streams.indices.contains(offset) ? streams[offset] : []
+                // Odczyt `0x72` należy do patcha, nie do slotu — tak trzyma go też
+                // oryginał. Kasujemy go PRZED wysyłką, bo nowy raport przychodzi
+                // w jej trakcie — a dla slotu, który nie gra, nie przychodzi wcale (#167).
+                patchLoad[slot] = nil
                 try await manager.sendPatch(named, toSlot: UInt8(slot),
                                             sectionStream: stream.isEmpty ? nil : stream)
                 self.activeSlot = slot
@@ -1094,7 +1109,8 @@ public final class DeviceConnection {
         do {
             // Te same bajty, które trafiłyby do pliku przy `Save` — czyli to, co widać
             // na ekranie, a nie to, co leżało w pliku przed edycją.
-            let current = try PatchParser.saveAll(originalData: original, patches: state.slots,
+            let current = try PatchParser.saveAll(originalData: original,
+                                                  patches: state.slots.map { $0.trimmedToModuleDefinitions() },
                                                   performance: state.performance)
             let header = try PatchParser.performanceSectionStream(fileData: current)
             let streams = try (0 ..< G2UsbProtocol.maxSlots).map {
@@ -1104,6 +1120,7 @@ public final class DeviceConnection {
             let knobs = try PatchParser.performanceKnobMapStream(fileData: current)
 
             clearVisuals()
+            patchLoad = [:] // nowe patche we wszystkich slotach — patrz `performUpload` (#167)
             sendProgress = "Sending the performance…"
             defer { sendProgress = nil }
             try await manager.sendCompletePerformanceDump(
@@ -2082,7 +2099,9 @@ public final class DeviceConnection {
             await previous?.value
             guard let self, self.status == .connected else { return }
             do {
-                try await self.manager.syncPatch(patch, toSlot: UInt8(slot))
+                // Ta sama przycięta postać, którą dostał Nord przy wysyłce — inaczej różnica
+                // widziałaby nadmiarowy parametr jako zmianę (#157).
+                try await self.manager.syncPatch(patch.trimmedToModuleDefinitions(), toSlot: UInt8(slot))
                 self.ignoreDeviceReloadsUntil = Date().addingTimeInterval(1.0)
             } catch {
                 self.status = .error(error.localizedDescription)
@@ -2233,6 +2252,17 @@ public final class DeviceConnection {
     public func loadDeviceContentIntoEditor() async {
         guard status == .connected else { return }
         await onPatchesDownloaded?(manager.patches)
+    }
+
+    /// „Send the editor's patch" przy podłączeniu (`ConnectContentMode`): najpierw tryb Norda
+    /// według rodzaju dokumentu (`PatchOpenMode.targetModeAtConnect`), potem cały dokument.
+    public func sendAtConnect(_ state: PatchState) async {
+        if let mode = PatchOpenMode.targetModeAtConnect(performanceFile: state.performanceFileURL != nil,
+                                                        performanceSettings: state.hasPerformanceSettings)
+        {
+            await followDocumentMode(mode)
+        }
+        await send(state)
     }
 
     public func send(_ state: PatchState, onlyFocusedSlot: Bool = false, followDocument: Bool = false) async {

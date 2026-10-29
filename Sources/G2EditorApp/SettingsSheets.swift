@@ -711,8 +711,9 @@ struct ConnectionSettingsTab: View {
                         }
                         SettingsCard(title: "Opening a Single Patch",
                                      caption: "What happens when you open a .pch2 file while the G2 is in Performance "
-                                         + "mode. New Patch follows the same choice for the G2's mode. A performance "
-                                         + "(.prf2) always switches the G2 to Performance mode.",
+                                         + "mode. New Patch and connecting the G2 with a single patch open follow "
+                                         + "the same choice for the G2's mode. A performance (.prf2) always "
+                                         + "switches the G2 to Performance mode.",
                                      width: cardWidth(3))
                         {
                             RadioChoices(selection: $patchOpenMode,

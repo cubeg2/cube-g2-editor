@@ -54,6 +54,63 @@ final class ModuleResourceCostTests: XCTestCase {
         XCTAssertEqual(ModuleResourceCostDatabase.count, ModuleDatabase.all.count)
     }
 
+    /// Uprate przenosi cały zegar „blue” na „red” — tak liczy firmware (`--dspcal` 2026-10-27:
+    /// `OscB` 66/8 → 74/0). Bez tego Vermona PERfourMER pokazywał 69 % zamiast 117 %.
+    func testUprateMovesBlueCyclesToRed() {
+        var module = G2Module(id: 1, typeID: 7, area: .voice)
+        module.uprate = true
+        let load = G2PatchLoad.estimate(area: .voice, modules: [module])
+        XCTAssertEqual(load.cyclesRed, 66 + 8)
+        XCTAssertEqual(load.cyclesBlue, 0)
+    }
+
+    /// Podłączone wejście Pitch włącza w oscylatorze kod modulacji: +19 cykli „blue”
+    /// (`--dspcal` 2026-10-27). Sam kabel i `Constant` kosztują tylko stronę zerową.
+    func testConnectedPitchInputCostsCycles() {
+        let osc = G2Module(id: 1, typeID: 7, area: .voice)
+        let constant = G2Module(id: 2, typeID: 43, area: .voice)
+        let cable = G2Cable(fromModule: 2, fromConnector: 0, toModule: 1, toConnector: 0, color: .blue, area: .voice)
+        let bare = G2PatchLoad.estimate(area: .voice, modules: [osc, constant])
+        let wired = G2PatchLoad.estimate(area: .voice, modules: [osc, constant], cables: [cable])
+        XCTAssertEqual(wired.cyclesBlue - bare.cyclesBlue, 19)
+        XCTAssertEqual(wired.cyclesRed, bare.cyclesRed)
+    }
+
+    /// Szacunek z całego patcha liczy uprate tak, jak ustawi go edytor przy wgraniu —
+    /// także gdy plik zapisano bez flag (tak zapisywał MCP).
+    func testPatchEstimateRecomputesUprateFromCables() {
+        var patch = G2Patch()
+        patch.add(module: G2Module(id: 1, typeID: 7, area: .voice))
+        patch.add(module: G2Module(id: 2, typeID: 18, area: .voice))
+        patch.add(cable: G2Cable(fromModule: 1, fromConnector: 0, toModule: 2, toConnector: 2,
+                                 color: .red, area: .voice))
+        let fromFlags = G2PatchLoad.estimate(area: .voice, modules: patch.modules(in: .voice),
+                                             cables: patch.cables(in: .voice))
+        let asSent = G2PatchLoad.estimate(area: .voice, patch: patch)
+        // X-Fade (0/14) dostaje uprate od piły oscylatora: 14 cykli przechodzi na „red”.
+        XCTAssertEqual(asSent.cyclesRed - fromFlags.cyclesRed, 14)
+        XCTAssertEqual(fromFlags.cyclesBlue - asSent.cyclesBlue, 14)
+    }
+
+    /// Wgrany całym patchem obszar bierze stronę zerową na klawiaturę (Keyboard: 6 wyjść
+    /// = 6 jednostek) i na wspólną pulę — raz, w wielkości najbardziej wymagającego typu:
+    /// LfoA 9 > FltClassic 5 > OscB 2. Zmierzone 2026-10-28, voice i fx tak samo —
+    /// Hell02 ma Keyboard i LfoB w fx: raport `0x72` 25, tabela bez puli 10.
+    func testAreaAddsKeyboardAndTheLargestSharedPool() {
+        let types = [1, 7, 7, 92, 26, 20]
+        let own = types.compactMap { ModuleResourceCostDatabase.cost(typeID: $0)?.zeroPageMemory }.reduce(0, +)
+        for area in PatchArea.allCases {
+            let modules = types.enumerated().map { G2Module(id: $0.offset + 1, typeID: $0.element, area: area) }
+            XCTAssertEqual(G2PatchLoad.estimate(area: area, modules: modules).zeroPageMemory, own + 6 + 9)
+        }
+    }
+
+    /// Druga sztuka typu z pulą płaci tylko swój zwykły koszt: LfoB 11 → 13 jednostek.
+    func testSecondLfoInVoiceCostsOnlyItsOwnZeroPage() {
+        XCTAssertEqual(area(of: 190, count: 1).zeroPageMemory, 11)
+        XCTAssertEqual(area(of: 190, count: 2).zeroPageMemory, 13)
+    }
+
     func testUnknownTypeHasNoCost() {
         XCTAssertNil(ModuleResourceCostDatabase.cost(typeID: 999))
     }

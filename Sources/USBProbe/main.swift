@@ -586,6 +586,146 @@ let dspTablePath: String? = {
     return next?.hasSuffix(".csv") == true ? next : "dsp-module-cost.csv"
 }()
 
+/// `--dspcal [plik.csv] [typeID…]` — to, czego `--dsptable` nie widzi: koszt drugiej sztuki
+/// tego samego typu, uprate i podłączonych wejść.
+///
+/// Dla każdego typu: jedna sztuka, dwie sztuki (część pamięci jest wspólna dla typu),
+/// jedna z uprate (gdy ma dwukolorowe wejście) i po jednej z kablem od `Constant` do
+/// każdego wejścia — bez uprate i z uprate. Sam kabel nic nie kosztuje, ale podłączone
+/// wejście bywa, że włącza w module dodatkowy kod (FM oscylatora: +13 cykli). PERfourMER
+/// z 2026-10-26: tabela 69 %, Nord 117 % → [[Docs/data/dsp-module-cost]].
+/// `--loadcheck plik.pch2…` — szacunek edytora obok odczytu `0x72` dla prawdziwych patchy.
+/// Każdy plik idzie do slotu D z flagami uprate przeliczonymi tak jak przy otwarciu
+/// w edytorze; wynik to jedna linia na obszar: szacunek, urządzenie, różnica.
+let loadCheckFiles: [String]? = {
+    guard let index = args.firstIndex(of: "--loadcheck") else { return nil }
+    return args[(index + 1)...].filter { $0.hasSuffix(".pch2") || $0.hasSuffix(".prf2") }
+}()
+
+// `--make-voicecal szablon.pch2 katalog` — bez urządzenia: po dwa pliki na typ modułu
+// (jedna i dwie sztuki w obszarze VOICE, parametry domyślne, bez kabli), do przepuszczenia
+// przez `--loadcheck … --drop 5b`. Kalibracja `--dspcal` idzie w fx molekułami i nie widzi
+// kosztu modułów głosu (Keyboard, Device) → [[Docs/data/dsp-cost-model]].
+if let index = args.firstIndex(of: "--make-voicecal"), index + 2 < args.count {
+    let template = args[index + 1]
+    let folder = args[index + 2]
+    guard let data = FileManager.default.contents(atPath: template),
+          let parsed = try? PatchParser.parseFile(data: data),
+          var base = parsed.patches.first
+    else {
+        print("⚠️ nie czytam \(template)")
+        exit(1)
+    }
+    base.fxModules = []
+    base.fxCables = []
+    base.voiceCables = []
+    base.notes = ""
+    base.knobAssignments = base.knobAssignments.map { _ in nil }
+    base.midiControllerAssignments = base.midiControllerAssignments.map { _ in nil }
+    base.morphAssignments = base.morphAssignments.map { _ in [] }
+    try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    var written = 0
+    func voiceModule(_ def: ModuleDef, id: Int) -> G2Module {
+        var mod = G2Module(id: id, typeID: def.id, area: .voice)
+        let defaults = ModuleDefaultsDatabase.defaults(forTypeID: def.id)
+        mod.parameters = defaults.isEmpty ? Array(repeating: 0, count: def.paramNames.count) : defaults
+        mod.parameterVariations = Array(repeating: mod.parameters, count: 9)
+        mod.modes = Array(repeating: 0, count: def.modeNames.count)
+        mod.label = def.shortName
+        mod.hasParameterEntry = !mod.parameters.isEmpty
+        mod.row = (id - 1) * 8
+        return mod
+    }
+    let constantDef = ModuleDatabase.module(id: 43)
+    for def in ModuleDatabase.all.sorted(by: { $0.id < $1.id }) {
+        // 1 i 2 sztuki; 3 = jedna sztuka ze wszystkimi wejściami od `Constant`.
+        for count in 1 ... 3 {
+            if count == 3, def.inputs.isEmpty || constantDef == nil { continue }
+            var patch = base
+            patch.name = "VC\(def.id)x\(count)"
+            patch.voiceModules = (1 ... min(count, 2)).map { voiceModule(def, id: $0) }
+            if count == 3, let constantDef {
+                patch.voiceModules = [voiceModule(def, id: 1), voiceModule(constantDef, id: 2)]
+                patch.voiceCables = def.inputs.indices.map {
+                    G2Cable(fromModule: 2, fromConnector: 0, toModule: 1, toConnector: $0, color: .blue, area: .voice)
+                }
+            }
+            guard let out = try? PatchParser.saveAll(originalData: data, patches: [patch],
+                                                     performance: parsed.performance)
+            else {
+                print("⚠️ nie zapisuję typu \(def.id)")
+                continue
+            }
+            FileManager.default.createFile(atPath: "\(folder)/vc-\(def.id)-x\(count).pch2", contents: out)
+            written += 1
+        }
+    }
+    print("Zapisane: \(written) plików w \(folder)")
+    exit(0)
+}
+
+/// `--drop 65,62` przy `--loadcheck` — typy sekcji (hex) wycięte ze strumienia, żeby
+/// zobaczyć, ile pamięci kosztuje każda z nich. `4d.2` wycina tylko sekcję parametrów
+/// o danej lokacji (0 fx, 1 voice, 2 ustawienia patcha i morfy).
+let loadCheckDrop: [(type: UInt8, location: UInt8?)] = {
+    guard let index = args.firstIndex(of: "--drop"), index + 1 < args.count else { return [] }
+    return args[index + 1].split(separator: ",").compactMap { item in
+        let parts = item.split(separator: ".")
+        guard let type = UInt8(parts[0], radix: 16) else { return nil }
+        return (type, parts.count > 1 ? UInt8(parts[1]) : nil)
+    }
+}()
+
+/// `--strip-type 126` przy `--loadcheck` — moduły tych typów (dziesiętnie) wyjęte z patcha
+/// przed wysłaniem razem z ich kablami. Przypisania gałek i morfów zostają — wytnij je
+/// `--drop 62,65,60`.
+let loadCheckStripTypes: Set<Int> = {
+    guard let index = args.firstIndex(of: "--strip-type"), index + 1 < args.count else { return [] }
+    return Set(args[index + 1].split(separator: ",").compactMap { Int($0) })
+}()
+
+/// `--keep-type 1,43` — odwrotność `--strip-type`: zostają tylko moduły tych typów.
+let loadCheckKeepTypes: Set<Int> = {
+    guard let index = args.firstIndex(of: "--keep-type"), index + 1 < args.count else { return [] }
+    return Set(args[index + 1].split(separator: ",").compactMap { Int($0) })
+}()
+
+func droppingSections(_ drop: [(type: UInt8, location: UInt8?)], from stream: [UInt8]) -> [UInt8] {
+    guard !drop.isEmpty else { return stream }
+    var result: [UInt8] = []
+    var offset = 0
+    while offset + 3 <= stream.count {
+        let end = min(stream.count, offset + 3 + (Int(stream[offset + 1]) << 8 | Int(stream[offset + 2])))
+        let location = offset + 3 < end ? stream[offset + 3] >> 6 : nil
+        let dropped = drop.contains { $0.type == stream[offset] && ($0.location == nil || $0.location == location) }
+        if dropped {
+            print("    (bez sekcji 0x\(String(stream[offset], radix: 16)) lokacja \(location.map(String.init) ?? "-"))")
+        } else {
+            result += stream[offset ..< end]
+        }
+        offset = end
+    }
+    return result
+}
+
+let dspCalibration: (path: String, typeIDs: Set<Int>)? = {
+    guard let index = args.firstIndex(of: "--dspcal") else { return nil }
+    let rest = args[(index + 1)...]
+    let path = rest.first { $0.hasSuffix(".csv") } ?? "dsp-module-cost-extra.csv"
+    return (path, Set(rest.compactMap { Int($0) }))
+}()
+
+extension G2PatchLoad {
+    /// Te same liczby we wszystkich polach — do odróżnienia świeżego odczytu od poprzedniego.
+    func sameCost(as other: G2PatchLoad?) -> Bool {
+        guard let other else { return false }
+        return cyclesRed == other.cyclesRed && cyclesBlue == other.cyclesBlue && xMemory == other.xMemory
+            && yMemory == other.yMemory && programMemory == other.programMemory
+            && zeroPageMemory == other.zeroPageMemory && ram == other.ram && qMemory == other.qMemory
+            && rMemory == other.rMemory
+    }
+}
+
 /// `--hidden [typeID…]` — czy Nord przyjmie moduł, którego Clavia nie udokumentowała.
 ///
 /// BVerhue zapisał o sześciu takich typach „doesn't seem to work", ale **nie podał, co
@@ -2933,6 +3073,397 @@ do {
             }
         }
         print("Slot D wyczyszczony.")
+    } else if let files = loadCheckFiles {
+        print("--- Szacunek vs urządzenie: \(files.count) plików, slot D (.prf2: wszystkie cztery) ---")
+        func read(_ area: PatchArea, slot: UInt8 = 3) async -> G2PatchLoad? {
+            let notes = NotificationLog()
+            await manager.setNotificationHandler { note in notes.append(note) }
+            try? await manager.requestPatchLoad(slot: slot, area: area)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await manager.setNotificationHandler(nil)
+            return notes.all()
+                .filter { $0.note.subCommand == G2UsbProtocol.subResponsePatchLoad && $0.note.slot == slot }
+                .flatMap { G2UsbProtocol.decodePatchLoad($0.note.payload) }
+                .last { $0.area == area }
+        }
+        /// Najpierw pusty slot i potwierdzone zera — inaczej odczyt bywa liczbami
+        /// poprzedniego patcha (DFAM Plus odczytany jako PERfourMER).
+        func clear(slot: UInt8) async throws {
+            var empty = G2Patch()
+            empty.name = "LoadCheck"
+            try await manager.sendPatch(empty, toSlot: slot)
+            for _ in 0 ..< 60 {
+                try await Task.sleep(nanoseconds: 300_000_000)
+                if let voice = await read(.voice, slot: slot),
+                   voice.cyclesRed + voice.cyclesBlue + voice.zeroPageMemory == 0 { break }
+            }
+        }
+        /// Odczyt ustala się, gdy dwa kolejne są równe (urządzenie buduje patch kilka sekund).
+        func stableLoad(of patch: G2Patch, slot: UInt8) async throws -> [PatchArea: G2PatchLoad] {
+            var stable: [PatchArea: G2PatchLoad] = [:]
+            for area in [PatchArea.voice, .fx] {
+                var last: G2PatchLoad?
+                for _ in 0 ..< 40 {
+                    try await Task.sleep(nanoseconds: 700_000_000)
+                    guard let reading = await read(area, slot: slot) else { continue }
+                    let empty = reading.cyclesRed + reading.cyclesBlue + reading.zeroPageMemory == 0
+                    if reading.sameCost(as: last), !empty || patch.modules(in: area).isEmpty { break }
+                    last = reading
+                }
+                stable[area] = last
+            }
+            return stable
+        }
+        func report(_ name: String, _ patch: G2Patch, _ stable: [PatchArea: G2PatchLoad]) {
+            for area in [PatchArea.voice, .fx] {
+                let estimate = G2PatchLoad.estimate(area: area, patch: patch)
+                guard let device = stable[area] else {
+                    print("\(name) \(area): brak odczytu")
+                    continue
+                }
+                // Liczba modułów każdego typu — do wyliczenia dopłat z wielu patchy naraz.
+                let types = Dictionary(grouping: patch.modules(in: area), by: \.typeID)
+                    .sorted { $0.key < $1.key }.map { "\($0.key)x\($0.value.count)" }.joined(separator: " ")
+                let raw = [device.cyclesRed, device.cyclesBlue, device.zeroPageMemory, device.xMemory,
+                           device.yMemory, device.programMemory, device.ram, device.qMemory, device.rMemory]
+                    .map(String.init).joined(separator: ",")
+                print(String(format: "%@ | %@ | szacunek %.1f%% / %.1f%% | urządzenie %.1f%% / %.1f%% | różnica %+.1f / %+.1f | ZP %d / %d | typy %@ | surowe %@",
+                             name, area == .voice ? "voice" : "fx",
+                             estimate.cyclesPercent, estimate.memoryPercent,
+                             device.cyclesPercent, device.memoryPercent,
+                             estimate.cyclesPercent - device.cyclesPercent,
+                             estimate.memoryPercent - device.memoryPercent,
+                             estimate.zeroPageMemory, device.zeroPageMemory, types, raw))
+            }
+        }
+        for path in files where path.hasSuffix(".prf2") {
+            // Cały performance jednym zrzutem `0x1A`, jak edytor (`sendCompletePerformance`);
+            // `--drop 5f` wysyła go bez mapy gałek całego performance'u.
+            guard let data = FileManager.default.contents(atPath: path),
+                  let parsed = try? PatchParser.parseFile(data: data),
+                  parsed.patches.count == G2UsbProtocol.maxSlots
+            else {
+                print("⚠️ nie czytam \(path)")
+                continue
+            }
+            let slots = parsed.patches.map { slot -> G2Patch in
+                var patch = slot
+                patch.fillMissingParameters()
+                patch.recomputeUprates()
+                return patch
+            }
+            // Bez samej sekcji `0x5F` urządzenie odrzuca zrzut — `--drop 5f` czyści więc
+            // przypisania gałek całego performance'u, a sekcję zostawia.
+            var performance = parsed.performance
+            if loadCheckDrop.contains(where: { $0.type == 0x5F }) {
+                performance?.globalKnobAssignments = Array(repeating: nil, count: G2KnobPages.knobCount)
+            }
+            let current = try PatchParser.saveAll(originalData: data, patches: slots, performance: performance)
+            let header = try PatchParser.performanceSectionStream(fileData: current)
+            let streams = try (0 ..< G2UsbProtocol.maxSlots).map {
+                try droppingSections(loadCheckDrop, from: PatchParser.slotSectionStream(fileData: current, slot: $0))
+            }
+            let knobs = try PatchParser.performanceKnobMapStream(fileData: current)
+            print("    gałki performance'u: \(performance?.globalKnobAssignments.compactMap { $0 }.count ?? 0)")
+            for slot in 0 ..< UInt8(G2UsbProtocol.maxSlots) {
+                try await clear(slot: slot)
+            }
+            try await manager.sendCompletePerformanceDump(
+                name: "LoadCheck", headerSection: header,
+                slotStreams: streams, knobMapSection: knobs, patches: slots
+            )
+            await manager.disconnect()
+            try await manager.connect()
+            let name = (path as NSString).lastPathComponent
+            for (index, patch) in slots.enumerated() {
+                if let slot = parsed.performance?.slots[index] {
+                    print("    [\(index)] enabled \(slot.enabled) keyboard \(slot.keyboard) hold \(slot.hold) "
+                        + "range \(slot.keyRangeLow)–\(slot.keyRangeHigh) voices \(patch.description.voices) "
+                        + "monopoly \(patch.description.monopoly) variation \(patch.description.variation)")
+                }
+                let stable = try await stableLoad(of: patch, slot: UInt8(index))
+                report("\(name) [\("ABCD".map(String.init)[index])]", patch, stable)
+            }
+        }
+        for path in files where path.hasSuffix(".pch2") {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let parsed = try? PatchParser.parseFile(data: data),
+                  var patch = parsed.patches.first
+            else {
+                print("⚠️ nie czytam \(path)")
+                continue
+            }
+            // Pełny strumień sekcji jak w edytorze (`--loadfile`): bez niego Nord nie dostaje
+            // morfów i gałek — PERfourMER pokazał wtedy 66 zamiast 77 jednostek strony zerowej.
+            patch.fillMissingParameters()
+            patch.recomputeUprates()
+            let all = patch.voiceModules + patch.fxModules
+            let strip = loadCheckKeepTypes.isEmpty ? loadCheckStripTypes
+                : Set(all.map(\.typeID)).subtracting(loadCheckKeepTypes)
+            if !strip.isEmpty {
+                let kept = Dictionary(grouping: patch.voiceModules.filter { !strip.contains($0.typeID) }, by: \.typeID)
+                print("    voice zostaje: " + kept.keys.sorted().map { "\($0)×\(kept[$0]!.count)" }.joined(separator: " "))
+            }
+            let stripped = Set(all.filter { strip.contains($0.typeID) }.map { "\($0.area)\($0.id)" })
+            patch.voiceModules.removeAll { stripped.contains("\($0.area)\($0.id)") }
+            patch.fxModules.removeAll { stripped.contains("\($0.area)\($0.id)") }
+            patch.voiceCables.removeAll {
+                stripped.contains("voice\($0.sourceConnector.moduleID)")
+                    || stripped.contains("voice\($0.destinationConnector.moduleID)")
+            }
+            patch.fxCables.removeAll {
+                stripped.contains("fx\($0.sourceConnector.moduleID)")
+                    || stripped.contains("fx\($0.destinationConnector.moduleID)")
+            }
+            let current = try PatchParser.saveAll(originalData: data, patches: [patch],
+                                                  performance: parsed.performance)
+            var stream = try PatchParser.slotSectionStream(fileData: current, slot: 0)
+            stream = droppingSections(loadCheckDrop, from: stream)
+            try await clear(slot: 3)
+            try await manager.sendPatch(patch, toSlot: 3, sectionStream: stream)
+            // Jak `--loadfile`: bez ponownego połączenia `0x72` po pełnym strumieniu zostawał zerowy.
+            await manager.disconnect()
+            try await manager.connect()
+            try await report((path as NSString).lastPathComponent, patch, stableLoad(of: patch, slot: 3))
+        }
+    } else if let calibration = dspCalibration {
+        guard !fastConnect else {
+            print("⛔️ --dspcal nie działa z --fast-connect.")
+            await manager.disconnect()
+            exit(1)
+        }
+        let types = ModuleDatabase.all
+            .filter { calibration.typeIDs.isEmpty || calibration.typeIDs.contains($0.id) }
+            .sorted { $0.id < $1.id }
+        let constantType = 43
+        print("--- Kalibracja kosztów: \(types.count) typów, slot D / fx ---")
+
+        func module(_ def: ModuleDef, id: Int, uprate: Bool = false) -> G2Module {
+            var mod = G2Module(id: id, typeID: def.id, area: .fx)
+            let defaults = ModuleDefaultsDatabase.defaults(forTypeID: def.id)
+            mod.parameters = defaults.isEmpty ? Array(repeating: 0, count: def.paramNames.count) : defaults
+            mod.parameterVariations = Array(repeating: mod.parameters, count: 9)
+            mod.modes = Array(repeating: 0, count: def.modeNames.count)
+            mod.label = def.shortName
+            mod.hasParameterEntry = !mod.parameters.isEmpty
+            mod.row = (id - 1) * 8
+            mod.uprate = uprate
+            return mod
+        }
+
+        /// Urządzenie oddaje świeży `0x72` dopiero po zbudowaniu patcha w DSP — wcześniejsze
+        /// zapytanie zwraca odczyt poprzedniego, czasem przez kilka sekund. Pierwsze podejście
+        /// („czekaj, aż odczyt odejdzie od poprzedniego”) przepuściło takie odczyty (Noise = 0,
+        /// dwie sztuki = jedna). Dlatego najpierw pusty slot i czekanie na same zera — wtedy
+        /// nieaktualny odczyt to zera, a nie liczby podobne do prawdziwych.
+        func send(_ patch: G2Patch) async -> Bool {
+            for attempt in 0 ..< 2 {
+                do {
+                    try await manager.sendPatch(patch, toSlot: 3)
+                    return true
+                } catch {
+                    // Pojedyncza nieprzyjęta komenda się zdarza.
+                    if attempt == 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+                }
+            }
+            return false
+        }
+        func read() async -> G2PatchLoad? {
+            let notes = NotificationLog()
+            await manager.setNotificationHandler { note in notes.append(note) }
+            try? await manager.requestPatchLoad(slot: 3, area: .fx)
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            await manager.setNotificationHandler(nil)
+            return notes.all()
+                .filter { $0.note.subCommand == G2UsbProtocol.subResponsePatchLoad && $0.note.slot == 3 }
+                .flatMap { G2UsbProtocol.decodePatchLoad($0.note.payload) }
+                .last { $0.area == .fx }
+        }
+        var emptySlot = G2Patch()
+        emptySlot.name = "DSPCal"
+        let zero = G2PatchLoad(area: .fx, cyclesRed: 0, cyclesBlue: 0, zeroPageMemory: 0, xMemory: 0,
+                               yMemory: 0, programMemory: 0, ram: 0, qMemory: 0, rMemory: 0)
+        /// Próba 2026-10-27 przy obciążonym Macu: 3 z 27 odczytów przepadły, jeden wrócił
+        /// samymi zerami (X-Fade z uprate). Zera przyjmujemy dopiero za trzecim razem —
+        /// tylko trzy darmowe typy (Name, CtrlSend, PCSend) naprawdę je dają.
+        func measure(_ patch: G2Patch) async throws -> G2PatchLoad? {
+            for attempt in 0 ..< 3 {
+                guard let reading = try await measureOnce(patch) else { continue }
+                if !reading.sameCost(as: zero) || attempt == 2 { return reading }
+            }
+            return nil
+        }
+        /// Bez potwierdzonych zer nie mierzymy: pełny przebieg 2026-10-27 przy obciążonym Macu
+        /// dał X-Fade „z uprate” z liczbami poprzedniego patcha (dwie sztuki), bo 6 s czekania
+        /// na pusty slot nie wystarczyło i pomiar poszedł dalej.
+        func measureOnce(_ patch: G2Patch) async throws -> G2PatchLoad? {
+            guard await send(emptySlot) else { return nil }
+            var cleared = false
+            for _ in 0 ..< 60 where !cleared {
+                try await Task.sleep(nanoseconds: 300_000_000)
+                cleared = await read()?.sameCost(as: zero) == true
+            }
+            guard cleared, await send(patch) else { return nil }
+            var last: G2PatchLoad?
+            for attempt in 0 ..< 20 {
+                try await Task.sleep(nanoseconds: 500_000_000)
+                guard let reading = await read() else { continue }
+                // Zera po pustym slocie to jeszcze stary odczyt; moduł naprawdę darmowy
+                // (Name, CtrlSend…) przepuszczamy dopiero po kilku sekundach.
+                let fresh = !reading.sameCost(as: zero) || attempt >= 10
+                if fresh, reading.sameCost(as: last) { return reading }
+                last = reading
+            }
+            return last
+        }
+
+        var rows = ["kind,typeID,shortName,input,cycles_red,cycles_blue,xmem,ymem,pmem,zpmem,ram,qmem,rmem"]
+        func record(_ kind: String, _ def: ModuleDef, _ input: Int, _ load: G2PatchLoad?) {
+            guard let load else {
+                print("    ⚠️ \(def.shortName) \(kind) \(input): brak odczytu")
+                return
+            }
+            rows.append("\(kind),\(def.id),\(def.shortName),\(input),\(load.cyclesRed),\(load.cyclesBlue),"
+                + "\(load.xMemory),\(load.yMemory),\(load.programMemory),\(load.zeroPageMemory),"
+                + "\(load.ram),\(load.qMemory),\(load.rMemory)")
+            print("    \(kind) \(input): \(load.cyclesRed)/\(load.cyclesBlue) ZP \(load.zeroPageMemory) "
+                + "Pm \(load.programMemory) Xm \(load.xMemory) Ym \(load.yMemory)")
+        }
+        func save() {
+            try? rows.joined(separator: "\n").appending("\n")
+                .write(toFile: calibration.path, atomically: true, encoding: .utf8)
+        }
+
+        guard let constant = ModuleDatabase.module(id: constantType) else { exit(1) }
+        var alone = G2Patch()
+        alone.name = "DSPCal"
+        alone.add(module: module(constant, id: 1))
+        try await record("single", constant, -1, measure(alone))
+
+        // Pierwszy przebieg (2026-10-27, 13 typów) potwierdził dwie reguły, więc ich już nie
+        // mierzymy: druga sztuka kosztuje tyle co pierwsza, a uprate przenosi cały zegar „blue”
+        // na „red” (także dopłaty za wejścia). Zostaje koszt modułu i jego podłączonych wejść —
+        // najpierw wszystkie naraz; po jednym tylko wtedy, gdy to cokolwiek zmieniło.
+        func wired(_ def: ModuleDef, inputs: [Int]) -> G2Patch {
+            var patch = G2Patch()
+            patch.name = "DSPCal"
+            patch.add(module: module(def, id: 1))
+            patch.add(module: module(constant, id: 2))
+            for input in inputs {
+                patch.add(cable: G2Cable(fromModule: 2, fromConnector: 0, toModule: 1, toConnector: input,
+                                         color: .blue, area: .fx))
+            }
+            return patch
+        }
+        // `--prefix`: wejścia 0…k podłączone naraz, dla k = 1…n−2. Pełny przebieg 2026-10-28
+        // pokazał, że dopłaty się nie sumują (OscB: Pitch +19, PitchVar +19, oba razem +19;
+        // Mix4-1B: każde +3, cztery +6) — przyrosty kolejnych wejść mówią, które dzielą koszt.
+        // `--uprate`: moduł sam i ze wszystkimi wejściami, oba z flagą uprate — dla typów
+        // z wejściem dwukolorowym. Sprawdzenie na 40 patchach (2026-10-28) pokazało, że reguła
+        // „cały blue → red” zawyża obwiednie (Bassic FM4: +12 pkt), choć trzyma dla OscB i X-Fade.
+        // `--modes plik.csv` (wiersze typeID,mode,value): moduł sam z jednym trybem ustawionym
+        // inaczej niż domyślnie. Sprawdzenie na 40 patchach (2026-10-28): Plasma fx — szacunek
+        // 12,8 % pamięci, urządzenie 55,4 %, bo DlySingleB z zakresem 1.0s rezerwuje większy bufor.
+        // Zapis: `input` = numer trybu × 100 + wartość.
+        if let index = args.firstIndex(of: "--modes"), index + 1 < args.count,
+           let text = try? String(contentsOfFile: args[index + 1], encoding: .utf8)
+        {
+            let wanted = text.split(separator: "\n").dropFirst().compactMap { line -> (Int, Int, Int)? in
+                let parts = line.split(separator: ",").compactMap { Int($0) }
+                return parts.count >= 3 ? (parts[0], parts[1], parts[2]) : nil
+            }
+            for (typeID, mode, value) in wanted {
+                guard let def = ModuleDatabase.module(id: typeID), def.modeNames.indices.contains(mode) else { continue }
+                print("\(def.id) \(def.shortName) tryb \(mode) = \(value)")
+                var patch = G2Patch()
+                patch.name = "DSPCal"
+                var mod = module(def, id: 1)
+                mod.modes[mode] = value
+                patch.add(module: mod)
+                try await record("mode", def, mode * 100 + value, measure(patch))
+                save()
+            }
+            var empty = G2Patch()
+            empty.name = "DSPCal"
+            try? await manager.sendPatch(empty, toSlot: 3)
+            print("\n--- Zapisane: \(calibration.path) (\(rows.count - 1) pomiarów) ---")
+            await manager.disconnect()
+            exit(0)
+        }
+        if args.contains("--uprate") {
+            for (index, def) in types.enumerated() {
+                guard def.inputs.contains(where: { $0.color == .pitchOrControl || $0.color == .logicOrControl })
+                else { continue }
+                print("[\(index + 1)/\(types.count)] \(def.id) \(def.shortName) — uprate")
+                var up = G2Patch()
+                up.name = "DSPCal"
+                up.add(module: module(def, id: 1, uprate: true))
+                try await record("uprate", def, -1, measure(up))
+                var wiredUp = wired(def, inputs: Array(def.inputs.indices))
+                wiredUp.fxModules = wiredUp.fxModules.map { var mod = $0
+                    mod.uprate = mod.id == 1
+                    return mod
+                }
+                try await record("allInputsUprate", def, -1, measure(wiredUp))
+                save()
+            }
+            var empty = G2Patch()
+            empty.name = "DSPCal"
+            try? await manager.sendPatch(empty, toSlot: 3)
+            print("\n--- Zapisane: \(calibration.path) (\(rows.count - 1) pomiarów) ---")
+            await manager.disconnect()
+            exit(0)
+        }
+        if args.contains("--prefix") {
+            for (index, def) in types.enumerated() {
+                print("[\(index + 1)/\(types.count)] \(def.id) \(def.shortName) — przyrosty")
+                for last in Array(def.inputs.indices).dropFirst().dropLast() {
+                    try await record("prefix", def, last, measure(wired(def, inputs: Array(0 ... last))))
+                }
+                save()
+            }
+            var empty = G2Patch()
+            empty.name = "DSPCal"
+            try? await manager.sendPatch(empty, toSlot: 3)
+            print("\n--- Zapisane: \(calibration.path) (\(rows.count - 1) pomiarów) ---")
+            await manager.disconnect()
+            exit(0)
+        }
+        for (index, def) in types.enumerated() {
+            print("[\(index + 1)/\(types.count)] \(def.id) \(def.shortName)")
+            var one = G2Patch()
+            one.name = "DSPCal"
+            one.add(module: module(def, id: 1))
+            let single = try await measure(one)
+            record("single", def, -1, single)
+            guard let single, !def.inputs.isEmpty else {
+                save()
+                continue
+            }
+            let all = try await measure(wired(def, inputs: Array(def.inputs.indices)))
+            record("allInputs", def, -1, all)
+            let constantZP = 1
+            let unchanged = all.map {
+                $0.zeroPageMemory == single.zeroPageMemory + constantZP
+                    && $0.sameCost(as: G2PatchLoad(area: .fx, cyclesRed: single.cyclesRed,
+                                                   cyclesBlue: single.cyclesBlue, zeroPageMemory: $0.zeroPageMemory,
+                                                   xMemory: single.xMemory, yMemory: single.yMemory,
+                                                   programMemory: single.programMemory, ram: single.ram,
+                                                   qMemory: single.qMemory, rMemory: single.rMemory))
+            } ?? false
+            if !unchanged {
+                for input in def.inputs.indices {
+                    try await record("input", def, input, measure(wired(def, inputs: [input])))
+                }
+            }
+            save()
+        }
+
+        var empty = G2Patch()
+        empty.name = "DSPCal"
+        try? await manager.sendPatch(empty, toSlot: 3)
+        save()
+        print("\n--- Zapisane: \(calibration.path) (\(rows.count - 1) pomiarów) ---")
     } else if let typeIDs = hiddenTypeIDs {
         guard !fastConnect else {
             print("⛔️ --hidden potrzebuje odczytu slotów — uruchom bez --fast-connect.")

@@ -1110,6 +1110,19 @@ public actor G2MidiManager {
                     payload, label: label, timeout: 10.0,
                     expecting: G2UsbProtocol.subPatchVersionResponse
                 ), response.subCommand == G2UsbProtocol.subPatchVersionResponse else {
+                    // Odrzucony zrzut i tak podbija numery sesji wszystkich slotów (po odmowie
+                    // `0x7E` przychodzi `0x1F` z nowymi). Wysyłka slot po slocie, która rusza
+                    // po tym błędzie, poszłaby ze starymi, a takiemu patchowi Nord zapisuje
+                    // samą nazwę (#136) — dlatego pytamy o aktualne, zanim oddamy błąd (#165).
+                    for slot in UInt8(0) ..< UInt8(G2UsbProtocol.maxSlots) {
+                        let reply = try? await performStep(G2UsbProtocol.getPatchVersionPayload(slot: slot),
+                                                           expectSub: [G2UsbProtocol.subPatchVersionResponse])
+                        if let payload = reply?.payload, let decoded = G2UsbProtocol.decodePatchVersion(payload),
+                           decoded.slot < G2UsbProtocol.maxSlots
+                        {
+                            slotVersions[Int(decoded.slot)] = decoded.version
+                        }
+                    }
                     throw G2UsbError.badResponse("the device did not acknowledge the performance dump")
                 }
                 let versions = G2UsbProtocol.decodePatchVersions(response.payload)

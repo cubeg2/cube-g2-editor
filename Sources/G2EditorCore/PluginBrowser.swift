@@ -89,6 +89,7 @@ public enum PluginBrowser {
         guard var patch = try PatchParser.parseFile(data: data).patches.first else {
             throw CocoaError(.fileReadCorruptFile)
         }
+        patch.upgradeLegacyModules()
         patch.fillMissingParameters()
         patch.recomputeUprates()
         if patch.name.isEmpty {
@@ -104,7 +105,7 @@ public enum PluginBrowser {
         let category = G2PatchCategory.names.indices.contains(patch.description.category)
             ? G2PatchCategory.names[patch.description.category] : ""
         func load(_ area: PatchArea) -> [Double] {
-            let estimate = G2PatchLoad.estimate(area: area, modules: patch.modules(in: area))
+            let estimate = G2PatchLoad.estimate(area: area, patch: patch)
             return [(estimate.cyclesPercent * 10).rounded() / 10, (estimate.memoryPercent * 10).rounded() / 10]
         }
         return ["name": patch.name, "category": category,

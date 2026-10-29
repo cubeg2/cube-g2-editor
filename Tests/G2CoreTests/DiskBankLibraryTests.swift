@@ -312,7 +312,7 @@ final class DiskBankLibraryTests: XCTestCase {
         let slot = summary.slots[0]
         XCTAssertEqual(slot.modules, patch.voiceModules.count + patch.fxModules.count)
         XCTAssertGreaterThan(slot.modules, 0)
-        let voice = G2PatchLoad.estimate(area: .voice, modules: patch.voiceModules)
+        let voice = G2PatchLoad.estimate(area: .voice, patch: patch)
         XCTAssertEqual(slot.voiceLoad, max(voice.cyclesPercent, voice.memoryPercent), accuracy: 0.001)
         XCTAssertTrue(slot.line.hasPrefix("\(slot.modules) modules · DSP Voice "))
         XCTAssertNil(DiskBankLibrary.summary(of: root.appendingPathComponent("root.pch2")), "not a patch")
