@@ -138,7 +138,7 @@ public final class PanelController {
         var defaultWidth: CGFloat {
             switch self {
             case .modules, .banks: Self.drawerWidth
-            case .dsp: 260
+            case .dsp: 300
             case .keyboard: 740
             case .parameterPages: 530
             case .mutator: 496
@@ -165,7 +165,8 @@ public final class PanelController {
         public var fixedWindowSize: CGSize? {
             switch self {
             case .parameterPages: CGSize(width: 530, height: 144)
-            case .mutator: CGSize(width: 496, height: 492)
+            // +17 pt od 2026-11-04: fader wariacji pod kratkami wariacji.
+            case .mutator: CGSize(width: 496, height: 509)
             // Belka 22 + klamra 12 + klawisze 64 + odstępy i marginesy → patrz `KeyboardPanel`.
             case .keyboard: CGSize(width: 740, height: 128)
             case .parameterOverview: CGSize(width: 530, height: 765)
@@ -201,6 +202,14 @@ public final class PanelController {
         /// skalowania w rogu nie wchodził na podpisy.
         public static func xyPlotFooter(optionsShown: Bool) -> CGFloat {
             optionsShown ? 166 : 74
+        }
+
+        /// Najmniejsze okno, w którym nic się nie przycina; `nil` = ogólne minimum
+        /// (`minPanelWidth` × 200). DSP Load: pudełka ośmiu procesorów i tabela głosów z dwiema
+        /// kolumnami pastylek — w oknie 200 pt nazwy patchy i przełącznik 4/8 DSP się
+        /// ucinały (uwaga użytkownika 2026-10-30). Wysokość mieści całą sekcję Voices.
+        public var minWindowSize: CGSize? {
+            self == .dsp ? CGSize(width: 300, height: 330) : nil
         }
 
         /// Okno, którego opcje zawijają się do kolejnych rzędów (Spectrum): najwęższa

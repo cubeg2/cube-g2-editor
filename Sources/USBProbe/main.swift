@@ -20,6 +20,7 @@
 //   swift run USBProbe --paramtest-slot D       # czy ParamDump zmienia stan urządzenia
 //   swift run USBProbe --deletetest-slot D      # DeleteModule/DeleteCable krok po kroku
 //   swift run USBProbe --livetest-slot D        # SetParam bez ACK — skutek real-time
+//   swift run USBProbe --fadetest-slot D        # fader wariacji: ile zmian/s Nord przyjmuje (ucho)
 //   swift run USBProbe --listen 20              # podsłuch: co Nord nadaje SAM (gałka, slot, VU)
 //   swift run USBProbe --slottest               # czy SelectSlot przestawia front Norda
 //   swift run USBProbe --setperfname "Empty perf"  # nazwa performance'u DO urządzenia (0x29)
@@ -491,6 +492,14 @@ let morphEarSlot = slotArgument("--morphear-slot")
 /// dźwięk jedzie za kołem, to jedzie przez nasze przypisanie. Po czasie kasuje je i oddaje
 /// ustawienia głośności.
 let morphWheelSlot = slotArgument("--morphwheel-slot")
+/// `--fadetest-slot D [--from 1] [--to 5] [--rates 5,10,20,30,50,100] [--seconds 6] [--note 48] [--single]`
+/// — pomiar przed faderem wariacji (życzenie #13): **ile zmian parametrów na sekundę Nord
+/// przyjmuje bez trzasków**. Różnice wariacji `--from` i `--to` jadą A → B → A, etap po
+/// etapie coraz gęściej; jedna ramka `0x40` z kilkoma molekułami na klatkę (jak Patch
+/// Adjuster oryginału), z `--single` każda zmiana osobną ramką. Słucha człowiek, sonda
+/// mierzy osiągnięte tempo, najdłuższy zapis i to, czy Nord potem odpowiada. Na koniec
+/// wariacja `--from` dostaje z powrotem swoje wartości.
+let fadeTestSlot = slotArgument("--fadetest-slot")
 /// `--knobtest-slot D` — gałka strony parametrów przypięta (`0x25`) i zwolniona (`0x26`).
 /// Obie napisane 2026-09-08 bez sprzętu. W odróżnieniu od morfów **da się to sprawdzić
 /// odczytem**: sekcja gałek (`0x62`) wraca w zrzucie slotu — w patchach użytkownika
@@ -601,6 +610,41 @@ let loadCheckFiles: [String]? = {
     guard let index = args.firstIndex(of: "--loadcheck") else { return nil }
     return args[(index + 1)...].filter { $0.hasSuffix(".pch2") || $0.hasSuffix(".prf2") }
 }()
+
+// `--voicecalc plik.prf2|.pch2…` — bez urządzenia: ile głosów dostanie każdy slot według
+// kalkulatora (`DSPVoiceAllocation`), dla 4 i 8 DSP. Do porównania z `+0x202` w raporcie
+// emulatora (`g2boot --patch-report`) po `--loadperf` → [[Docs/context/firmware-resources]].
+if let index = args.firstIndex(of: "--voicecalc") {
+    for path in args[(index + 1)...] {
+        guard let data = FileManager.default.contents(atPath: path),
+              let parsed = try? PatchParser.parseFile(data: data)
+        else {
+            print("⚠️ nie czytam \(path)")
+            continue
+        }
+        let enabled = parsed.performance?.slots.map(\.enabled)
+        let requests = parsed.patches.enumerated().map { slot, patch in
+            DSPVoiceAllocation.Request(patch: patch, playing: enabled.map { slot < $0.count && $0[slot] } ?? true)
+        }
+        let pools = parsed.patches.map { patch in
+            [PatchArea.voice, .fx].map { area in
+                let modules = patch.modules(in: area)
+                let load = G2PatchLoad.estimate(area: area, patch: patch)
+                return "\(DSPVoiceAllocation.Request.sharedZeroPage(modules))/\(load.zeroPageMemory)"
+            }.joined(separator: " ")
+        }
+        print((path as NSString).lastPathComponent, "wspólne/ZP voice fx:", pools.joined(separator: " · "))
+        for count in [4, 8] {
+            let result = DSPVoiceAllocation(requests: requests, dspCount: count)
+            let slots = zip(result.voices, result.requested).map { "\($0)/\($1)" }
+            print("  \(count) DSP: głosy \(slots.joined(separator: " "))  procesory:",
+                  result.dsps.map { $0.map { "\(["A", "B", "C", "D"][$0.slot])\($0.area == .voice ? "v" : "f")" }
+                      .joined()
+                  }.joined(separator: " | "))
+        }
+    }
+    exit(0)
+}
 
 // `--make-voicecal szablon.pch2 katalog` — bez urządzenia: po dwa pliki na typ modułu
 // (jedna i dwie sztuki w obszarze VOICE, parametry domyślne, bez kabli), do przepuszczenia
@@ -1119,6 +1163,15 @@ do {
                 print("   urządzenie: fx \(devicePatch.fxModules.count)m/\(devicePatch.fxCables.count)k, voice \(devicePatch.voiceModules.count)m/\(devicePatch.voiceCables.count)k")
                 try printSectionDiff(normalized(filePatch), normalized(devicePatch))
                 printModuleDiff(normalized(filePatch), normalized(devicePatch))
+                mismatches += 1
+            }
+            // On/Off patcha we wszystkich wariacjach — sekcje wyżej go nie obejmują, a od
+            // 2026-11-03 edytor wgrywa patch z „Vol: Off" i włącza go po załadowaniu. Reszty
+            // ustawień nie porównujemy: Nord oddaje część pól inaczej niż plik (zmierzone).
+            let mute = { (patch: G2Patch) in patch.variationSettings.map { String($0.activeMuted) }.joined() }
+            if mute(filePatch) != mute(devicePatch) {
+                print("❌ Slot \(slotLabel(slot)): On/Off w wariacjach — plik \(mute(filePatch)), "
+                    + "urządzenie \(mute(devicePatch))")
                 mismatches += 1
             }
         }
@@ -1996,6 +2049,168 @@ do {
                 ? "\n✅ WNIOSEK: \(count) × zestaw \(variation) NIE zatrzymuje urządzenia."
                 : "\n🔴 WNIOSEK: \(count) × zestaw \(variation) ZATRZYMUJE urządzenie.")
         }
+    } else if let slot = fadeTestSlot {
+        let letter = slotLabel(Int(slot))
+        let patch = patches[Int(slot)]
+        func intArg(_ name: String) -> Int? {
+            args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil }
+        }
+        let from = (intArg("--from") ?? 1) - 1
+        let to = (intArg("--to") ?? 5) - 1
+        let note = UInt8(intArg("--note") ?? 48)
+        let seconds = Double(intArg("--seconds") ?? 6)
+        let single = args.contains("--single")
+        let rates = args.firstIndex(of: "--rates")
+            .flatMap { $0 + 1 < args.count ? args[$0 + 1].split(separator: ",").compactMap { Int($0) } : nil }
+            ?? [5, 10, 20, 30, 50, 100]
+
+        // Jeden parametr, który różni obie wariacje. Przełączniki (zakres < 16 kroków)
+        // skaczą w połowie drogi, reszta płynie — tak jak ma działać fader.
+        struct Fade {
+            let area: PatchArea
+            let moduleID: Int
+            let index: Int
+            let a: Int
+            let b: Int
+            let jumps: Bool
+
+            func value(at t: Double) -> Int {
+                jumps ? (t < 0.5 ? a : b) : Int((Double(a) + Double(b - a) * t).rounded())
+            }
+        }
+
+        var fades: [Fade] = []
+        for area in [PatchArea.voice, .fx] {
+            for module in patch.modules(in: area) {
+                guard module.parameterVariations.indices.contains(from),
+                      module.parameterVariations.indices.contains(to) else { continue }
+                let valuesA = module.parameterVariations[from]
+                let valuesB = module.parameterVariations[to]
+                for index in 0 ..< min(valuesA.count, valuesB.count) where valuesA[index] != valuesB[index] {
+                    let bounds = ParameterRangeDatabase.range(moduleTypeID: module.typeID, codeRef: index) ?? 0 ... 127
+                    fades.append(Fade(area: area, moduleID: module.id, index: index, a: valuesA[index],
+                                      b: valuesB[index], jumps: bounds.upperBound - bounds.lowerBound < 16))
+                }
+            }
+        }
+        guard !fades.isEmpty else {
+            print("Wariacje \(from + 1) i \(to + 1) slotu \(letter) nie różnią się niczym w Voice/FX — nie ma czego przesuwać.")
+            exit(1)
+        }
+
+        print("\n--- FADER WARIACJI, slot \(letter): \"\(patch.name)\" ---")
+        print("Wariacja \(from + 1) → \(to + 1) → \(from + 1): \(fades.count) różnych parametrów "
+            + "(\(fades.filter(\.jumps).count) przełączników skacze w połowie, reszta płynie)")
+        print("Wysyłka: " + (single ? "każda zmiana osobną ramką `0x40`" : "jedna ramka `0x40` na klatkę (paczka molekuł)"))
+        print("Etapy (klatek/s): \(rates.map(String.init).joined(separator: ", ")), każdy \(Int(seconds)) s, nuta \(note)")
+        print("\n👉 SŁUCHAJ i zapamiętaj numer etapu, w którym zaczyna trzeszczeć, rwać się albo zostawać w tyle.")
+
+        await manager.setLog { _ in }
+        try await manager.selectSlot(slot)
+        try await manager.selectVariation(slot: slot, variation: from)
+        let settings = patch.variationSettings[from]
+        if settings.activeMuted == 0 {
+            try await manager.setPatchSettingLive(slot: slot, moduleID: 2, paramIndex: 1, value: 1, variation: from)
+        }
+        if settings.patchVolume < 40 {
+            try await manager.setPatchSettingLive(slot: slot, moduleID: 2, paramIndex: 0, value: 100, variation: from)
+        }
+        // Pierwsza ramka `0x56` po świeżym połączeniu bywa gubiona — nuta-zapalnik.
+        try await manager.playNote(note, on: true)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try await manager.playNote(note, on: false)
+        try await Task.sleep(nanoseconds: 400_000_000)
+
+        func stillAlive() async throws -> Bool {
+            let capture = try await manager.diagnoseCommand(
+                name: "GetPatchVersion \(letter)",
+                payload: G2UsbProtocol.getPatchVersionPayload(slot: slot), listenSeconds: 1.0
+            )
+            return capture.packetCount > 0
+        }
+
+        var summary: [String] = []
+        var sent = fades.map(\.a)
+        try await manager.withPollingPaused {
+            for (stage, rate) in rates.enumerated() {
+                print("\n  ▶ ETAP \(stage + 1)/\(rates.count): \(rate) klatek/s — start za 2 s")
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                print("     TERAZ (wariacja \(from + 1) → \(to + 1) → \(from + 1))")
+                try await manager.playNote(note, on: true)
+
+                let ticks = max(2, Int(seconds * Double(rate)))
+                var frames = 0, changes = 0, errors = 0
+                var worstWrite = 0.0
+                let start = Date()
+                for tick in 0 ... ticks {
+                    let phase = Double(tick) / Double(ticks)
+                    let t = phase <= 0.5 ? phase * 2 : (1 - phase) * 2
+                    var batch: [G2ParameterChange] = []
+                    for (i, fade) in fades.enumerated() {
+                        let value = fade.value(at: t)
+                        guard value != sent[i] else { continue }
+                        batch.append(G2ParameterChange(area: fade.area, moduleID: fade.moduleID,
+                                                       paramIndex: fade.index, value: value))
+                        sent[i] = value
+                    }
+                    if !batch.isEmpty {
+                        let writeStart = Date()
+                        do {
+                            if single {
+                                for change in batch {
+                                    try await manager.setParameterLive(
+                                        slot: slot, area: change.area, moduleID: change.moduleID,
+                                        paramIndex: change.paramIndex, value: change.value, variation: from
+                                    )
+                                    frames += 1
+                                }
+                            } else {
+                                try await manager.setParametersLive(slot: slot, changes: batch, variation: from)
+                                frames += 1
+                            }
+                        } catch {
+                            errors += 1
+                        }
+                        worstWrite = max(worstWrite, Date().timeIntervalSince(writeStart))
+                        changes += batch.count
+                    }
+                    let wait = start.addingTimeInterval(Double(tick + 1) / Double(rate)).timeIntervalSinceNow
+                    if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                }
+                let elapsed = Date().timeIntervalSince(start)
+                try await manager.playNote(note, on: false)
+                let alive = try await stillAlive()
+                let line = String(format: "etap %d: %3d kl/s → osiągnięte %.1f kl/s, %.0f ramek/s, %.0f zmian/s, "
+                    + "najdłuższy zapis %.1f ms, błędy %d, Nord %@",
+                    stage + 1, rate, Double(ticks + 1) / elapsed, Double(frames) / elapsed,
+                    Double(changes) / elapsed, worstWrite * 1000, errors, alive ? "odpowiada" : "MILCZY")
+                print("     " + line)
+                summary.append(line)
+                guard alive else {
+                    print("\n🔴 Nord przestał odpowiadać — przerywam kolejne etapy.")
+                    break
+                }
+            }
+
+            // Sprzątanie: wariacja `from` dostaje z powrotem dokładnie swoje wartości.
+            for fade in fades {
+                try await manager.setParameterLive(slot: slot, area: fade.area, moduleID: fade.moduleID,
+                                                   paramIndex: fade.index, value: fade.a, variation: from)
+            }
+        }
+        if settings.activeMuted == 0 {
+            try await manager.setPatchSettingLive(slot: slot, moduleID: 2, paramIndex: 1,
+                                                  value: settings.activeMuted, variation: from)
+        }
+        if settings.patchVolume < 40 {
+            try await manager.setPatchSettingLive(slot: slot, moduleID: 2, paramIndex: 0,
+                                                  value: settings.patchVolume, variation: from)
+        }
+        try await manager.selectVariation(slot: slot, variation: patch.activeVariation)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        print("\n--- PODSUMOWANIE ---")
+        summary.forEach { print("  " + $0) }
+        print("Wariacja \(from + 1) wrócona do swoich wartości, slot gra wariację \(patch.activeVariation + 1).")
     } else if let slot = morphWheelSlot {
         // Ten sam dowód co `--morphear-slot`, tylko morfem kręci ucho i ręka użytkownika.
         let letter = slotLabel(Int(slot))

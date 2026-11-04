@@ -326,9 +326,48 @@ public final class PatchState {
     /// go nie ma. Nie idzie do pliku; świeci na pomarańczowo, póki jest włączony.
     public private(set) var editAllVariationSlots: Set<Int> = []
 
+    /// Kłódki `Lock Across Variations` pamiętane przez edytor pod ścieżką pliku — zapis
+    /// przy Save, odczyt przy Open. Testy podmieniają ją na własne `UserDefaults`.
+    @ObservationIgnored public var variationLockMemory = VariationLockMemory()
+
     public func toggleEditAllVariations(slot: Int) {
         if !editAllVariationSlots.insert(slot).inserted { editAllVariationSlots.remove(slot) }
     }
+
+    /// Wariacja porównywana z grającą, osobno dla każdego slotu (Shift-klik w pasku
+    /// wariacji). Kanwa przygasza wtedy wszystko, co w obu jest takie samo, a różnice
+    /// pokazuje na turkusowo. Nie idzie do pliku i nie zmienia dźwięku.
+    private var comparedVariations: [Int: Int] = [:]
+
+    /// Porównywana wariacja slotu; `nil`, gdy porównanie jest wyłączone albo gdy
+    /// porównywana wariacja właśnie gra (np. przełączona z Norda).
+    public func comparedVariation(slot: Int) -> Int? {
+        // Nagłówek, nie `slots` — pas wariacji pyta o to w `body` (canvas-performance).
+        guard let variation = comparedVariations[slot],
+              variation != header(slot: slot).activeVariation else { return nil }
+        return variation
+    }
+
+    /// Shift-klik w wariację: włącza porównanie z nią, a ponowny Shift-klik je wyłącza.
+    public func toggleCompare(with variation: Int, slot: Int) {
+        guard (0 ..< G2Patch.initVariation).contains(variation) else { return }
+        if comparedVariation(slot: slot) == variation || slots[slot].activeVariation == variation {
+            comparedVariations[slot] = nil
+        } else {
+            comparedVariations[slot] = variation
+        }
+    }
+
+    public func endCompare(slot: Int) {
+        comparedVariations[slot] = nil
+    }
+
+    /// Fader wariacji (#13), osobno dla każdego slotu — logika w `PatchState+VariationFader`.
+    /// Wpis jest ważny tylko, póki slot gra bufor odsłuchu (zestaw 9) z fadera.
+    var variationFaders: [Int: VariationFaderState] = [:]
+    /// Slot, którego fader ciągnie teraz mysz; `nil` poza gestem.
+    @ObservationIgnored var faderGestureSlot: Int?
+    @ObservationIgnored var faderFlushPending = false
 
     /// Czy trwa gest ciągły (przeciąganie gałki/fadera, przytrzymany +/−).
     private var gestureActive = false
@@ -527,7 +566,10 @@ public final class PatchState {
             old != clamped else { return false }
 
         // Chwilowe przyciski i gałki Patch Adjustera zostają przy grającej wariacji.
-        if !isMode, undoable, !fromAdjuster, editAllVariationSlots.contains(slot) {
+        if !isMode, undoable, !fromAdjuster,
+           editAllVariationSlots.contains(slot)
+           || isParameterVariationLocked(slot: slot, moduleID: moduleID, paramIndex: index, area: area)
+        {
             setParameterInVariations(slot: slot, moduleID: moduleID, index: index, area: area,
                                      values: Array(repeating: clamped, count: G2Patch.initVariation))
             return true
@@ -581,6 +623,23 @@ public final class PatchState {
             target.setParameterInVariations(slot: slot, moduleID: moduleID, index: index,
                                             area: area, values: before)
         }
+        writeParameterVariations(slot: slot, moduleID: moduleID, index: index, area: area,
+                                 values: values, before: before)
+    }
+
+    /// Wartości parametru w wariacjach 1–8; brakujące (patch bez sekcji wariacji) jak grająca.
+    private func variationValues(of module: G2Module, index: Int) -> [Int] {
+        (0 ..< G2Patch.initVariation).map { variation in
+            module.parameterVariations.indices.contains(variation)
+                && module.parameterVariations[variation].indices.contains(index)
+                ? module.parameterVariations[variation][index] : module.parameters[index]
+        }
+    }
+
+    /// Sam zapis `values[wariacja]` do modelu i urządzenia — bez undo.
+    private func writeParameterVariations(slot: Int, moduleID: Int, index: Int, area: PatchArea,
+                                          values: [Int], before: [Int])
+    {
         for variation in values.indices where before[variation] != values[variation] {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: index, value: values[variation],
                                      in: area, variation: variation)
@@ -600,6 +659,99 @@ public final class PatchState {
         else { return nil }
         let values = isMode ? module.modes : module.parameters
         return values.indices.contains(index) ? values[index] : nil
+    }
+
+    // MARK: - Lock Across Variations
+
+    //
+    // Gałka z blokadą ma tę samą wartość we wszystkich ośmiu wariacjach, więc przełączenie
+    // wariacji jej nie rusza — także na samym Nordzie, bez edytora. Życzenie z forum
+    // (wątek 8995: wyciszony patch ma zostać wyciszony po zmianie wariacji). Init zostaje
+    // poza blokadą, jak przy „Edit all": to wzorzec przywoływany świadomie.
+
+    private struct VariationLockChange {
+        let moduleID: Int
+        let paramIndex: Int
+        let locked: Bool
+        /// Wartości do wpisania w wariacje 1–8; `nil` = wartości zostają, jakie są.
+        let values: [Int]?
+    }
+
+    public func isParameterVariationLocked(slot: Int, moduleID: Int, paramIndex: Int, area: PatchArea) -> Bool {
+        guard slots.indices.contains(slot) else { return false }
+        return slots[slot].modules(in: area).first { $0.id == moduleID }?
+            .variationLockedParameters.contains(paramIndex) ?? false
+    }
+
+    /// `Lock Across Variations` z menu gałki albo modułu, w wybranym slocie. Zakładając
+    /// blokadę, wartość z grającej wariacji przechodzi do pozostałych; jeden ⌘Z oddaje
+    /// każdej wariacji jej dawną wartość i zdejmuje blokadę.
+    public func setVariationLock(_ parameters: [(moduleID: Int, paramIndex: Int)], area: PatchArea,
+                                 locked: Bool)
+    {
+        let slot = selectedSlot
+        guard slots.indices.contains(slot) else { return }
+        let modules = slots[slot].modules(in: area)
+        let changes = parameters.compactMap { parameter -> VariationLockChange? in
+            guard let module = modules.first(where: { $0.id == parameter.moduleID }),
+                  module.parameters.indices.contains(parameter.paramIndex) else { return nil }
+            let values = locked
+                ? Array(repeating: module.parameters[parameter.paramIndex], count: G2Patch.initVariation)
+                : nil
+            return VariationLockChange(moduleID: parameter.moduleID, paramIndex: parameter.paramIndex,
+                                       locked: locked, values: values)
+        }
+        guard !changes.isEmpty else { return }
+        applyVariationLocks(changes, slot: slot, area: area,
+                            actionName: locked ? "Lock Across Variations" : "Unlock Across Variations")
+    }
+
+    private func applyVariationLocks(_ changes: [VariationLockChange], slot: Int, area: PatchArea,
+                                     actionName: String)
+    {
+        var undo: [VariationLockChange] = []
+        for change in changes {
+            guard let module = slots[slot].modules(in: area).first(where: { $0.id == change.moduleID })
+            else { continue }
+            let before = variationValues(of: module, index: change.paramIndex)
+            undo.append(VariationLockChange(
+                moduleID: change.moduleID, paramIndex: change.paramIndex,
+                locked: module.variationLockedParameters.contains(change.paramIndex),
+                values: change.values == nil ? nil : before
+            ))
+            slots[slot].setVariationLock(moduleID: change.moduleID, paramIndex: change.paramIndex,
+                                         locked: change.locked, in: area)
+            if let values = change.values {
+                writeParameterVariations(slot: slot, moduleID: change.moduleID, index: change.paramIndex,
+                                         area: area, values: values, before: before)
+            }
+        }
+        undoManager.registerUndo(withTarget: self) { target in
+            target.applyVariationLocks(undo.reversed(), slot: slot, area: area, actionName: actionName)
+        }
+        undoManager.setActionName(actionName)
+    }
+
+    /// Zmiana całej wariacji (kopia, „Init"), po której gałki z blokadą wracają do swoich
+    /// wartości — inaczej „Init" rozjechałby je z pozostałymi siedmioma wariacjami.
+    private func keepingVariationLocks(slot: Int, variation: Int, _ change: () -> Void) {
+        guard variation < G2Patch.initVariation else { return change() }
+        var held: [(area: PatchArea, moduleID: Int, index: Int, value: Int)] = []
+        for area in [PatchArea.voice, PatchArea.fx] {
+            for module in slots[slot].modules(in: area) {
+                for index in module.variationLockedParameters where module.parameters.indices.contains(index) {
+                    held.append((area, module.id, index, variationValues(of: module, index: index)[variation]))
+                }
+            }
+        }
+        change()
+        for lock in held {
+            guard let module = slots[slot].modules(in: lock.area).first(where: { $0.id == lock.moduleID }),
+                  variationValues(of: module, index: lock.index)[variation] != lock.value else { continue }
+            slots[slot].setParameter(moduleID: lock.moduleID, paramIndex: lock.index, value: lock.value,
+                                     in: lock.area, variation: variation)
+            onLiveParameterChange?(slot, lock.area, lock.moduleID, lock.index, lock.value, variation)
+        }
     }
 
     // MARK: - Patch Adjuster
@@ -802,6 +954,10 @@ public final class PatchState {
         guard slots.indices.contains(target), (0 ... 7).contains(variation) else { return }
         let previous = slots[target].activeVariation
         guard previous != variation else { return }
+        // Zwykły klik w porównywaną wariację kończy porównanie — para zniknęłaby i tak,
+        // a po powrocie nie powinna wracać sama.
+        if comparedVariations[target] == variation { comparedVariations[target] = nil }
+        variationFaders[target] = nil
         slots[target].setActiveVariation(variation)
         // Wybór wariacji kończy przesłuchiwanie w buforze mutatora — znacznik focusu
         // przenosi się na kratkę wariacji, tak jak w Muta Background dialog (SetupState).
@@ -827,8 +983,10 @@ public final class PatchState {
         guard slots.indices.contains(target), range.contains(source), range.contains(destination),
               source != destination else { return }
         let before = slotContents(target)
-        slots[target].copyVariation(from: source, to: destination)
-        onVariationCopy?(target, source, destination)
+        keepingVariationLocks(slot: target, variation: destination) {
+            slots[target].copyVariation(from: source, to: destination)
+            onVariationCopy?(target, source, destination)
+        }
         registerSlotRestore(before, slot: target,
                             actionName: source == 8 ? "Init Variation" : "Copy Variation")
     }
@@ -1076,6 +1234,42 @@ public final class PatchState {
         onPatchSettingChange?(slot, setting.module, setting.param, clamped, variation)
     }
 
+    /// Wartość ustawienia z grającej wariacji przepisana do wszystkich ośmiu
+    /// (prawy klik na gałce Vol: „Set This Volume for All Variations", prośba
+    /// użytkownika 2026-11-04). Oryginał tego nie ma. Jedno ⌘Z przywraca każdej
+    /// wariacji jej własną wartość; do Norda idzie `SET_PARAM` tylko tam, gdzie
+    /// wartość się zmieniła — Nord przyjmuje zapis do niegrającej wariacji
+    /// (ta sama droga co fader wariacji).
+    public func copyPatchSettingToAllVariations(_ setting: G2PatchSetting, slot: Int) {
+        guard slots.indices.contains(slot) else { return }
+        let variation = slots[slot].activeVariation
+        guard slots[slot].variationSettings.indices.contains(variation) else { return }
+        let value = slots[slot].variationSettings[variation][keyPath: setting.keyPath]
+        let targets = (0 ..< G2Patch.initVariation).filter(slots[slot].variationSettings.indices.contains)
+        setPatchSetting(setting, values: targets.map { ($0, value) }, slot: slot,
+                        actionName: "Set \(setting.label) for All Variations")
+    }
+
+    /// Zapis ustawienia do wskazanych wariacji z jednym cofnięciem, które wraca
+    /// do wartości sprzed zmiany tą samą drogą.
+    private func setPatchSetting(_ setting: G2PatchSetting, values: [(variation: Int, value: Int)],
+                                 slot: Int, actionName: String)
+    {
+        var before: [(variation: Int, value: Int)] = []
+        for (variation, value) in values {
+            let old = slots[slot].variationSettings[variation][keyPath: setting.keyPath]
+            guard old != value else { continue }
+            before.append((variation, old))
+            slots[slot].variationSettings[variation][keyPath: setting.keyPath] = value
+            onPatchSettingChange?(slot, setting.module, setting.param, value, variation)
+        }
+        guard !before.isEmpty else { return }
+        undoManager.registerUndo(withTarget: self) { target in
+            target.setPatchSetting(setting, values: before, slot: slot, actionName: actionName)
+        }
+        undoManager.setActionName(actionName)
+    }
+
     /// Bieżąca wartość ustawienia patcha — arkusz czyta przez to, żeby nie sięgać
     /// do modelu z pominięciem `setPatchSetting`.
     public func patchSetting(_ setting: G2PatchSetting) -> Int {
@@ -1136,6 +1330,7 @@ public final class PatchState {
                 hasher.combine(module.typeID)
                 hasher.combine(module.parameters.count)
                 hasher.combine(module.excludedFromMutation)
+                hasher.combine(module.variationLockedParameters)
             }
         }
         return hasher.finalize()
@@ -1674,6 +1869,20 @@ public final class PatchState {
         mutatorCopy(node: node, to: G2MutatorBox(.storage, free))
     }
 
+    /// Menu kratki ▸ „Store Fader Sound Here” (prośba Kuby 2026-11-04): to, co słychać spod
+    /// fadera wariacji, do dowolnej kratki — magazyn, rodzic, dziecko albo wariacja.
+    public func mutatorStoreFaderSound(in box: G2MutatorBox) {
+        let slot = selectedSlot
+        guard activeVariationFader(slot: slot) != nil, slots.indices.contains(slot) else { return }
+        if box.kind == .variations {
+            storeVariationFaderSound(to: box.index, slot: slot)
+            return
+        }
+        beginMutatorEdit("Store Fader Sound")
+        setBox(box, to: G2Mutator.individual(from: slots[slot], variation: G2Patch.mutatorVariation,
+                                             genome: mutatorGenome))
+    }
+
     /// Kratki okna, w których siedzi dźwięk węzła — znaczki `M`, `F`, `1`…`6`, `S`
     /// na kratkach drzewa. Wariacji nie sprawdzamy: drzewo trzyma ułamki, patch bajty.
     public func mutatorBoxes(of node: G2MutatorTree.NodeID) -> [G2MutatorBox] {
@@ -1752,7 +1961,18 @@ public final class PatchState {
     public var mutatorHighlight: G2MutatorBox? {
         let variation = patch.activeVariation
         if (0 ... 7).contains(variation) { return G2MutatorBox(.variations, variation) }
+        // Bufor gra dźwięk spod fadera wariacji, nie z żadnej kratki.
+        if variationFaders[selectedSlot] != nil { return nil }
         return mutatorFocus
+    }
+
+    /// Czy kratka świeci: `mutatorHighlight`, a w trakcie przejścia fadera także kratka
+    /// wariacji, na której kropce stoi suwak — od razu, nie dopiero po puszczeniu myszy
+    /// (prośba Kuby 2026-11-04); pominięte kopie razem ze swoim przystankiem, jak w belce.
+    public func mutatorLit(_ box: G2MutatorBox) -> Bool {
+        if mutatorHighlight == box { return true }
+        guard box.kind == .variations else { return false }
+        return variationFaderWeight(of: box.index, slot: selectedSlot).map { $0 >= 1 } ?? false
     }
 
     /// Czy patch gra w tej chwili z bufora mutatora — wtedy żaden przycisk wariacji
@@ -1780,6 +2000,8 @@ public final class PatchState {
         let previousSound = G2Mutator.individual(from: slots[slot], variation: buffer,
                                                  genome: mutatorGenome)
 
+        // Bufor przejmuje Mutator — fader wariacji przestaje w nim grać.
+        variationFaders[slot] = nil
         slots[slot].apply(keepingHeldModules(individual), variation: buffer)
         slots[slot].setActiveVariation(buffer)
 
@@ -3356,6 +3578,17 @@ public final class PatchState {
                           value: max(0, min(127, value)), variation: variation)
         updateAdjusterBaseline(slot: slot, area: area, moduleID: moduleID, paramIndex: paramIndex,
                                value: max(0, min(127, value)), variation: variation)
+        // Gałka z blokadą wariacji ruszona na Nordzie: Nord zmienił tylko grającą wariację,
+        // pozostałe siedem dostaje tę samą wartość od nas.
+        guard variation < G2Patch.initVariation,
+              isParameterVariationLocked(slot: slot, moduleID: moduleID, paramIndex: paramIndex, area: area)
+        else { return }
+        let clamped = max(0, min(127, value))
+        for other in 0 ..< G2Patch.initVariation where other != variation {
+            slots[slot].setParameter(moduleID: moduleID, paramIndex: paramIndex,
+                                     value: clamped, in: area, variation: other)
+            onLiveParameterChange?(slot, area, moduleID, paramIndex, clamped, other)
+        }
     }
 
     /// Ustawienie patcha (obszar 2) zmienione NA FRONCIE Norda: gałka albo źródło morfu
@@ -3475,6 +3708,21 @@ public final class PatchState {
         selectedSlot = 0
     }
 
+    /// Patch z banku Norda przy opcji „jak oryginał” (#137): cztery puste sloty, focus na A,
+    /// bez ustawień performance'u. Puste B–D jadą potem do Norda, a slot A wypełnia sam Nord
+    /// (`0x0A`) — patrz `DeviceConnection.loadFromBankAsOnlyPatch`.
+    public func clearSlotsForBankPatch() {
+        clearMutations()
+        resetPerformanceSettings()
+        slots = fourSlots([])
+        selectedSlot = 0
+        comparedVariations = [:]
+        fileName = "Nord G2"
+        errorMessage = nil
+        resetUndoHistory()
+        forgetFiles()
+    }
+
     /// Wczytanie innego patcha unieważnia potomstwo mutatora — dotyczyło tamtych modułów.
     private func loadPerformance(url: URL) {
         clearMutations()
@@ -3483,14 +3731,16 @@ public final class PatchState {
         do {
             let data = try Data(contentsOf: url)
             let parsed = try PatchParser.parseFile(data: data)
-            slots = fourSlots(parsed.patches.map { patch in
+            slots = fourSlots(parsed.patches.enumerated().map { index, patch in
                 var patch = patch
                 patch.upgradeLegacyModules()
                 patch.fillMissingParameters()
                 patch.recomputeUprates()
+                variationLockMemory.restore(into: &patch, key: VariationLockMemory.key(for: url, slot: index))
                 return patch
             })
             selectedSlot = 0
+            comparedVariations = [:]
             fileName = url.lastPathComponent
             mirrorsDevice = false
             errorMessage = nil
@@ -3547,12 +3797,14 @@ public final class PatchState {
             // Pliki z bety 0.1 mają uprate 0 tam, gdzie oryginał ma 1 (bug-history #141).
             // Poprawiamy po cichu, zanim slot zostanie oznaczony jako zapisany.
             patch.recomputeUprates()
+            variationLockMemory.restore(into: &patch, key: VariationLockMemory.key(for: url))
             // `.pch2` nie niesie nazwy patcha — u oryginału slot nazywa się jak plik. To samo
             // robi już wysyłka do Norda (`performUpload`), a w `.prf2` nazwę trzyma sekcja 0x11.
             if patch.name.isEmpty {
                 patch.name = String(url.deletingPathExtension().lastPathComponent.prefix(16))
             }
             slots[slot] = patch
+            comparedVariations[slot] = nil
             slotFileData[slot] = data
             slotFileURLs[slot] = url
             markSlotSaved(slot)
@@ -3635,6 +3887,7 @@ public final class PatchState {
             let data = try PatchParser.saveAll(originalData: slotFileData[slot] ?? PatchParser.emptyPatchFile,
                                                patches: [slots[slot]])
             try data.write(to: url, options: .atomic)
+            variationLockMemory.store(slots[slot], key: VariationLockMemory.key(for: url))
             RecentFiles.remember(url)
         } catch {
             errorMessage = "Could not save: \(error.localizedDescription)"
@@ -3718,6 +3971,7 @@ public final class PatchState {
         do {
             let newData = try PatchParser.saveAll(originalData: original, patches: [slots[slot]])
             try newData.write(to: url, options: .atomic)
+            variationLockMemory.store(slots[slot], key: VariationLockMemory.key(for: url))
             slotFileData[slot] = newData
             markSlotSaved(slot)
             errorMessage = nil
@@ -3746,6 +4000,9 @@ public final class PatchState {
             let newData = try PatchParser.saveAll(originalData: original, patches: slots,
                                                   performance: settings)
             try newData.write(to: url, options: .atomic)
+            for slot in slots.indices {
+                variationLockMemory.store(slots[slot], key: VariationLockMemory.key(for: url, slot: slot))
+            }
             performanceFileData = newData
             markPerformanceSaved()
             // Sloty bez własnego pliku mieszkają teraz w `.prf2` — są zapisane.

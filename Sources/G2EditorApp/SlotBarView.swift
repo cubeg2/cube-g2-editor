@@ -187,21 +187,26 @@ struct SlotBarView: View {
     /// oba pola nagłówka — patrz `G2VoiceMode`.
     private var voiceMode: some View {
         let index = header.voiceModeIndex
+        let assigned = draggedVoiceMode == nil ? assignedVoices(asked: index) : nil
         return HStack(spacing: 5) {
             // W trakcie przeciągania zmienia się tylko napis; do patcha (i Norda) idzie
             // jedna zmiana po puszczeniu — jeden krok Undo zamiast kilkunastu.
-            TopBarValueField(text: G2VoiceMode.label(index: draggedVoiceMode ?? index), width: 56)
-                .topBarDragAdjust(value: draggedVoiceMode ?? index,
-                                  range: G2VoiceMode.minIndex ... G2VoiceMode.maxIndex,
-                                  pointsPerStep: 6,
-                                  onChange: { draggedVoiceMode = $0 },
-                                  onEnd: {
-                                      if let target = draggedVoiceMode {
-                                          focusing { state.setVoiceMode(index: target, slot: slot) }
-                                      }
-                                      draggedVoiceMode = nil
-                                  })
-                .topBarCaptionAbove("Voices:")
+            TopBarValueField(text: assigned.map { "\($0) (\(index))" } ?? G2VoiceMode.label(index: draggedVoiceMode ?? index),
+                             width: 56,
+                             warning: assigned.map { $0 == 0 ? Color(red: 0.95, green: 0.1, blue: 0.1)
+                                 : Color(red: 0.95, green: 0.6, blue: 0.0)
+                             })
+                             .topBarDragAdjust(value: draggedVoiceMode ?? index,
+                                               range: G2VoiceMode.minIndex ... G2VoiceMode.maxIndex,
+                                               pointsPerStep: 6,
+                                               onChange: { draggedVoiceMode = $0 },
+                                               onEnd: {
+                                                   if let target = draggedVoiceMode {
+                                                       focusing { state.setVoiceMode(index: target, slot: slot) }
+                                                   }
+                                                   draggedVoiceMode = nil
+                                               })
+                             .topBarCaptionAbove("Voices:")
             TopBarStepper(
                 canIncrement: index < G2VoiceMode.maxIndex,
                 canDecrement: index > G2VoiceMode.minIndex,
@@ -209,7 +214,21 @@ struct SlotBarView: View {
                 onDecrement: { focusing { state.setVoiceMode(index: index - 1, slot: slot) } }
             )
         }
-        .help("Voice mode — Legato, Mono, or the number of voices")
+        .help(assignedVoices(asked: index).map {
+            "The G2 plays this patch with \($0) of \(index) voices — the rest don't fit on its DSPs (see DSP Load)"
+        } ?? "Voice mode — Legato, Mono, or the number of voices")
+    }
+
+    /// Ile głosów Nord dał temu slotowi, gdy to MNIEJ niż zamówione — jak „4 (6)" w pasku
+    /// oryginału. `nil`, gdy dostał wszystkie, gdy to Mono/Legato, gdy slot nie gra albo
+    /// gdy ekran pokazuje co innego niż Nord.
+    private func assignedVoices(asked: Int) -> Int? {
+        guard asked >= 2, device.status == .connected, state.mirrorsDevice,
+              let voices = device.assignedVoices, voices.indices.contains(slot),
+              device.playingSlots.indices.contains(slot), device.playingSlots[slot],
+              voices[slot] < asked
+        else { return nil }
+        return voices[slot]
     }
 
     // MARK: - Init 1 / Init 2
@@ -258,6 +277,11 @@ struct SlotBarView: View {
                       onChange: { state.setPatchSetting(.patchVolume, value: $0, slot: slot) },
                       onEnd: { state.endParameterGesture() })
                 .help("Patch level (\(volume)) — MIDI CC #7")
+                .contextMenu {
+                    Button("Set This Volume for All Variations") {
+                        focusing { state.copyPatchSettingToAllVariations(.patchVolume, slot: slot) }
+                    }
+                }
             // Grający patch świeci na zielono jak `Run`, wyciszony na czerwono. Oba stany
             // są zapalone: wyciszenie to nie „nic", tylko stan, który ma rzucać się w oczy.
             // Pełna wysokość belki, jak okienko Voices i sloty A–D (prośba użytkownika

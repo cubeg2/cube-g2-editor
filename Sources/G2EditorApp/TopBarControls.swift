@@ -197,11 +197,14 @@ struct TopBarValueField: View {
     let text: String
     var width: CGFloat
     var isEnabled: Bool = true
+    /// Kolor napisu, gdy okienko ostrzega (np. Nord dał mniej głosów); `nil` = zwykły.
+    var warning: Color?
 
     var body: some View {
         Text(text)
             .font(.system(size: TopBarMetrics.labelSize, weight: .medium))
             .monospacedDigit()
+            .foregroundStyle(warning ?? .primary)
             .lineLimit(1)
             .frame(width: width, height: TopBarMetrics.controlSide)
             .background(

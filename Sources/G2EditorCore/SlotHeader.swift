@@ -27,6 +27,8 @@ public struct SlotHeader: Equatable {
     /// Czy na stronie gałek (0–14) siedzi jakiekolwiek przypisanie — menu
     /// „Assign to Knob" pisze wtedy „(used)".
     public var knobPageUsed: [Bool]
+    /// Przystanki fadera wariacji — wariacje 1–8 bez kopii poprzedniej (`G2VariationFade`).
+    public var faderStops: [Int]
 
     public init(patch: G2Patch) {
         let variation = patch.activeVariation
@@ -47,6 +49,7 @@ public struct SlotHeader: Equatable {
         knobPageUsed = (0 ..< G2KnobPages.pageCount).map { page in
             (0 ..< G2KnobPages.knobsPerPage).contains { patch.knobAssignment(page: page, slot: $0) != nil }
         }
+        faderStops = G2VariationFade.stops(of: patch)
     }
 
     public static let empty = SlotHeader(patch: G2Patch())

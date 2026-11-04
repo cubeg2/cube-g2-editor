@@ -313,6 +313,7 @@ struct GeneralSettingsTab: View {
     @AppStorage(SilentSlotClick.storageKey) private var silentSlotClick = SilentSlotClick.addToPlaying.rawValue
     @AppStorage(UnsavedChangesGuard.askOnReplaceKey) private var askOnReplace = true
     @AppStorage(UnsavedChangesGuard.askOnInitPatchKey) private var askOnInitPatch = true
+    @AppStorage(ExpansionBoard.storageKey) private var hasExpansion = false
 
     var body: some View {
         SettingsPage {
@@ -357,12 +358,20 @@ struct GeneralSettingsTab: View {
                         SettingsCard(title: "Folders",
                                      caption: "Both show up in the Patches drawer (Disk and Blocks). "
                                          + "Drag a block from the Blocks list onto the patch to insert it.",
-                                     width: pageInnerWidth)
+                                     width: cardWidth(3) * 2 + cardSpacing)
                         {
                             FolderChoice(title: "Patches", library: .patches)
                             FolderChoice(title: "Building Blocks", library: .blocks)
                         }
-                        .gridCellColumns(3)
+                        .gridCellColumns(2)
+                        SettingsCard(title: "Your G2",
+                                     caption: "The G2 doesn't tell the editor about the board. DSP Load starts "
+                                         + "from this, and the red mark in the Patches drawer warns about files "
+                                         + "your G2 can't play with every voice.",
+                                     width: cardWidth(3))
+                        {
+                            Toggle("Expansion board installed (8 DSPs)", isOn: $hasExpansion)
+                        }
                     }
                 }
             }

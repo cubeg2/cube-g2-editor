@@ -83,7 +83,6 @@ extension PatchCanvasView {
         let paramIndex: Int
         let currentValue: Int
         let dragSensitivity: CGFloat // units/pt — wyższe dla sliderów
-        let readout: SliderReadout
         /// Środek tarczy w układzie canvasu — potrzebny trybowi „Circular"
         /// z okna Options; dla suwaków to środek toru.
         var center: CGPoint = .zero
@@ -194,11 +193,6 @@ extension PatchCanvasView {
                                       paramIndex: knob.codeRef,
                                       currentValue: val,
                                       dragSensitivity: dragSens,
-                                      readout: SliderReadout(
-                                          moduleID: module.id, paramIndex: knob.codeRef,
-                                          infoFunc: knob.infoFunc,
-                                          textField: linkedTextField(for: knob, in: ui)
-                                      ),
                                       center: center)
                     bestDist = dist
                 }

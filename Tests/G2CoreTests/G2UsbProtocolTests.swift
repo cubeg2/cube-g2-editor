@@ -642,6 +642,18 @@ final class G2UsbProtocolTests: XCTestCase {
         XCTAssertEqual(info?.bpm, 120)
     }
 
+    /// Odpowiedź Norda na `0x04` (G2 37, fw 1.62, 2026-11-03): `acid.pch2` z 32 głosami
+    /// w slocie A na 4 DSP dostał 7, wyłączone B–D po zero. Flaga odpowiedzi ustawiona,
+    /// więc `awaitResponse` bierze ją za odpowiedź, choć `0x05` bywa też powiadomieniem.
+    func testAssignedVoicesResponseFromRealDevice() {
+        XCTAssertEqual(G2UsbProtocol.assignedVoicesRequestPayload(), [0x01, 0x2C, 0x41, 0x04])
+        let decoded = G2UsbProtocol.decodeResponseBody([0x01, 0x0C, 0x00, 0x05, 0x07, 0x00, 0x00, 0x00])
+        XCTAssertEqual(decoded?.subCommand, G2UsbProtocol.subResponseAssignedVoices)
+        XCTAssertEqual(decoded?.isSynthInitiated, false)
+        XCTAssertEqual(G2UsbProtocol.decodeAssignedVoices(decoded?.payload ?? []), [7, 0, 0, 0])
+        XCTAssertNil(G2UsbProtocol.decodeAssignedVoices([0x07, 0x00]))
+    }
+
     // MARK: - Numer sesji slotu (0x36)
 
     func testPatchVersionDecodesSlotAndSession() {

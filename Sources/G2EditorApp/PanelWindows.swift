@@ -53,10 +53,11 @@ final class PanelWindows {
         let root = ScalablePanel(base: { scales ? panels.baseWindowSize(of: panel) : nil },
                                  // X-Y: mniej niż `squareMinSide` przycinało opcje pod
                                  // wykresem (uwaga użytkownika 2026-09-27).
-                                 minSize: CGSize(width: fixed?.width ?? panel.wrappingMinWidth
+                                 minSize: CGSize(width: fixed?.width ?? panel.minWindowSize?.width
+                                     ?? panel.wrappingMinWidth
                                      ?? (panel.squareWindowFooter == nil
                                          ? PanelController.minPanelWidth : Self.squareMinSide),
-                                     height: fixed?.height ?? 200),
+                                     height: fixed?.height ?? panel.minWindowSize?.height ?? 200),
                                  resizable: resizable,
                                  onBaseChange: { [weak self] base in
                                      if let window = self?.windows[panel] { Self.fit(window, to: base) }
@@ -101,6 +102,13 @@ final class PanelWindows {
         // Sztywne okno: zapamiętana ramka mogła mieć stary rozmiar (Colors do 2026-09-27).
         if !scales, let base { Self.resize(window, to: base) }
         if let footer = panel.squareWindowFooter { Self.makeSquare(window, footer: footer) }
+        // Zapamiętana ramka mogła być mniejsza niż minimum (DSP Load do 2026-10-30).
+        if let minimum = panel.minWindowSize {
+            window.contentMinSize = minimum
+            let content = window.contentRect(forFrameRect: window.frame).size
+            Self.resize(window, to: NSSize(width: max(content.width, minimum.width),
+                                           height: max(content.height, minimum.height)))
+        }
         // Zawijane opcje (Spectrum): wysokość, jakiej treść potrzebuje przy danej szerokości.
         let fitContent: ((CGFloat) -> NSSize)? = panel.wrappingMinWidth.map { minWidth in
             { [weak controller] width in

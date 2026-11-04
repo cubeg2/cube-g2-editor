@@ -29,6 +29,7 @@ extension PatchCanvasView {
             .disabled(defaultValue(for: hit) == nil)
 
             morphAssignButton(for: hit)
+            variationLockButton(for: hit)
 
             Divider()
 
@@ -75,6 +76,22 @@ extension PatchCanvasView {
                 : "Morph Assign (\(morphName(focusedMorph)))")
         }
         .disabled(onMorphRangeChange == nil)
+    }
+
+    /// „Lock Across Variations" — jedna wartość we wszystkich ośmiu wariacjach.
+    /// Tryby (selektory bez parametru) i tak są wspólne dla wariacji, więc ich nie ma.
+    @ViewBuilder
+    private func variationLockButton(for hit: ParamHoverHit) -> some View {
+        if !hit.usesModes {
+            let locked = modules.first { $0.id == hit.moduleID }?
+                .variationLockedParameters.contains(hit.paramIndex) ?? false
+            Button {
+                onVariationLock?([(hit.moduleID, hit.paramIndex)], !locked)
+            } label: {
+                Text(locked ? "✓ Lock Across Variations" : "Lock Across Variations")
+            }
+            .disabled(onVariationLock == nil)
+        }
     }
 
     /// Nazwa morfu z focusem — ta sama, którą pokazuje pasek morfów.

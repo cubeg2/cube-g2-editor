@@ -122,46 +122,44 @@ extension PatchCanvasView {
         strokeGraphPath(clipped, rightCurve)
     }
 
+    /// Ekran wykresu na kanwie — wspólny dla rysowania i porównania wariacji.
+    func graphRect(_ graph: BVGraph, module: G2Module, ui: ModuleUIDef, rect: CGRect) -> CGRect {
+        if module.typeID == 108, graph.graphFunc == 8 || graph.graphFunc == 22 {
+            return vocoderGraphRect(graph, ui: ui, moduleRect: rect)
+        }
+        let gRect = CGRect(x: rect.minX + graph.xPt, y: rect.minY + graph.yPt,
+                           width: graph.widthPt, height: graph.heightPt)
+        guard let noteKnob = ui.seqNoteKnobs.first else { return gRect }
+        // Graph:25 (piano strip) — wysokość obszaru sliderów SeqNote
+        if graph.graphFunc == 25 {
+            let track = faderLayout(module: module, knob: noteKnob, ui: ui, rect: rect).track
+            return CGRect(x: gRect.minX, y: track.minY, width: gRect.width, height: track.height)
+        }
+        // Graph:26 (note display) — wysokość TextFielda, jak Length LCD (6.5 pt)
+        if graph.graphFunc == 26 {
+            return CGRect(x: gRect.minX, y: gRect.minY, width: gRect.width, height: UIMetrics.textFieldHeight)
+        }
+        return gRect
+    }
+
     func drawBVGraphs(_ ctx: GraphicsContext, module: G2Module, rect: CGRect) {
         guard let uid = ModuleUIDatabase.shared.uiDef(forID: module.typeID) else { return }
         let noteZoom = seqNoteZoomLevel[module.id] ?? 1
-
-        // Dla SeqNote: oblicz rect paska piano dopasowany do obszaru sliderów
-        var pianoY: CGFloat?
-        var pianoH: CGFloat?
         let noteKnobs = uid.seqNoteKnobs
-        if !noteKnobs.isEmpty {
-            let fader = faderLayout(module: module, knob: noteKnobs[0], ui: uid, rect: rect)
-            pianoY = fader.track.minY
-            pianoH = fader.track.height
-        }
 
         for graph in uid.graphs {
-            var gRect = CGRect(
-                x: rect.minX + graph.xPt,
-                y: rect.minY + graph.yPt,
-                width: graph.widthPt,
-                height: graph.heightPt
-            )
+            let gRect = graphRect(graph, module: module, ui: uid, rect: rect)
 
-            if module.typeID == 108, graph.graphFunc == 8 || graph.graphFunc == 22 {
-                gRect = vocoderGraphRect(graph, ui: uid, moduleRect: rect)
-            }
-
-            // Graph:25 (piano strip) — wyrównaj wysokość do obszaru sliderów
-            if graph.graphFunc == 25, let py = pianoY, let ph = pianoH {
-                gRect = CGRect(x: gRect.minX, y: py, width: gRect.width, height: ph)
+            if graph.graphFunc == 25, !noteKnobs.isEmpty {
                 // Lupka nad klawiaturą
                 let iconSize = min(gRect.width - 0.5, 5.5)
                 let iconX = gRect.minX + (gRect.width - iconSize) / 2
-                let iconRect = CGRect(x: iconX, y: py - iconSize - 2.0, width: iconSize, height: iconSize)
+                let iconRect = CGRect(x: iconX, y: gRect.minY - iconSize - 2.0, width: iconSize, height: iconSize)
                 drawMagnifierIcon(ctx, in: iconRect, color: Color(white: 0.15))
             }
 
-            // Graph:26 (note display) — zmniejsz do wysokości TextFielda + rysuj przyciski oktaw
+            // Graph:26 (note display) — przyciski oktaw pod ekranem
             if graph.graphFunc == 26, !noteKnobs.isEmpty {
-                let lcdH = UIMetrics.textFieldHeight // 6.5pt = jak Length LCD
-                gRect = CGRect(x: gRect.minX, y: gRect.minY, width: gRect.width, height: lcdH)
                 // Przyciski oktaw pod LCD — para KWADRATÓW obok siebie (jak każda
                 // inna para −/+ w aplikacji), wyśrodkowana pod ekranem. Wcześniej
                 // były to dwa płaskie prostokąty jeden pod drugim.
@@ -200,8 +198,8 @@ extension PatchCanvasView {
                            fill: UIColor.graphBackground, border: UIColor.graphBorder, shaded: panelShading)
     }
 
-    private func drawGraph(_ ctx: GraphicsContext, graph: BVGraph, module: G2Module, rect: CGRect,
-                           zoomLevel: Int = 1, loNoteOverride: Int? = nil)
+    func drawGraph(_ ctx: GraphicsContext, graph: BVGraph, module: G2Module, rect: CGRect,
+                   zoomLevel: Int = 1, loNoteOverride: Int? = nil)
     {
         let params = module.parameters
         func p(_ i: Int) -> Int {
@@ -2009,16 +2007,16 @@ extension PatchCanvasView {
             // tak samo z lewej i z prawej strony breakpointu.
             centerY + (type < 2 ? amount : -amount)
         }
-        // Graph ABC (ExpTo) (wywoływane z Operator Graph (Draw)) rysuje
-        // ćwiartkę elipsy — ten sam mechanizm co już przeportowany `expTo()` w
-        // `drawDXEnvelope()` wyżej w tym pliku. Krzywa jest PŁASKA (styczna pozioma)
-        // przy Breakpoincie i STROMA (styczna pionowa) przy końcu L-Depth/R-Depth —
-        // stąd charakterystyczne płaskie plateau na szczycie/dołku i strome zbocza na
-        // końcach, potwierdzone zrzutami oryginalnego edytora (pikselowe „schodki" tam
-        // to tylko artefakt renderu do małej bitmapy — u nas ma być gładka krzywa).
-        // Pojedyncza krzywa kwadratowa Béziera ma jednoznaczny kształt przy 3 zadanych
-        // punktach, więc nie trzeba osobno rozróżniać -Exp/+Exp — kierunek (góra/dół)
-        // ustala już `endpointY()`.
+        /// Graph ABC (ExpTo) (wywoływane z Operator Graph (Draw)) rysuje
+        /// ćwiartkę elipsy — ten sam mechanizm co już przeportowany `expTo()` w
+        /// `drawDXEnvelope()` wyżej w tym pliku. Krzywa jest PŁASKA (styczna pozioma)
+        /// przy Breakpoincie i STROMA (styczna pionowa) przy końcu L-Depth/R-Depth —
+        /// stąd charakterystyczne płaskie plateau na szczycie/dołku i strome zbocza na
+        /// końcach, potwierdzone zrzutami oryginalnego edytora (pikselowe „schodki" tam
+        /// to tylko artefakt renderu do małej bitmapy — u nas ma być gładka krzywa).
+        /// Pojedyncza krzywa kwadratowa Béziera ma jednoznaczny kształt przy 3 zadanych
+        /// punktach, więc nie trzeba osobno rozróżniać -Exp/+Exp — kierunek (góra/dół)
+        /// ustala już `endpointY()`.
         func addSegment(_ path: inout Path, from: CGPoint, to: CGPoint, type: Int, isLeftSegment: Bool) {
             if type == 0 || type == 3 {
                 path.addLine(to: to)

@@ -34,8 +34,10 @@ public enum G2PatchCategory {
 ///   1        → Mono    (`voices` = 1, `monopoly` = 1)
 ///   2 … 32   → Poly    (`voices` = wartość − 1, `monopoly` = 0)
 ///
-/// Pole `voices` w pliku ma pięć bitów, więc górną granicą polifonii jest 31 —
-/// instrukcja pisze „2-32", ale mówi o pozycjach pokrętła, nie o liczbie głosów.
+/// Pole `voices` w pliku to polifonia MINUS JEDEN, więc pozycja pokrętła jest wprost
+/// liczbą głosów, 2…32 jak w instrukcji. Dowody (2026-10-30): oryginał przyjmuje 1…32
+/// i ma w menu „32”, którego pięć bitów nie zmieści; emulator firmware'u 1.62 dał slotowi
+/// z polem 8 dziewięć głosów. Do 2026-10-30 napis pokazywał pole — o jeden głos za mało.
 public enum G2VoiceMode {
     public static let minIndex = 0
     public static let maxIndex = 32
@@ -59,7 +61,7 @@ public enum G2VoiceMode {
         switch max(minIndex, min(maxIndex, index)) {
         case 0: "Legato"
         case 1: "Mono"
-        case let value: "\(value - 1)"
+        case let value: "\(value)"
         }
     }
 

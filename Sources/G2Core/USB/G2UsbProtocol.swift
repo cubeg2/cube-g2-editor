@@ -83,6 +83,11 @@ public enum G2UsbProtocol {
     /// Clock Info Request u Clavii, `Q_MASTER_CLOCK` u BVerhue — pytanie o STAN zegara
     /// (wewnętrzny/zewnętrzny + tempo). Odpowiedzią jest `0x5D`, nie `OK`.
     private static let subClockInfoRequest: UInt8 = 0x3B
+    /// Number Of Voices Request u Clavii, `Q_ASSIGNED_VOICES` u BVerhue — ile głosów
+    /// Nord NAPRAWDĘ dał każdemu slotowi. Odpowiedzią jest `0x05`.
+    private static let subAssignedVoicesRequest: UInt8 = 0x04
+    /// Number Of Voices Dump / `R_ASSIGNED_VOICES` — odpowiedź na `0x04`.
+    public static let subResponseAssignedVoices: UInt8 = 0x05
     /// Perf Knob Map Request u Clavii, `Q_GLOBAL_KNOBS` u BVerhue — pytanie o gałki
     /// globalne performance'u. Odpowiedzią ma być sekcja `0x5F` (patrz `subGlobalKnobMap`).
     private static let subGlobalKnobMapRequest: UInt8 = 0x5E
@@ -578,6 +583,20 @@ public enum G2UsbProtocol {
     /// Pytamy raz na przebudowę modelu synta, tak jak oryginał → [[Docs/ui/master-clock]] §6.2.
     public static func clockInfoRequestPayload() -> [UInt8] {
         [commandTag, commandReqSys, 0x41, subClockInfoRequest]
+    }
+
+    /// Number Of Voices Request (0x04) — ten sam nagłówek co `0x3B`, odpowiedź `0x05`.
+    /// Oryginał pyta po wysłaniu całego performance'u i przy łączeniu → [[Docs/context/firmware-resources]].
+    public static func assignedVoicesRequestPayload() -> [UInt8] {
+        [commandTag, commandReqSys, 0x41, subAssignedVoicesRequest]
+    }
+
+    /// Payload `0x05`: po bajcie na slot A–D, liczba głosów wprost (Mono = 1, slot
+    /// wyłączony albo zbity do zera = 0). Zmierzone na G2 37, fw 1.62: `01 00 00 07`
+    /// (2026-10-24) i `07 00 00 00` dla patcha z 32 głosami na 4 DSP (2026-11-03).
+    public static func decodeAssignedVoices(_ payload: [UInt8]) -> [Int]? {
+        guard payload.count >= maxSlots else { return nil }
+        return payload.prefix(maxSlots).map(Int.init)
     }
 
     /// Perf Knob Map Request (0x5E) — gałki globalne performance'u z urządzenia.

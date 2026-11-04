@@ -84,6 +84,11 @@ public struct G2Module: Equatable {
     /// ale zapis wersji 11 (`Format_11::W_ModuleData::WrModule`) wpisuje w to miejsce
     /// sześć zer i odczyt je pomija — więc oryginał też trzyma to tylko w sesji.
     public var excludedFromMutation: Bool
+    /// `Lock Across Variations` — numery parametrów, które mają tę samą wartość we
+    /// wszystkich ośmiu wariacjach: ruch gałki idzie do każdej z nich, Mutator ich nie
+    /// rusza. Nord nie zna blokady, więc pilnuje jej edytor. Jak `excludedFromMutation`
+    /// — tylko w sesji, nie idzie do pliku (wartości w pliku i tak są równe).
+    public var variationLockedParameters: Set<Int> = []
 
     public init(id: Int, typeID: Int, area: PatchArea) {
         self.id = id
@@ -782,6 +787,22 @@ public struct G2Patch: Equatable {
             if let i = fxModules.firstIndex(where: { $0.id == moduleID }) {
                 fxModules[i].color = color
             }
+        }
+    }
+
+    /// Zakłada albo zdejmuje `Lock Across Variations` z jednego parametru modułu.
+    public mutating func setVariationLock(moduleID: Int, paramIndex: Int, locked: Bool, in area: PatchArea) {
+        func update(_ module: inout G2Module) {
+            if locked {
+                module.variationLockedParameters.insert(paramIndex)
+            } else {
+                module.variationLockedParameters.remove(paramIndex)
+            }
+        }
+        if area == .voice {
+            if let i = voiceModules.firstIndex(where: { $0.id == moduleID }) { update(&voiceModules[i]) }
+        } else {
+            if let i = fxModules.firstIndex(where: { $0.id == moduleID }) { update(&fxModules[i]) }
         }
     }
 

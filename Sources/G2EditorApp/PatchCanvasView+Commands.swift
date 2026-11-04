@@ -66,6 +66,7 @@ extension PatchCanvasView {
             // „Exclude From Mutations" oryginału: zaznaczone moduły znikają z pola
             // widzenia Patch Mutatora i przy otwartym mutatorze dostają czerwoną ramkę.
             excludeFromMutationButton(id: id)
+            variationLockModuleButton(id: id)
 
             Divider()
 
@@ -199,6 +200,26 @@ extension PatchCanvasView {
         } label: {
             Text(excluded ? "✓ Exclude From Mutations" : "Exclude From Mutations")
         }
+    }
+
+    /// `Lock Across Variations` dla całych modułów (zaznaczenia albo modułu pod kursorem):
+    /// wszystkie ich parametry naraz. Zaznaczone, gdy każdy parametr ma już blokadę.
+    @ViewBuilder
+    private func variationLockModuleButton(id: Int) -> some View {
+        let targets = selectedModuleIDs.contains(id) ? selectedModuleIDs : [id]
+        let parameters = modules.filter { targets.contains($0.id) }.flatMap { module in
+            module.parameters.indices.map { (moduleID: module.id, paramIndex: $0) }
+        }
+        let locked = !parameters.isEmpty && parameters.allSatisfy { parameter in
+            modules.first { $0.id == parameter.moduleID }?
+                .variationLockedParameters.contains(parameter.paramIndex) ?? false
+        }
+        Button {
+            onVariationLock?(parameters, !locked)
+        } label: {
+            Text(locked ? "✓ Lock Across Variations" : "Lock Across Variations")
+        }
+        .disabled(parameters.isEmpty || onVariationLock == nil)
     }
 
     /// ⚠️ **`Image` i `Text` MUSZĄ leżeć wprost w etykiecie przycisku — nie w `Label`.**

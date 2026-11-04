@@ -132,6 +132,9 @@ public struct G2MutatorGenome: Sendable {
         /// Taki moduł zostaje w patchu taki, jak go słychać — kratka nie przywraca
         /// jego stanu sprzed zmiany (`G2Mutator.keepingHeldModules`).
         public let moduleHeld: Bool
+        /// Parametr z `Lock Across Variations` — nie mutuje się i, jak moduł wyłączony
+        /// ręcznie, zostaje w patchu taki, jak go słychać.
+        public let variationLocked: Bool
         /// Tylko `FreqCoarse` oscylatora: klucz jego `FreqMode`. Randomize sprawdza,
         /// czy oscylator stoi w trybie Partials — wtedy losuje z górnej części skali.
         public let freqModeKey: G2Individual.Key?
@@ -181,6 +184,7 @@ public struct G2MutatorGenome: Sendable {
                         curve: maxValue > 0 ? paramClass?.curve ?? .none : .none,
                         moduleExcluded: excluded,
                         moduleHeld: held,
+                        variationLocked: module.variationLockedParameters.contains(index),
                         freqModeKey: paramClass?.rawValue == G2ParamClass.oscillatorCoarse ? freqModeKey : nil,
                         group: G2MutatorGroup.of(paramClass: paramClass, category: category),
                         discreteStates: G2ParameterText.buttonOptions(
@@ -543,8 +547,8 @@ public enum G2Mutator {
         return G2Individual(values: values, morphs: morphs)
     }
 
-    /// Dźwięk z kratki z modułami wyłączonymi z mutacji ręcznie przepisanymi z `playing`
-    /// — wartości i morfy. Kratka pamięta dźwięk z chwili powstania, więc bez tego taki
+    /// Dźwięk z kratki z modułami wyłączonymi z mutacji ręcznie (i parametrami
+    /// z `Lock Across Variations`) przepisanymi z `playing` — wartości i morfy. Kratka pamięta dźwięk z chwili powstania, więc bez tego taki
     /// moduł wracał do stanu z Mother: Power zgaszony po zrobieniu Mother zapalał się
     /// przy następnym Mutate. Oryginał robi tak samo; to nasza poprawka.
     ///
@@ -555,7 +559,7 @@ public enum G2Mutator {
                                           genome: G2MutatorGenome) -> G2Individual
     {
         var result = individual
-        for gene in genome.genes where gene.moduleHeld {
+        for gene in genome.genes where gene.moduleHeld || gene.variationLocked {
             result[gene.key] = playing[gene.key]
             result.morphs[gene.key] = playing.morphs[gene.key]
         }
@@ -768,7 +772,7 @@ public enum G2Mutator {
 
     /// Muta Synth Data (IsEnabled) — czy wolno ruszyć ten parametr.
     public static func isEnabled(_ gene: G2MutatorGenome.Gene, locks: G2MutatorLocks) -> Bool {
-        guard gene.isMutable, !gene.moduleExcluded else { return false }
+        guard gene.isMutable, !gene.moduleExcluded, !gene.variationLocked else { return false }
         return locks.allows(gene.category)
     }
 

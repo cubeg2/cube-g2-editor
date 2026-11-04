@@ -10,8 +10,10 @@ import XCTest
 final class SlotHeaderTests: XCTestCase {
     private func makeState() -> PatchState {
         var module = G2Module(id: 1, typeID: 1, area: .voice)
-        module.parameters = [10]
-        module.parameterVariations = Array(repeating: [10], count: 9)
+        // Wariacje różne od siebie: przy identycznych pierwszy ruch gałki rozdziela je
+        // i słusznie zmienia przystanki fadera wariacji w nagłówku (`faderStops`).
+        module.parameterVariations = (0 ..< 9).map { [10 + $0] }
+        module.parameters = module.parameterVariations[0]
         var patch = G2Patch()
         patch.name = "Init"
         patch.voiceModules = [module]

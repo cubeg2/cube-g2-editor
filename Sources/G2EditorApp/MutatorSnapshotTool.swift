@@ -6,6 +6,7 @@
 //   swift run G2EditorApp --snapshot-mutator <plik.png> --expanded   # panel wysunięty
 //   … --expanded --tab Session --patch <plik.pch2> --breed 3          # zakładka i hodowla
 //   … --dark                                                          # tryb nocny
+//   … --patch <plik.pch2> --compare 5                                 # porównanie z wariacją 5
 //
 // Rysuje pusty mutator (nowy patch, domyślne ustawienia) w rozmiarze bazowym okna,
 // w skali 2×. Dwa zdjęcia porównuje się bajt po bajcie (`cmp`) — render jest deterministyczny.
@@ -49,6 +50,12 @@ enum MutatorSnapshot {
                let patch = try? PatchParser.parse(data: data).first
             {
                 state.slots = [patch]
+            }
+            // `--compare N` — wariacja N (1–8) porównywana Shift-klikiem: turkusowa ramka kratki.
+            if let flag = args.firstIndex(of: "--compare"), args.indices.contains(flag + 1),
+               let variation = Int(args[flag + 1])
+            {
+                state.toggleCompare(with: variation - 1, slot: 0)
             }
             if let flag = args.firstIndex(of: "--breed"), args.indices.contains(flag + 1),
                let generations = Int(args[flag + 1])

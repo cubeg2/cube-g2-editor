@@ -50,6 +50,9 @@ enum UIColor {
     /// tle granat zlewał się z szarą obwódką gałki → [[Docs/ui/morphs]].
     static let morphFocused = Color(red: 0.85, green: 0.12, blue: 0.12)
     static let morphOther = Color(red: 0.20, green: 0.55, blue: 1.0)
+    /// Porównywana wariacja: przycisk w pasku wariacji i jej wartości na kanwie.
+    /// Turkus, bo pomarańczowy mają „Edit all" i kłódki (decyzja użytkownika 2026-10-30).
+    static let variationCompare = Color(red: 0.18, green: 0.86, blue: 0.82)
     // Gałka rotacyjna — `knobOuter` służy też liniom dekoracji; tarcze rysuje `KnobFace`
     static let knobOuter = Color(red: 0.22, green: 0.22, blue: 0.22)
     // Suwak / toggle
@@ -454,7 +457,6 @@ struct KnobDragTarget {
     let startY: CGFloat // gesture.startLocation.y w układzie Canvas
     let fine: Bool // Shift trzymany przy starcie → 10× wolniejszy obrót
     let sensitivity: CGFloat // units/pt — wyższe dla sliderów (≈127/sliderH), niższe dla gałek (0.4)
-    let readout: SliderReadout
     /// Początek gestu i środek tarczy w układzie canvasu — dla trybów „Horizontal"
     /// i „Circular" z okna Options (instrukcja, str. 125).
     var startPoint: CGPoint = .zero
@@ -618,6 +620,15 @@ struct PatchCanvasView: View {
     var device: DeviceConnection?
     /// Slot pokazany w edytorze — warstwa wskaźników odrzuca strumień z innego slotu.
     var slot: Int = 0
+    /// Wariacja porównywana z grającą (Shift-klik w pasku wariacji) — patrz
+    /// `PatchCanvasView+VariationCompare.swift`. `nil` = brak porównania.
+    var comparedVariation: Int?
+    /// Nazwa bufora odsłuchu (zestaw 9) w dymkach porównania: „Mutator” albo „Fader”,
+    /// gdy gra brzmienie spod fadera wariacji.
+    var bufferName = "Mutator"
+    /// Kliknięcie albo początek przeciągania w kanwie — gasi zmiany spod fadera, które
+    /// zostały po puszczeniu suwaka (porównania Shift-klikiem nie rusza).
+    var onCanvasPress: (() -> Void)?
     /// Zaznaczenie tej kanwy. Leży na zewnątrz, bo czyta je też menu Edit — patrz
     /// `CanvasSelection`. Podglądy (`ImageRenderer`) dostają własne, puste.
     var selection = CanvasSelection()
@@ -670,6 +681,9 @@ struct PatchCanvasView: View {
     // Hover
     @State var hoverHit: ParamHoverHit?
     @State var hoverScreenPt: CGPoint = .zero
+    /// Mysz nad kanwą — `hoverScreenPt` zostaje po wyjściu, a dymek ekranu w porównaniu
+    /// wariacji ma wtedy zniknąć.
+    @State var hoverInCanvas = false
 
     /// Gotowe obrazki modułów — patrz `ModuleRasterCache`. Podglądy (`isPreviewMode`)
     /// rysują wektorowo i tej pamięci nie tykają.
@@ -743,6 +757,9 @@ struct PatchCanvasView: View {
     var onColorModule: ((_ moduleID: Int, _ color: UInt8) -> Void)?
     /// `Exclude From Mutations` z menu kontekstowego — Patch Mutator omija te moduły.
     var onExcludeFromMutation: ((_ moduleIDs: Set<Int>, _ excluded: Bool) -> Void)?
+    /// `Lock Across Variations` z menu gałki albo modułu — te parametry mają jedną
+    /// wartość we wszystkich ośmiu wariacjach.
+    var onVariationLock: ((_ parameters: [(moduleID: Int, paramIndex: Int)], _ locked: Bool) -> Void)?
     /// Czy okno Patch Mutatora jest otwarte. Tylko wtedy oryginał obwodzi wyłączone
     /// moduły cienką czerwoną ramką (`CPanel::SetMutaLockVisible`).
     var mutatorVisible: Bool = false
@@ -858,6 +875,7 @@ struct PatchCanvasView: View {
             .gesture(combinedDragGesture)
             // Rename tylko przez menu kontekstowe (brak double-tap — unikamy opóźnienia single-tap)
             .onTapGesture { location in
+                onCanvasPress?()
                 let lp = CGPoint(x: location.x / zoom, y: location.y / zoom)
                 // Zamknij edytor nazwy klikając poza nim; kontynuuj obsługę kliknięcia
                 if editingModuleID != nil {
@@ -975,6 +993,10 @@ struct PatchCanvasView: View {
             // Do 2026-09-27 kable rysowała kanwa modułów i zapalone kreski Mini VU
             // wychodziły na wierzch kabla (uwaga użytkownika). Kanwa jest przezroczysta
             // dla myszy — gesty kabli obsługuje kanwa modułów pod spodem.
+            // Porównanie wariacji: płynąca przerywana krzywa drugiej wariacji na wykresach.
+            variationCompareCurvesOverlay
+                .frame(width: canvasSize.width, height: canvasSize.height)
+
             Canvas { ctx, _ in
                 ctx.scaleBy(x: zoom, y: zoom)
                 drawCables(ctx)
@@ -1046,8 +1068,10 @@ struct PatchCanvasView: View {
             }
 
             if !isPreviewMode {
+                variationCompareAllBubbles
+                variationCompareFieldHoverBubble
                 hoverOverlayView
-                // Tooltip po kliknięciu ▲/▼ lub przeciąganiu slidera sekwencera
+                // Tooltip po kliknięciu ▲/▼ slidera sekwencera
                 if let tip = seqSliderTooltip {
                     Text(sliderReadoutText(tip.readout))
                         .font(.system(size: 13, weight: .semibold, design: .monospaced))
@@ -1066,10 +1090,12 @@ struct PatchCanvasView: View {
             switch phase {
             case let .active(loc):
                 hoverScreenPt = loc
+                hoverInCanvas = true
                 let lp = CGPoint(x: loc.x / zoom, y: loc.y / zoom)
                 hoverHit = findHoverHit(at: lp)
             case .ended:
                 hoverHit = nil
+                hoverInCanvas = false
             }
         }
         .contextMenu { contextMenuItems }
@@ -1285,6 +1311,8 @@ extension PatchCanvasView: Equatable {
             && lhs.focusedMorph == rhs.focusedMorph
             && lhs.mutatorVisible == rhs.mutatorVisible
             && lhs.audibilityVisible == rhs.audibilityVisible
+            && lhs.comparedVariation == rhs.comparedVariation
+            && lhs.bufferName == rhs.bufferName
             && lhs.selection === rhs.selection
             && lhs.device === rhs.device
             && lhs.zoomPanController === rhs.zoomPanController

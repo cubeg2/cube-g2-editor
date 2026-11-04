@@ -3,6 +3,7 @@
 // w jaki mysz kręci gałkami.
 
 import CoreGraphics
+import G2Core
 @testable import G2EditorCore
 import XCTest
 
@@ -195,5 +196,43 @@ final class PatchOpenModeTests: XCTestCase {
                                                              choice: choice),
                            PatchOpenMode.targetMode(performanceDocument: false, choice: choice))
         }
+    }
+}
+
+/// „Vol: Off" na czas ładowania patcha do Norda (prośba użytkownika 2026-11-03).
+final class MuteWhileLoadingTests: XCTestCase {
+    private func fixture(_ name: String) throws -> Data {
+        try Data(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures")
+            .appendingPathComponent(name))
+    }
+
+    /// Wyciszenie musi dojść do bajtów `0x37` — tylko grająca wariacja, reszta bez zmian.
+    func testOnlyThePlayingVariationGoesSilentInTheUploadStream() throws {
+        let data = try fixture("simplesynth001-20240802.pch2")
+        let patch = try XCTUnwrap(PatchParser.parse(data: data).first)
+        let variation = patch.activeVariation
+        XCTAssertEqual(patch.variationSettings[variation].activeMuted, 1)
+
+        let silenced = try XCTUnwrap(DeviceConnection.silencedWhileLoading(patch))
+        let file = try PatchParser.saveAll(originalData: data, patches: [silenced])
+        let stream = try PatchParser.slotSectionStream(fileData: file, slot: 0)
+        let sent = try PatchParser.parseUsbPatchSlot(sectionBytes: stream)
+
+        XCTAssertEqual(sent.variationSettings[variation].activeMuted, 0)
+        for other in sent.variationSettings.indices where other != variation {
+            XCTAssertEqual(sent.variationSettings[other].activeMuted,
+                           patch.variationSettings[other].activeMuted, "variation \(other)")
+        }
+    }
+
+    /// Patch już wyciszony albo pusty (New Patch) idzie bez zmian — nie ma czego włączać.
+    func testMutedOrEmptyPatchIsLeftAlone() throws {
+        let data = try fixture("simplesynth001-20240802.pch2")
+        var patch = try XCTUnwrap(PatchParser.parse(data: data).first)
+        patch.variationSettings[patch.activeVariation].activeMuted = 0
+        XCTAssertNil(DeviceConnection.silencedWhileLoading(patch))
+        XCTAssertNil(DeviceConnection.silencedWhileLoading(G2Patch()))
     }
 }

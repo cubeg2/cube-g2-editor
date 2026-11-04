@@ -15,6 +15,7 @@ extension PatchCanvasView {
 
                 // ── Inicjalizacja celu na pierwszym evencie ──────────────────
                 if connectorDrag == nil && repatchDrag == nil && dragTarget == nil && moduleDrag == nil && rubberBandStart == nil {
+                    onCanvasPress?()
                     let shiftHeld = NSEvent.modifierFlags.contains(.shift)
                     if let conn = findConnector(at: startLP) {
                         let optionHeld = NSEvent.modifierFlags.contains(.option)
@@ -51,7 +52,6 @@ extension PatchCanvasView {
                                                     startY: g.startLocation.y,
                                                     fine: shiftHeld,
                                                     sensitivity: hit.dragSensitivity,
-                                                    readout: hit.readout,
                                                     startPoint: startLP,
                                                     center: hit.center,
                                                     startRange: morphRange(moduleID: hit.moduleID,
@@ -125,7 +125,6 @@ extension PatchCanvasView {
                                                          maxValue: maxValue)
                 {
                     onParameterChange?(target.moduleID, target.paramIndex, value)
-                    if target.sensitivity > 0.1 { showSeqSliderTooltip(target.readout, screenPos: g.location) }
                     return
                 }
 
@@ -147,11 +146,9 @@ extension PatchCanvasView {
                     return
                 }
                 let newValue = max(0, min(maxValue, target.startValue + delta))
+                // Wartość pokazuje dymek pod elementem (hoverOverlayView) — drugi przy
+                // kursorze byłby duplikatem.
                 onParameterChange?(target.moduleID, target.paramIndex, newValue)
-                // Tooltip podczas przeciągania sekwencera (wysoka czułość = slider, nie gałka rotacyjna)
-                if target.sensitivity > 0.1 {
-                    showSeqSliderTooltip(target.readout, screenPos: g.location)
-                }
             }
             .onEnded { g in
                 defer { if dragTarget != nil { onParameterGestureEnded?() }

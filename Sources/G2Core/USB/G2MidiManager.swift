@@ -1258,6 +1258,24 @@ public actor G2MidiManager {
         }
     }
 
+    /// Ile głosów Nord dał każdemu slotowi (`0x04` → `0x05`). Nord niczego nie odmawia —
+    /// gdy patch się nie mieści, po cichu gra mniej głosów, i tylko stąd to widać.
+    ///
+    /// Bez zatrzymywania strumienia wskaźników: odpowiedź przychodzi z flagą odpowiedzi,
+    /// więc `awaitResponse` wyławia ją spośród powiadomień (zmierzone 2026-11-03), a pytamy
+    /// po każdej zmianie struktury — para Stop/Start za każdym razem byłaby zbędna.
+    public func readAssignedVoices() async throws -> [Int]? {
+        guard transport != nil else { throw G2UsbError.notConnected }
+        return try await withPollingPaused {
+            let response = try await performStep(G2UsbProtocol.assignedVoicesRequestPayload(),
+                                                 expectSub: [G2UsbProtocol.subResponseAssignedVoices],
+                                                 timeout: 1.5,
+                                                 outerRetries: 1)
+            guard let payload = response?.payload else { return nil }
+            return G2UsbProtocol.decodeAssignedVoices(payload)
+        }
+    }
+
     /// Tempo zegara głównego (30…240 BPM) — `S_SET_MASTER_CLOCK` z indeksem 1.
     public func setMasterClock(bpm: Int) async throws {
         try await sendMasterClock(G2UsbProtocol.setMasterClockPayload(bpm: bpm, version: systemVersion),

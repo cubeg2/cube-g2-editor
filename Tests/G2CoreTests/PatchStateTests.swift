@@ -514,6 +514,26 @@ final class PatchStateTests: XCTestCase {
         XCTAssertFalse(state.hasPerformanceSettings)
     }
 
+    /// Patch z banku Norda przy opcji „jak oryginał” (#137): przed `0x0A` do slotu A edytor
+    /// ma cztery puste sloty z focusem na A — puste B–D jadą potem do Norda.
+    func testBankPatchLikeOriginalStartsFromFourEmptySlots() {
+        let state = makeState()
+        state.load(url: fixtureURL("simplesynth001-20240802.pch2"))
+        state.slots = (0 ..< 4).map { namedPatch("Old \($0)") }
+        state.selectedSlot = 2
+
+        state.clearSlotsForBankPatch()
+
+        XCTAssertEqual(state.selectedSlot, 0)
+        for slot in 0 ..< 4 {
+            XCTAssertTrue(state.slots[slot].voiceModules.isEmpty && state.slots[slot].fxModules.isEmpty)
+            XCTAssertNotEqual(state.slots[slot].name, "Old \(slot)")
+            XCTAssertNil(state.slotFileURLs[slot])
+        }
+        XCTAssertFalse(state.hasPerformanceSettings)
+        XCTAssertFalse(state.hasUnsavedChanges)
+    }
+
     /// Plik, którego nie da się odczytać, nie może wyczyścić slotów.
     func testLikeOriginalKeepsSlotsWhenTheFileIsBroken() {
         let state = makeState()

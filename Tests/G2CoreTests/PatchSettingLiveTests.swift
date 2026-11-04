@@ -173,4 +173,32 @@ final class PatchSettingLiveTests: XCTestCase {
         XCTAssertEqual(state.patchSetting(.vibratoRate), 0, "cały gest cofa się raz")
         XCTAssertFalse(state.undoManager.canUndo)
     }
+
+    // MARK: - Ta sama głośność we wszystkich wariacjach
+
+    /// Prawy klik na gałce Vol: wartość grającej wariacji trafia do wszystkich ośmiu.
+    /// Do Norda idzie tylko to, co się zmienia; wariacja init zostaje.
+    func testVolumeCopiesToAllVariations() {
+        let (state, sent) = makeState()
+        for variation in 0 ..< 8 {
+            state.slots[0].variationSettings[variation].patchVolume = 10 * variation
+        }
+        state.slots[0].variationSettings[8].patchVolume = 99
+        state.slots[0].setActiveVariation(2)
+        state.slots[0].variationSettings[5].patchVolume = 20
+
+        undoStep(on: state) { state.copyPatchSettingToAllVariations(.patchVolume, slot: 0) }
+
+        XCTAssertEqual((0 ..< 8).map { state.slots[0].variationSettings[$0].patchVolume },
+                       Array(repeating: 20, count: 8))
+        XCTAssertEqual(state.slots[0].variationSettings[8].patchVolume, 99, "wariacja init zostaje")
+        XCTAssertEqual(sent().map(\.variation), [0, 1, 3, 4, 6, 7],
+                       "wariacje z tą samą wartością nie dostają nic")
+        XCTAssertTrue(sent().allSatisfy { $0.moduleID == 2 && $0.paramIndex == 0 && $0.value == 20 })
+
+        state.undoManager.undo()
+        XCTAssertEqual((0 ..< 8).map { state.slots[0].variationSettings[$0].patchVolume },
+                       [0, 10, 20, 30, 40, 20, 60, 70], "jedno ⌘Z przywraca każdej wariacji jej wartość")
+        XCTAssertFalse(state.undoManager.canUndo)
+    }
 }

@@ -927,7 +927,13 @@ extension PatchCanvasView {
 
             // Tooltip — prawy dolny narożnik elementu
             Group {
-                if let span = morphSpan {
+                if let lines = variationCompareLines(for: hit) {
+                    // Porównanie wariacji: wartość grająca i turkusowa z porównywanej.
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(lines.playing)
+                        Text(lines.compared).foregroundColor(UIColor.variationCompare)
+                    }
+                } else if let span = morphSpan {
                     // Parametr idzie za morfem z focusem: oryginał pokazuje w chmurce
                     // wartość bazową i wartość przy morfie wykręconym do końca
                     // (`CModule::GetHintTextWithMorph`).

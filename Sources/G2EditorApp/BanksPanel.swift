@@ -502,6 +502,12 @@ struct BanksPanel: View {
     private func nordRow(_ entry: G2BankEntry) -> some View {
         let slots = loadedSlots(entry)
         return Button {
+            // Opcja „jak oryginał” obejmuje też patch z banku Norda: A, B–D puste (#137).
+            if entry.kind == .patch, PatchOpenMode.stored == .likeOriginal {
+                guard UnsavedChangesGuard.shared.confirmDiscard() else { return }
+                Task { await device.loadFromBankAsOnlyPatch(entry, state: state) }
+                return
+            }
             Task { await device.loadFromBank(entry, intoSlot: state.selectedSlot) }
         } label: {
             HStack(spacing: 6) {
@@ -1000,6 +1006,18 @@ struct PatchKindToggles: View {
     }
 }
 
+/// Policzone podsumowania plików — wiersz listy powstaje od nowa przy każdym przewinięciu,
+/// a parsowanie całego pliku za każdym razem byłoby marnotrawstwem. Klucz ze ścieżki i daty
+/// zmiany: plik zapisany na nowo liczy się od nowa.
+@MainActor
+private enum DiskSummaryCache {
+    static var entries: [String: DiskFileSummary?] = [:]
+
+    static func key(_ item: DiskBankItem) -> String {
+        item.url.path + "|" + String(item.modified.timeIntervalSince1970)
+    }
+}
+
 /// Znaczek „pch” / „prf” przy prawej krawędzi wiersza — mniejszy brat zapalonego
 /// przełącznika z nagłówka, w tym samym kolorze. Stała szerokość, żeby znaczki stały
 /// jedną kolumną.
@@ -1130,10 +1148,10 @@ private struct DiskFileRow: View {
     /// Lista Blocks: moduły z kanwy upuszczone na plik zapisują się w jego folderze.
     var onDropToFolder: ((_ providers: [NSItemProvider], _ path: String) -> Bool)?
 
-    /// Liczba modułów i DSP do dymka — czytane dopiero, gdy kursor stanie nad wierszem
-    /// (cały plik trzeba sparsować), i tylko raz.
+    /// Moduły, DSP i głosy — do dymka i czerwonej kropki. Liczone, gdy wiersz pojawi się na
+    /// ekranie (cały plik trzeba sparsować), poza głównym wątkiem, raz na wersję pliku.
     @State private var summary: DiskFileSummary?
-    @State private var summaryRequested = false
+    @AppStorage(ExpansionBoard.storageKey) private var hasExpansion = false
     @Environment(\.blockLoadPreview) private var blockLoadPreview
 
     var body: some View {
@@ -1142,15 +1160,20 @@ private struct DiskFileRow: View {
         // 6 513 patchach sekundy kółeczka po każdym kliknięciu (#155).
         HStack(spacing: 0) { row }
             .help(help)
-            .onHover { inside in
-                guard inside, !summaryRequested else { return }
-                summaryRequested = true
-                let url = item.url
-                Task {
-                    summary = await Task.detached(priority: .userInitiated) {
-                        DiskBankLibrary.summary(of: url)
-                    }.value
+            .task(id: DiskSummaryCache.key(item)) {
+                if let cached = DiskSummaryCache.entries[DiskSummaryCache.key(item)] {
+                    summary = cached
+                    return
                 }
+                // Przy szybkim przewijaniu wiersz znika, zanim warto cokolwiek czytać.
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                let url = item.url
+                let result = await Task.detached(priority: .utility) {
+                    DiskBankLibrary.summary(of: url)
+                }.value
+                DiskSummaryCache.entries[DiskSummaryCache.key(item)] = result
+                summary = result
             }
             .contextMenu { menu }
             .onDrop(of: onDropToFolder == nil ? [] : [.text], isTargeted: nil) {
@@ -1211,10 +1234,25 @@ private struct DiskFileRow: View {
                 }
             }
             Spacer(minLength: 0)
+            if let summary, hasExpansion ? !summary.fitsWithExpansion : !summary.fitsWithoutExpansion {
+                expansionMark(summary)
+            }
             PatchKindBadge(isPerformance: item.isPerformance)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+    }
+
+    /// Czerwona pionowa kreska przed „pch”/„prf”: G2 użytkownika nie da wszystkich głosów —
+    /// bez karty albo, gdy ma kartę (Settings ▸ General ▸ Your G2), nawet z nią (prośba użytkownika
+    /// 2026-10-30; kropka → kreska i ustawienie karty 2026-11-03). Szczegóły w dymku wiersza.
+    private func expansionMark(_ summary: DiskFileSummary) -> some View {
+        RoundedRectangle(cornerRadius: 1)
+            .fill(Color(red: 0.95, green: 0.1, blue: 0.1))
+            .frame(width: 2.5, height: 11)
+            .help(summary.fitsWithExpansion
+                ? "Needs the expansion board (or a G2X) to play every voice"
+                : "Doesn\u{2019}t play every voice even with the expansion board")
     }
 
     /// Wiersz listy Blocks — klik niczego nie otwiera.

@@ -318,6 +318,34 @@ final class DiskBankLibraryTests: XCTestCase {
         XCTAssertNil(DiskBankLibrary.summary(of: root.appendingPathComponent("root.pch2")), "not a patch")
     }
 
+    /// Dymek mówi też, ile głosów patch dostanie — zwykły patch liczony tak, jakby grał sam.
+    func testSummaryShowsVoicesForBothHardwareVariants() throws {
+        try writePatch("Leads/lead.pch2", category: 8)
+        let url = root.appendingPathComponent("Leads/lead.pch2")
+        let patch = try XCTUnwrap(PatchParser.parse(url: url).first)
+        let summary = try XCTUnwrap(DiskBankLibrary.summary(of: url))
+        let expected = DSPVoiceAllocation(requests: [.init(patch: patch, playing: true)], dspCount: 4)
+        XCTAssertEqual(summary.g2Voices, expected)
+        XCTAssertEqual(summary.expansionVoices?.dspCount, 8)
+        let got = expected.voices[0]
+        XCTAssertTrue(summary.lines.contains("Voices on G2: \(got) of \(expected.requested[0])"))
+        XCTAssertTrue(summary.lines.contains { $0.hasPrefix("Voices with expansion: ") })
+        XCTAssertEqual(summary.fitsWithoutExpansion, expected.voices == expected.requested)
+    }
+
+    /// Performance z wynikiem emulatora firmware'u: bez karty slot A traci trzy głosy, D milczy.
+    func testSummaryShowsVoicesOfAPerformance() throws {
+        let url = URL(fileURLWithPath: NSHomeDirectory()
+            + "/Developer/G2-reference/Ptches pch2 i prf2/NORD Wybrane/Ambient/Radiolarian.prf2")
+        guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("brak Radiolarian.prf2") }
+        let summary = try XCTUnwrap(DiskBankLibrary.summary(of: url))
+        XCTAssertFalse(summary.fitsWithoutExpansion, "czerwona kropka w przeglądarce")
+        XCTAssertTrue(summary.fitsWithExpansion)
+        let lines = summary.lines
+        XCTAssertTrue(lines.contains("Voices on G2: A 6 of 9 · B 1 of 1 · C 1 of 1 · D silent"), "\(lines)")
+        XCTAssertTrue(lines.contains("Voices with expansion: A 9 of 9 · B 1 of 1 · C 1 of 1 · D 1 of 1"), "\(lines)")
+    }
+
     /// Kolejność jest zapamiętana między uruchomieniami, jak folder.
     func testSortOrderIsRemembered() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))

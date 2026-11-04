@@ -115,7 +115,9 @@ final class UploadRejectionTests: XCTestCase {
         let resend = transport.written[3]
         XCTAssertEqual(resend[5], 0x37, "zmiana na niepotwierdzonym slocie wysyła cały patch")
         XCTAssertEqual(resend[4], 0x02, "z numerem sesji, który Nord ogłosił po odmowie")
-        XCTAssertEqual(transport.written.count, 6, "SelectSlot, SetPatch, selekcja slotów, SelectSlot")
+        XCTAssertEqual(transport.written.count, 7,
+                       "SelectSlot, SetPatch, selekcja slotów, SelectSlot, Vol: On po załadowaniu")
+        XCTAssertEqual(transport.written[6][5], 0x40, "ostatnia komenda włącza wyciszony na czas ładowania patch")
         XCTAssertNil(device.uploadFailure)
         XCTAssertTrue(device.isSlotConfirmed(0))
     }

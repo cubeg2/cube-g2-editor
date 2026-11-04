@@ -276,6 +276,9 @@ struct MutatorPanel: View {
             HStack(spacing: Self.gap) {
                 ForEach(0 ..< 8, id: \.self) { box(G2MutatorBox(.variations, $0)) }
             }
+            // Ten sam fader co pod przyciskami w belce (#13) — przystanki pod środkami kratek.
+            VariationFaderView(state: state, slot: state.selectedSlot,
+                               length: Self.gridWidth, stopInset: Self.box / 2)
         }
         .padding(4)
         .frame(width: Self.gridWidth + 8)
@@ -329,14 +332,19 @@ struct MutatorPanel: View {
         MutatorBoxView(
             points: chromosome(of: ref),
             palette: palette(of: ref),
-            focused: state.mutatorHighlight == ref,
+            focused: state.mutatorLit(ref),
             compare: state.mutatorCompare == ref,
+            variationCompared: ref.kind == .variations
+                && state.comparedVariation(slot: state.selectedSlot) == ref.index,
             size: Self.box
         )
         .onTapGesture(count: 2) { state.mutatorMutate(from: ref) }
         .onTapGesture {
             if NSEvent.modifierFlags.contains(.command) {
                 state.mutatorSetCompare(ref)
+            } else if NSEvent.modifierFlags.contains(.shift), ref.kind == .variations {
+                // Jak Shift-klik w belce: różnice z grającym brzmieniem na kanwie.
+                state.toggleCompare(with: ref.index, slot: state.selectedSlot)
             } else {
                 state.mutatorSetFocus(ref)
             }
@@ -364,6 +372,10 @@ struct MutatorPanel: View {
             Button("Copy to Father") { state.mutatorCopyToParent(ref, mother: false) }
             Button("Save to Temporary Storage") { state.mutatorStore(ref) }
         }
+        Divider()
+        // Brzmienie „pomiędzy” spod fadera wariacji — tylko gdy fader właśnie gra.
+        Button("Store Fader Sound Here") { state.mutatorStoreFaderSound(in: ref) }
+            .disabled(state.activeVariationFader(slot: state.selectedSlot) == nil)
     }
 
     private func helpText(for ref: G2MutatorBox) -> String {
@@ -372,7 +384,8 @@ struct MutatorPanel: View {
         case .parents where ref.index == G2Mutator.fatherIndex: "Father — second parent for Interpolate and Cross"
         case .parents: "Child \(ref.index + 1) — click to hear it, double-click to breed from it"
         case .storage: "Temporary storage — drag a sound here to keep it"
-        case .variations: "Patch variation \(ref.index + 1) — click to select it on the G2"
+        case .variations:
+            "Patch variation \(ref.index + 1) — click to select it on the G2, Shift-click to compare it with what is playing"
         }
     }
 
@@ -440,6 +453,9 @@ struct MutatorPanel: View {
         case .space:
             guard state.mutatorCompare != nil else { return .ignored }
             state.mutatorCompareToggle()
+        case .escape:
+            // Jak w oknie patcha: koniec porównania wariacji i zmian spod fadera na kanwie.
+            guard state.endCanvasComparison(slot: state.selectedSlot) else { return .ignored }
         case .upArrow, .downArrow, .leftArrow, .rightArrow:
             // ⌥ + strzałki chodzą po drzewie ewolucji, same strzałki po siatce kratek.
             if press.modifiers.contains(.option) {
@@ -536,6 +552,9 @@ struct MutatorBoxView: View {
     /// Kratka „B" porównania A/B — mała litera w rogu, żeby nie zgubić jej wśród
     /// zwykłych kliknięć.
     var compare = false
+    /// Wariacja porównywana Shift-klikiem (różnice na kanwie) — turkusowa ramka, kolor
+    /// porównania z belki.
+    var variationCompared = false
     let size: CGFloat
 
     /// Poniżej tej wielkości kratka rysuje chromosom cieńszą kreską.
@@ -547,6 +566,12 @@ struct MutatorBoxView: View {
             .frame(width: size, height: size)
             .panelScreen(fill: focused ? MutatorColor.selected : palette.background,
                          cornerRadius: MutatorMetrics.tileCornerRadius)
+            .overlay {
+                if variationCompared {
+                    RoundedRectangle(cornerRadius: MutatorMetrics.tileCornerRadius)
+                        .strokeBorder(UIColor.variationCompare, lineWidth: 2.5)
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if compare {
                     Text("B")

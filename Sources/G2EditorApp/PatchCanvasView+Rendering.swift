@@ -56,6 +56,8 @@ extension PatchCanvasView {
                 ctx.fill(Path(rect), with: .color(UIColor.canvasBackground.opacity(0.55)))
             }
         }
+        // Porównanie wariacji — mgiełka i turkus nad gotowymi obrazkami modułów.
+        drawVariationComparison(ctx)
         // Cienka czerwona ramka wokół modułów wyłączonych z mutacji — widoczna tylko
         // przy otwartym oknie mutatora, dokładnie jak w oryginale.
         if mutatorVisible {
@@ -280,6 +282,7 @@ extension PatchCanvasView {
             drawBVGraphs(clipped, module: module, rect: rect)
             drawBVLEDs(clipped, module: module, rect: rect)
             drawBVMiniVUs(clipped, module: module, rect: rect)
+            drawVariationLocks(clipped, module: module, rect: rect)
             drawConnectorLabels(clipped, module: module, def: def, rect: rect)
             drawConnectors(clipped, module: module, def: def, rect: rect, isOutput: false)
             drawConnectors(clipped, module: module, def: def, rect: rect, isOutput: true)
@@ -1456,53 +1459,16 @@ extension PatchCanvasView {
             guard btn.buttonCount > 0 else { continue }
             let value = btn.codeRef < module.parameters.count
                 ? module.parameters[btn.codeRef] : 0
-            let selIdx = max(0, min(value, btn.buttonCount - 1))
-            let x0 = rect.minX + btn.xPt
-            let y0 = rect.minY + buttonRadioYPt(moduleTypeID: module.typeID, button: btn, ui: ui)
-            // Grupa kończąca się dokładnie na X=256 w danych BVerhue (OscA, OscShpA
-            // i inne selektory fal) sięga w Canvasie prawej krawędzi panelu, przez co
-            // obrys ostatniego radia optycznie nachodzi na ukośną ramkę modułu.
-            // Rozdziel 1.5 pt równo na wszystkie przyciski, bez zmiany ich kolejności.
-            let rawWidth = max(btn.buttonWidthPt, UIMetrics.buttonRadioMinWidth)
-            let isHorizontal = btn.orientation != "Vertical"
-            // Pionowa grupa ma szerokość JEDNEGO przycisku — liczenie jej jak poziomej
-            // (count × rawWidth) fałszywie wykrywało nachodzenie na sąsiedni ekran i
-            // ściskało przyciski (FltNord BR/HP/BP/LP obok wykresu filtra).
-            let groupWidth = CGFloat(btn.columns) * rawWidth
-            let touchesRightEdge = btn.xPt + groupWidth > rect.width - 0.5
-            // Grupa może też nachodzić na ekran (Graph) stojący bezpośrednio na prawo w
-            // tym samym wierszu, nie tylko na krawędź modułu (np. LfoShpA: przyciski fal
-            // kończą się na XPos:200 z Width:18×6, ekran zaczyna się tuż obok na
-            // XPos:199) — dociśnij inset także do lewej krawędzi takiego ekranu.
-            let overlappingGraph = isHorizontal ? ui.graphs.first {
-                $0.xPt >= btn.xPt && $0.xPt < btn.xPt + groupWidth + 2.0 && abs($0.yPt - btn.yPt) < 6.0
-            } : nil
-            let graphOverlapInset = overlappingGraph.map { max(0, btn.xPt + groupWidth - $0.xPt + 1.5) } ?? 0
-            let rightInset: CGFloat = max(
-                isHorizontal && touchesRightEdge ? 1.5 : 0,
-                graphOverlapInset
-            )
-            let bw = rawWidth - rightInset / CGFloat(btn.columns)
-            let bh: CGFloat = UIMetrics.buttonRadioHeight
-            let isVert = btn.orientation == "Vertical"
+            let rects = radioButtonRects(btn, module: module, ui: ui, rect: rect)
+            let selectedPosition = radioButtonPosition(btn, value: value)
             // Pikselowe ikony dostępne?
             let hasPixels = !btn.iconPixels.isEmpty && btn.iconWidth > 0
             let iconH = hasPixels && btn.buttonCount > 0
                 ? btn.iconPixels.count / (btn.buttonCount * btn.iconWidth) : 0
 
             for i in 0 ..< btn.buttonCount {
-                // BVerhue Text kolejność: labels[0]=BR...labels[3]=LP (góra→dół wizualnie).
-                // Protokół G2: value 0=LP, 1=BP, 2=HP, 3=BR (odwrócone względem label index).
-                // drawPos = i → labels[0] na górze (zgodnie z oryginałem Clavii).
-                // isSelected: value v → label index (count-1-v) jest aktywny.
-                let drawPos = i
-                let bx = x0 + CGFloat(drawPos % btn.columns) * bw
-                let by = y0 + CGFloat(drawPos / btn.columns) * bh
-                let br = CGRect(x: bx, y: by, width: bw - 0.5,
-                                height: bh - (btn.rows > 1 ? 0.5 : 0))
-                let isSelected = isVert
-                    ? (i == btn.buttonCount - 1 - selIdx)
-                    : (i == selIdx)
+                let br = rects[i]
+                let isSelected = i == selectedPosition
 
                 let bg: Color = isSelected ? UIColor.radioSelected : UIColor.buttonInactive
                 PanelFace.raised(ctx, br, cornerRadius: 1.0,
@@ -1581,18 +1547,11 @@ extension PatchCanvasView {
         // Type:"Up/Down" (większość modułów, np. LevScaler "BP") → jeden nad drugim.
         // Type:"Left/Right" (np. SeqLev, SeqA) → obok siebie — zgodnie z oryginałem Clavii.
         for btn in ui.incDecButtons {
-            let origin = operatorIncDecOrigin(module: module, button: btn)
-            let x = rect.minX + origin.x
+            let pair = incDecPairFrame(btn, module: module, rect: rect)
+            let x = pair.minX
+            let y = pair.minY
             let s: CGFloat = UIMetrics.incDecHeight // bok kwadratu
             let gap: CGFloat = UIMetrics.incDecGap
-
-            // Surowy YPos z BVerhue czasem zostawia parę przycisków tak nisko, że
-            // dolny dotyka (lub wychodzi poza) dolną krawędź modułu — np. ClkDiv
-            // "Divider" miał <1.2pt marginesu. Dociśnij parę w górę, żeby zachować
-            // minimalny margines od dołu; nie rusza modułów, gdzie już jest OK.
-            let totalH = btn.isVertical ? s * 2 + gap : s
-            let bottomMargin: CGFloat = 1.0
-            let y = min(rect.minY + origin.y, rect.maxY - bottomMargin - totalH)
 
             // Pionowo: „+" u góry, „−" u dołu (bez zmian). Poziomo: „−" z LEWEJ,
             // „+" z PRAWEJ — jak przy pokrętłach (kręcenie w prawo = wzrost) i jak
@@ -1723,6 +1682,67 @@ extension PatchCanvasView {
             return operatorTextFieldFrame(module: module, field: field).y
         }
         return ui.buttonsRadio.first(where: { abs($0.yPt - button.yPt) < 3.0 })?.yPt ?? button.yPt
+    }
+
+    /// Obrys pary +/- (pionowej albo poziomej) — wspólny dla rysowania, kłódki
+    /// i porównania wariacji. Surowy YPos z BVerhue czasem zostawia parę tak nisko,
+    /// że dolny przycisk dotyka (lub wychodzi poza) dolną krawędź modułu — np. ClkDiv
+    /// "Divider" miał <1.2pt marginesu. Para idzie wtedy w górę, z marginesem 1 pt.
+    func incDecPairFrame(_ btn: BVButtonIncDec, module: G2Module, rect: CGRect) -> CGRect {
+        let origin = operatorIncDecOrigin(module: module, button: btn)
+        let s = UIMetrics.incDecHeight
+        let gap = UIMetrics.incDecGap
+        let size = btn.isVertical ? CGSize(width: s, height: s * 2 + gap) : CGSize(width: s * 2 + gap, height: s)
+        let y = min(rect.minY + origin.y, rect.maxY - 1.0 - size.height)
+        return CGRect(origin: CGPoint(x: rect.minX + origin.x, y: y), size: size)
+    }
+
+    /// Prostokąty przycisków grupy ButtonRadio, w kolejności rysowania (góra→dół,
+    /// lewo→prawo). Wspólne dla rysowania i porównania wariacji.
+    func radioButtonRects(_ btn: BVButtonRadio, module: G2Module, ui: ModuleUIDef,
+                          rect: CGRect) -> [CGRect]
+    {
+        let x0 = rect.minX + btn.xPt
+        let y0 = rect.minY + buttonRadioYPt(moduleTypeID: module.typeID, button: btn, ui: ui)
+        // Grupa kończąca się dokładnie na X=256 w danych BVerhue (OscA, OscShpA
+        // i inne selektory fal) sięga w Canvasie prawej krawędzi panelu, przez co
+        // obrys ostatniego radia optycznie nachodzi na ukośną ramkę modułu.
+        // Rozdziel 1.5 pt równo na wszystkie przyciski, bez zmiany ich kolejności.
+        let rawWidth = max(btn.buttonWidthPt, UIMetrics.buttonRadioMinWidth)
+        let isHorizontal = btn.orientation != "Vertical"
+        // Pionowa grupa ma szerokość JEDNEGO przycisku — liczenie jej jak poziomej
+        // (count × rawWidth) fałszywie wykrywało nachodzenie na sąsiedni ekran i
+        // ściskało przyciski (FltNord BR/HP/BP/LP obok wykresu filtra).
+        let groupWidth = CGFloat(btn.columns) * rawWidth
+        let touchesRightEdge = btn.xPt + groupWidth > rect.width - 0.5
+        // Grupa może też nachodzić na ekran (Graph) stojący bezpośrednio na prawo w
+        // tym samym wierszu, nie tylko na krawędź modułu (np. LfoShpA: przyciski fal
+        // kończą się na XPos:200 z Width:18×6, ekran zaczyna się tuż obok na
+        // XPos:199) — dociśnij inset także do lewej krawędzi takiego ekranu.
+        let overlappingGraph = isHorizontal ? ui.graphs.first {
+            $0.xPt >= btn.xPt && $0.xPt < btn.xPt + groupWidth + 2.0 && abs($0.yPt - btn.yPt) < 6.0
+        } : nil
+        let graphOverlapInset = overlappingGraph.map { max(0, btn.xPt + groupWidth - $0.xPt + 1.5) } ?? 0
+        let rightInset: CGFloat = max(
+            isHorizontal && touchesRightEdge ? 1.5 : 0,
+            graphOverlapInset
+        )
+        let bw = rawWidth - rightInset / CGFloat(btn.columns)
+        let bh: CGFloat = UIMetrics.buttonRadioHeight
+        return (0 ..< btn.buttonCount).map { drawPos in
+            let bx = x0 + CGFloat(drawPos % btn.columns) * bw
+            let by = y0 + CGFloat(drawPos / btn.columns) * bh
+            return CGRect(x: bx, y: by, width: bw - 0.5,
+                          height: bh - (btn.rows > 1 ? 0.5 : 0))
+        }
+    }
+
+    /// Który z `radioButtonRects` świeci przy danej wartości. BVerhue Text kolejność:
+    /// labels[0]=BR...labels[3]=LP (góra→dół wizualnie), a protokół G2: value 0=LP,
+    /// 1=BP, 2=HP, 3=BR — w pionowej grupie wartość v świeci na pozycji count-1-v.
+    func radioButtonPosition(_ btn: BVButtonRadio, value: Int) -> Int {
+        let selIdx = max(0, min(value, btn.buttonCount - 1))
+        return btn.orientation == "Vertical" ? btn.buttonCount - 1 - selIdx : selIdx
     }
 
     func operatorTextFieldFrame(module: G2Module, field: BVTextField) -> (x: CGFloat, y: CGFloat, width: CGFloat) {
@@ -2988,40 +3008,46 @@ extension PatchCanvasView {
 
     // MARK: - TextField (wyświetlacz LCD wartości parametru)
 
+    /// Ekran pola tekstowego na kanwie — wspólny dla rysowania i porównania wariacji.
+    func textFieldBoxRect(_ tf: BVTextField, module: G2Module, ui: ModuleUIDef, rect: CGRect) -> CGRect {
+        let field = operatorTextFieldFrame(module: module, field: tf)
+        let x = rect.minX + field.x
+        let y = rect.minY + field.y
+        let h: CGFloat = UIMetrics.textFieldHeight
+
+        // Wąskie ekrany z parą +/- po prawej (np. Operator: Detune, Vel,
+        // RateScale) nie mogą być rozszerzane na przyciski. BVerhue zostawia
+        // między nimi małą szczelinę; zachowujemy ją, a minimum szerokości
+        // stosujemy tylko wtedy, gdy nic nie stoi bezpośrednio obok.
+        let incDecHeight = UIMetrics.incDecHeight
+        let incDecGap = UIMetrics.incDecGap
+        let nextIncDecX = ui.incDecButtons
+            .filter { btn in
+                let origin = operatorIncDecOrigin(module: module, button: btn)
+                let buttonHeight = btn.isVertical ? incDecHeight * 2 + incDecGap : incDecHeight
+                let overlapsVertically = origin.y < field.y + h && origin.y + buttonHeight > field.y
+                return origin.x > field.x && overlapsVertically
+            }
+            .map { operatorIncDecOrigin(module: module, button: $0).x }
+            .min()
+        let isOperatorAMod = module.typeID == 180 && tf.id == 55
+        let preferredWidth = isOperatorAMod ? field.width : max(field.width, UIMetrics.textFieldMinWidth)
+        let maxWidthBeforeButton = nextIncDecX.map {
+            max(field.width, $0 - field.x - 0.75)
+        }
+        let w = min(preferredWidth, maxWidthBeforeButton ?? preferredWidth)
+
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
     private func drawBVTextFields(_ ctx: GraphicsContext, module: G2Module, rect: CGRect) {
         guard let ui = ModuleUIDatabase.shared.uiDef(forID: module.typeID) else { return }
         guard !ui.textFields.isEmpty else { return }
 
         for tf in ui.textFields {
-            let field = operatorTextFieldFrame(module: module, field: tf)
-            let x = rect.minX + field.x
-            let y = rect.minY + field.y
-            let h: CGFloat = UIMetrics.textFieldHeight
-
-            // Wąskie ekrany z parą +/- po prawej (np. Operator: Detune, Vel,
-            // RateScale) nie mogą być rozszerzane na przyciski. BVerhue zostawia
-            // między nimi małą szczelinę; zachowujemy ją, a minimum szerokości
-            // stosujemy tylko wtedy, gdy nic nie stoi bezpośrednio obok.
-            let incDecHeight = UIMetrics.incDecHeight
-            let incDecGap = UIMetrics.incDecGap
-            let nextIncDecX = ui.incDecButtons
-                .filter { btn in
-                    let origin = operatorIncDecOrigin(module: module, button: btn)
-                    let buttonHeight = btn.isVertical ? incDecHeight * 2 + incDecGap : incDecHeight
-                    let overlapsVertically = origin.y < field.y + h && origin.y + buttonHeight > field.y
-                    return origin.x > field.x && overlapsVertically
-                }
-                .map { operatorIncDecOrigin(module: module, button: $0).x }
-                .min()
-            let isOperatorAMod = module.typeID == 180 && tf.id == 55
-            let preferredWidth = isOperatorAMod ? field.width : max(field.width, UIMetrics.textFieldMinWidth)
-            let maxWidthBeforeButton = nextIncDecX.map {
-                max(field.width, $0 - field.x - 0.75)
-            }
-            let w = min(preferredWidth, maxWidthBeforeButton ?? preferredWidth)
-
+            let boxRect = textFieldBoxRect(tf, module: module, ui: ui, rect: rect)
+            let h = boxRect.height
             // Tło wyświetlacza: ciemnozielony LCD
-            let boxRect = CGRect(x: x, y: y, width: w, height: h)
             PanelFace.recessed(ctx, boxRect, cornerRadius: UIMetrics.buttonCornerRadius,
                                fill: UIColor.lcdBackground, lineWidth: 0.4, shaded: panelShading)
 

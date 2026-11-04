@@ -158,6 +158,12 @@ public final class DeviceConnection {
     /// aktualny bez odpytywania. Puste, dopóki nie ma połączenia.
     public private(set) var patchLoad: [Int: [PatchArea: G2PatchLoad]] = [:]
 
+    /// Ile głosów Nord NAPRAWDĘ dał slotom A–D (`0x05`) — `nil`, dopóki nie odpowiedział.
+    /// Nord gra po cichu mniej głosów, gdy patch się nie mieści; pasek pokazuje to jak
+    /// oryginał, „7 (32)" → [[Docs/context/firmware-resources]].
+    public private(set) var assignedVoices: [Int]?
+    private var voiceRefreshTask: Task<Void, Never>?
+
     /// Obciążenie jednego obszaru slotu, o ile urządzenie już je podało.
     public func patchLoad(slot: Int, area: PatchArea) -> G2PatchLoad? {
         patchLoad[slot]?[area]
@@ -328,6 +334,7 @@ public final class DeviceConnection {
             if status == .connected {
                 clearVisuals()
                 patchLoad = [:]
+                assignedVoices = nil
                 bankEntries = []
                 devicePerformance = nil
                 devicePerformanceName = nil
@@ -378,6 +385,7 @@ public final class DeviceConnection {
             performanceMode = synth?.settings.performanceMode
             await refreshClockInfo()
             status = .connected
+            scheduleVoiceRefresh()
             if mayReplaceEditorContent?() ?? true {
                 await onPatchesDownloaded?(manager.patches)
             } else {
@@ -432,6 +440,7 @@ public final class DeviceConnection {
         onDeviceLost?()
         clearVisuals()
         patchLoad = [:]
+        assignedVoices = nil
         bankEntries = []
         devicePerformance = nil
         devicePerformanceName = nil
@@ -508,6 +517,8 @@ public final class DeviceConnection {
             for reading in G2UsbProtocol.decodePatchLoad(note.payload) {
                 patchLoad[slot, default: [:]][reading.area] = reading
             }
+            // Nowa struktura = być może inny przydział głosów.
+            scheduleVoiceRefresh()
 
         case G2UsbProtocol.subResponseSelectSlot:
             guard let newSlot = G2UsbProtocol.decodeSelectSlot(note.payload) else { return }
@@ -537,10 +548,12 @@ public final class DeviceConnection {
             devicePerformanceSection = header.section
             applyClock(from: header.settings)
             onDeviceGlobalPagesChange?(header.settings.globalPagesEnabled)
+            scheduleVoiceRefresh()
 
         case G2UsbProtocol.subResponseSlotSelection:
             guard let enabled = G2UsbProtocol.decodeSlotSelection(note.payload) else { return }
             applyPlayingSlots(enabled)
+            scheduleVoiceRefresh()
 
         case G2UsbProtocol.subResponseKeyboardFocus:
             guard let keyboard = G2UsbProtocol.decodeSlotSelection(note.payload) else { return }
@@ -654,6 +667,27 @@ public final class DeviceConnection {
         guard readings != leds || slot != meterSlot else { return }
         meterSlot = slot
         leds = readings
+    }
+
+    // MARK: - Przydział głosów
+
+    /// Pyta Norda, ile głosów dał slotom (`0x04` → `0x05`). Wołane przy łączeniu i po każdej
+    /// zmianie, po której przydział może być inny (struktura `0x72`, nagłówek performance'u,
+    /// grające sloty, tryb głosów). Zmiany przychodzą seriami, więc pytamy raz, pół sekundy
+    /// po ostatniej — a w trakcie wysyłki dopiero po niej, żeby nie pytać o stan pośredni.
+    private func scheduleVoiceRefresh() {
+        guard status == .connected else { return }
+        voiceRefreshTask?.cancel()
+        voiceRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self, self.status == .connected else { return }
+            guard !self.isSending else {
+                self.scheduleVoiceRefresh()
+                return
+            }
+            guard let voices = try? await self.manager.readAssignedVoices(), !Task.isCancelled else { return }
+            if self.assignedVoices != voices { self.assignedVoices = voices }
+        }
     }
 
     // MARK: - Zegar główny
@@ -840,6 +874,7 @@ public final class DeviceConnection {
                     // nieaktualna" przy odtwarzaniu modelu synta, a `CleanDirtyData`
                     // wysyła wtedy `SendClockInfoRequests` → [[Docs/ui/master-clock]] §6.2.
                     await self.refreshClockInfo()
+                    self.scheduleVoiceRefresh()
                     // Focus też jest w nagłówku (bity 3–2 drugiego bajtu sekcji 0x11)
                     // i oryginał bierze go WŁAŚNIE STĄD: `HandlePerformanceHeaderDump`
                     // zgłasza `FocusedSlotChangedFromSynth` i robi `PatchViewSelect`
@@ -972,6 +1007,15 @@ public final class DeviceConnection {
                                headerSent: Bool) async
     {
         guard status == .connected, !patches.isEmpty else { return }
+        // Pojedynczy patch idzie do Norda z „Vol: Off" w grającej wariacji, a „On" wraca, gdy
+        // Nord ma go już na DSP-ach — inaczej zaczynał grać w trakcie ładowania i początek się
+        // przycinał (prośba użytkownika 2026-11-03). Ekran cały czas pokazuje „On".
+        var patches = patches
+        var loadingMute: Int?
+        if patches.count == 1, let silenced = Self.silencedWhileLoading(patches[0]) {
+            patches[0] = silenced
+            loadingMute = silenced.activeVariation
+        }
         let base = min(max(firstSlot, 0), G2UsbProtocol.maxSlots - 1)
         let targets = Array(patches.prefix(G2UsbProtocol.maxSlots - base))
         let streams = sectionStreams(fileData: fileData, slotFiles: slotFiles, patches: patches,
@@ -1079,6 +1123,9 @@ public final class DeviceConnection {
             applyPlayingSlots(enabled)
             applyKeyboardSlots(keyboard)
             try await manager.selectSlot(UInt8(target))
+            if let loadingMute {
+                try await unmuteAfterLoad([(target, loadingMute)])
+            }
         } catch {
             status = .error(error.localizedDescription)
         }
@@ -1090,6 +1137,40 @@ public final class DeviceConnection {
             await setClockRunning(performance.masterClockRunning)
         }
         ignoreDeviceReloadsUntil = Date().addingTimeInterval(1.0)
+    }
+
+    /// Patch, który po wgraniu ma grać (moduły i „Vol: On" w grającej wariacji), z „Vol: Off"
+    /// na czas ładowania; `nil`, gdy nie ma czego wyciszać.
+    nonisolated static func silencedWhileLoading(_ patch: G2Patch) -> G2Patch? {
+        let variation = patch.activeVariation
+        let mute = G2PatchSetting.activeMuted.keyPath
+        guard patch.variationSettings.indices.contains(variation),
+              patch.variationSettings[variation][keyPath: mute] == 1,
+              !(patch.voiceModules.isEmpty && patch.fxModules.isEmpty)
+        else { return nil }
+        var silenced = patch
+        silenced.variationSettings[variation][keyPath: mute] = 0
+        return silenced
+    }
+
+    /// „Vol: On" po załadowaniu. Gotowość mówi raport obciążenia (`0x72`): Nord nadaje go sam
+    /// ~150 ms po `0x37`, gdy patch stoi już na DSP-ach. Slot, który nie gra, raportu nie
+    /// dostaje, więc na niego nie czekamy (najwyżej 0,6 s). Performance włącza sloty razem.
+    private func unmuteAfterLoad(_ slots: [(slot: Int, variation: Int)]) async throws {
+        guard !slots.isEmpty else { return }
+        let deadline = Date().addingTimeInterval(0.6)
+        let playing = playingSlots
+        func waiting(_ slot: Int) -> Bool {
+            patchLoad[slot] == nil && (!playing.indices.contains(slot) || playing[slot])
+        }
+        while slots.contains(where: { waiting($0.slot) }), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let setting = G2PatchSetting.activeMuted
+        for (slot, variation) in slots {
+            try await manager.setPatchSettingLive(slot: UInt8(slot), moduleID: setting.module,
+                                                  paramIndex: setting.param, value: 1, variation: variation)
+        }
     }
 
     /// **Cały performance jednym komunikatem** (`0x1A` Complete Performance Dump) — dokładnie
@@ -1108,9 +1189,13 @@ public final class DeviceConnection {
         else { return false }
         do {
             // Te same bajty, które trafiłyby do pliku przy `Save` — czyli to, co widać
-            // na ekranie, a nie to, co leżało w pliku przed edycją.
+            // na ekranie, a nie to, co leżało w pliku przed edycją. Każdy slot z „Vol: Off"
+            // na czas ładowania, jak pojedynczy patch w `performUpload`.
+            let silenced = state.slots.map { Self.silencedWhileLoading($0.trimmedToModuleDefinitions()) }
             let current = try PatchParser.saveAll(originalData: original,
-                                                  patches: state.slots.map { $0.trimmedToModuleDefinitions() },
+                                                  patches: zip(silenced, state.slots).map {
+                                                      $0 ?? $1.trimmedToModuleDefinitions()
+                                                  },
                                                   performance: state.performance)
             let header = try PatchParser.performanceSectionStream(fileData: current)
             let streams = try (0 ..< G2UsbProtocol.maxSlots).map {
@@ -1136,6 +1221,8 @@ public final class DeviceConnection {
             let target = min(max(state.selectedSlot, 0), G2UsbProtocol.maxSlots - 1)
             activeSlot = target
             try await manager.selectSlot(UInt8(target))
+            let muted = silenced.indices.compactMap { slot in silenced[slot].map { (slot, $0.activeVariation) } }
+            try await unmuteAfterLoad(muted)
             ignoreDeviceReloadsUntil = Date().addingTimeInterval(1.0)
             return true
         } catch {
@@ -1460,6 +1547,20 @@ public final class DeviceConnection {
             bankLoadError = "Could not load “\(entry.name)”: \(error.localizedDescription)"
             finishBankLoad()
         }
+    }
+
+    /// Patch z banku przy opcji „jak oryginał” (#137): tryb Patch, cztery puste sloty do
+    /// Norda (B–D milkną), potem `0x0A` z banku do slotu A. Do 2026-11-04 lista banków
+    /// omijała opcję i ładowała do slotu z focusem — B–D zostawały w edytorze i w Nordzie.
+    /// Ogłoszenie zmiany po `0x0A` przychodzi zaraz po naszej wysyłce, więc karencję echa
+    /// zdejmujemy — inaczej edytor nie odczytałby patcha z banku.
+    public func loadFromBankAsOnlyPatch(_ entry: G2BankEntry, state: PatchState) async {
+        guard status == .connected, acceptsPatchChange, entry.kind == .patch else { return }
+        state.clearSlotsForBankPatch()
+        await send(state, followDocument: true)
+        guard status == .connected else { return }
+        ignoreDeviceReloadsUntil = .distantPast
+        await loadFromBank(entry, intoSlot: 0)
     }
 
     private func finishBankLoad() {
@@ -1907,6 +2008,7 @@ public final class DeviceConnection {
         Task {
             do {
                 try await manager.setPatchDescription(slot: UInt8(slot), description: description)
+                scheduleVoiceRefresh()
             } catch {
                 status = .error(error.localizedDescription)
             }

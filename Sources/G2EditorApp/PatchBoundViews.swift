@@ -62,6 +62,9 @@ struct CanvasPane: View {
             showsBackdrop: showsBackdrop,
             device: device,
             slot: slot,
+            comparedVariation: state.canvasComparedVariation(slot: slot),
+            bufferName: state.activeVariationFader(slot: slot) != nil ? "Fader" : "Mutator",
+            onCanvasPress: { state.hideVariationFaderChanges(slot: slot) },
             selection: selections.selection(for: area),
             minSize: minSize,
             onParameterChange: { moduleID, paramIndex, value in
@@ -137,6 +140,9 @@ struct CanvasPane: View {
             },
             onExcludeFromMutation: { moduleIDs, excluded in
                 state.setModulesExcludedFromMutation(moduleIDs, excluded: excluded)
+            },
+            onVariationLock: { parameters, locked in
+                state.setVariationLock(parameters, area: area, locked: locked)
             },
             mutatorVisible: panels.windows.contains(.mutator),
             audibilityVisible: panels.windows.contains(.mutator) && panels.effectiveMutatorSettings.onlyAudible,

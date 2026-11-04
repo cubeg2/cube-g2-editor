@@ -8,7 +8,7 @@ import XCTest
 
 final class VoiceModeTests: XCTestCase {
     /// Układ z BVerhue (`bidVoicesChangeValue` i odczyt `VoiceCount + 1 - MonoPoly`):
-    /// 0 = Legato, 1 = Mono, 2…32 = polifonia (wartość − 1 głosów).
+    /// 0 = Legato, 1 = Mono, 2…32 = polifonia (tyle głosów; w polu `voices` o jeden mniej).
     func testIndexRoundTripsThroughTheHeaderFields() {
         for index in G2VoiceMode.minIndex ... G2VoiceMode.maxIndex {
             let fields = G2VoiceMode.fields(index: index)
@@ -26,12 +26,18 @@ final class VoiceModeTests: XCTestCase {
         XCTAssertEqual(G2VoiceMode.label(index: 1), "Mono")
     }
 
-    /// Pole `voices` ma pięć bitów, więc najwyższa polifonia to 31 głosów.
+    /// Pole `voices` ma pięć bitów i przechowuje polifonię minus jeden: 31 w polu to 32 głosy.
     func testHighestPolyphonyFitsTheFiveBitField() {
         let fields = G2VoiceMode.fields(index: G2VoiceMode.maxIndex)
         XCTAssertEqual(fields.voices, 31)
         XCTAssertEqual(fields.monopoly, 0)
-        XCTAssertEqual(G2VoiceMode.label(index: G2VoiceMode.maxIndex), "31")
+        XCTAssertEqual(G2VoiceMode.label(index: G2VoiceMode.maxIndex), "32")
+    }
+
+    /// Pole 8 to dziewięć głosów — tyle przydzielił emulator firmware'u (Radiolarian, slot A).
+    func testLabelShowsThePolyphonyTheDevicePlays() {
+        XCTAssertEqual(G2VoiceMode.label(voices: 8, monopoly: 0), "9")
+        XCTAssertEqual(G2VoiceMode.label(index: 2), "2")
     }
 }
 

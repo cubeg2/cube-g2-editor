@@ -73,7 +73,7 @@ public struct G2EngineSpace: Sendable {
             guard let address = ParameterAddress(gene.key) else { continue }
             if gene.moduleExcluded {
                 map.moduleLocks[ModuleAddress(address)] = .module
-            } else if gene.isMutable, !locks.allows(gene.category) {
+            } else if gene.variationLocked || gene.isMutable && !locks.allows(gene.category) {
                 map.parameterLocks[address] = .explicit
             } else if gene.isMutable, audibility?.isAudible(gene.key) == false {
                 map.parameterLocks[address] = .inaudible

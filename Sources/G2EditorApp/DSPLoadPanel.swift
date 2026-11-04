@@ -19,16 +19,27 @@ struct DSPLoadPanel: View {
     let device: DeviceConnection
     let state: PatchState
 
+    /// Wysokość całej treści — górna granica okna (uwaga użytkownika 2026-10-30: po
+    /// rozciągnięciu pod paskami slotu D zostawał pusty pas większy niż cała treść).
+    @State private var contentHeight: CGFloat = 0
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                VoiceAllocationSection(device: device, state: state)
+                Divider()
                 ForEach(slots, id: \.self) { slot in
                     slotSection(slot)
                 }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(GeometryReader { geometry in
+                Color.clear.preference(key: ContentHeightKey.self, value: geometry.size.height)
+            })
         }
+        .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
+        .background(WindowMaxHeight(height: contentHeight))
     }
 
     /// Wszystkie cztery sloty, bo limit DSP dzielą między siebie.
@@ -144,6 +155,76 @@ struct DSPLoadPanel: View {
         case .critical: Color(red: 0.95, green: 0.1, blue: 0.1)
         case .warning: Color(red: 0.95, green: 0.6, blue: 0.0)
         case .safe: Color(red: 0.0, green: 0.75, blue: 0.3)
+        }
+    }
+}
+
+private struct ContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Okno panelu nie urośnie ponad treść (ani szerzej niż `maxPanelWidth`), a gdy treść się skurczy (zniknie dopisek pamięci),
+/// okno skraca się za nią; lewy górny róg stoi. Samo `contentMaxSize` nie wystarcza:
+/// hosting SwiftUI nadpisuje je przy każdym układzie, a zielony przycisk rozciągał okno
+/// na cały ekran — dlatego granicę pilnujemy też po każdej zmianie rozmiaru okna.
+/// Tylko pływające okno panelu — w szufladzie głównego okna nic nie ruszamy.
+private struct WindowMaxHeight: NSViewRepresentable {
+    let height: CGFloat
+
+    final class Coordinator {
+        var limit: CGFloat = 0
+        weak var window: NSWindow?
+        var observer: NSObjectProtocol?
+
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+
+        func attach(to window: NSWindow) {
+            guard self.window !== window else { return }
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            self.window = window
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification, object: window, queue: .main
+            ) { [weak self] _ in self?.clamp() }
+        }
+
+        func clamp() {
+            guard limit > 0, let window else { return }
+            let limit = max(limit, window.contentMinSize.height)
+            // Szerokość: tyle co najszerszy panel — zielony przycisk rozciągał okno na
+            // całą szerokość ekranu (uwaga użytkownika 2026-10-30).
+            let widest = PanelController.maxPanelWidth
+            window.contentMaxSize = NSSize(width: widest, height: limit)
+            let content = window.contentRect(forFrameRect: window.frame)
+            guard content.height > limit + 0.5 || content.width > widest + 0.5 else { return }
+            var frame = window.frameRect(forContentRect: NSRect(
+                origin: content.origin,
+                size: NSSize(width: min(content.width, widest), height: min(content.height, limit))
+            ))
+            frame.origin.y = window.frame.maxY - frame.height
+            window.setFrame(frame, display: true)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context _: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.limit = height
+        DispatchQueue.main.async {
+            guard let window = view.window as? NSPanel else { return }
+            coordinator.attach(to: window)
+            coordinator.clamp()
         }
     }
 }

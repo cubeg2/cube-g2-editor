@@ -4,6 +4,7 @@
 //   1…8   wybór wariacji            A/B/C/D  wybór slotu
 //   V     obszar Voice              F        obszar FX
 //   R     start/stop zegara         F5…F8    żółte dymki nad kontrolkami
+//   Esc   koniec porównania wariacji (nasz dodatek)
 //
 // Dlaczego monitor AppKit, a nie `keyboardShortcut` SwiftUI: gołe litery jako skróty
 // menu **wyprzedzają pole tekstowe** — z włączonym „V" nie dałoby się wpisać litery
@@ -37,6 +38,11 @@ struct EditorKeyboardShortcuts: NSViewRepresentable {
         if let overlay = Self.overlayModes[keyCode] {
             viewState.toggleOverlay(overlay)
             return true
+        }
+        // Esc kończy porównanie wariacji (Shift-klik w pasku wariacji) i gasi zmiany spod
+        // fadera wariacji, które zostały na kanwie; bez nich zostaje dla innych.
+        if keyCode == 53 {
+            return state.endCanvasComparison(slot: state.selectedSlot)
         }
 
         switch characters {

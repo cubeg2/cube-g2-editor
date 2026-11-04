@@ -111,13 +111,45 @@ public struct DiskFileSummary: Sendable, Equatable {
     }
 
     public let slots: [Slot]
+    /// Ile głosów Nord da grającym slotom — bez karty rozszerzeń (4 DSP) i z kartą albo G2X
+    /// (8 DSP). Zwykły patch liczony tak, jakby grał sam.
+    public let g2Voices: DSPVoiceAllocation?
+    public let expansionVoices: DSPVoiceAllocation?
 
-    public init(slots: [Slot]) {
+    public init(slots: [Slot], g2Voices: DSPVoiceAllocation? = nil, expansionVoices: DSPVoiceAllocation? = nil) {
         self.slots = slots
+        self.g2Voices = g2Voices
+        self.expansionVoices = expansionVoices
+    }
+
+    /// Czy G2 bez karty rozszerzeń da każdemu grającemu slotowi wszystkie zamówione głosy.
+    /// Bez obliczenia (pusty plik) — tak, nie ma czego ostrzegać.
+    public var fitsWithoutExpansion: Bool {
+        g2Voices.map { $0.voices == $0.requested } ?? true
+    }
+
+    public var fitsWithExpansion: Bool {
+        expansionVoices.map { $0.voices == $0.requested } ?? true
     }
 
     public var lines: [String] {
-        slots.map(\.line)
+        let labelled = slots.first?.label != nil
+        return slots.map(\.line) + [
+            g2Voices.flatMap { Self.voiceLine("Voices on G2", $0, labelled: labelled) },
+            expansionVoices.flatMap { Self.voiceLine("Voices with expansion", $0, labelled: labelled) },
+        ].compactMap { $0 }
+    }
+
+    /// „Voices on G2: A 6 of 9 · B 1 of 1 · D silent" — jak pastylki w panelu DSP Load.
+    static func voiceLine(_ title: String, _ allocation: DSPVoiceAllocation, labelled: Bool) -> String? {
+        let parts = allocation.requested.indices.compactMap { slot -> String? in
+            let asked = allocation.requested[slot]
+            guard asked > 0 else { return nil }
+            let got = allocation.voices[slot]
+            let value = got == 0 ? "silent" : "\(got) of \(asked)"
+            return labelled ? "ABCD".map(String.init)[min(slot, 3)] + " " + value : value
+        }
+        return parts.isEmpty ? nil : title + ": " + parts.joined(separator: " · ")
     }
 }
 
@@ -462,8 +494,9 @@ public final class DiskBankLibrary {
 
     // MARK: - Dymek przy pliku
 
-    /// Ile modułów i ile DSP zjada plik — dymek w przeglądarce. Parsuje CAŁY plik, więc
-    /// woła się to dla jednego pliku naraz, poza głównym wątkiem. `nil`, gdy pliku nie da
+    /// Ile modułów i ile DSP zjada plik i ile głosów dostanie — dymek i kropka w przeglądarce.
+    /// Parsuje CAŁY plik, więc woła się to tylko dla wierszy widocznych na ekranie, poza
+    /// głównym wątkiem. `nil`, gdy pliku nie da
     /// się przeczytać albo leży w iCloud i nie ma go na dysku (czytanie by go ściągało).
     public nonisolated static func summary(of url: URL) -> DiskFileSummary? {
         let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
@@ -485,7 +518,16 @@ public final class DiskBankLibrary {
                 fxLoad: G2PatchLoad.estimate(area: .fx, patch: patch).dspPercent
             )
         }
-        return DiskFileSummary(slots: slots)
+        // Gra slot włączony w performance i niepusty — jak w panelu DSP Load.
+        let enabled = file.performance?.slots.map(\.enabled)
+        let requests = file.patches.enumerated().map { index, patch in
+            let used = !patch.modules(in: .voice).isEmpty || !patch.modules(in: .fx).isEmpty
+            let on = enabled.map { index < $0.count && $0[index] } ?? true
+            return DSPVoiceAllocation.Request(patch: patch, playing: used && on)
+        }
+        return DiskFileSummary(slots: slots,
+                               g2Voices: DSPVoiceAllocation(requests: requests, dspCount: 4),
+                               expansionVoices: DSPVoiceAllocation(requests: requests, dspCount: 8))
     }
 
     // MARK: - Zmiany na dysku z przeglądarki
