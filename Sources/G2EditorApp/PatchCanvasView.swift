@@ -633,6 +633,8 @@ struct PatchCanvasView: View {
     /// `CanvasSelection`. Podglądy (`ImageRenderer`) dostają własne, puste.
     var selection = CanvasSelection()
     /// Minimalny rozmiar canvasu — wypełnia widoczny obszar ScrollView (przekazywane z GeometryReader).
+    /// Gałka ruszona ostatnio na Nordzie w tym slocie i obszarze — dostaje focus.
+    var deviceTouch: PatchState.DeviceParameterTouch?
     var minSize: CGSize = .zero
     /// Tryb podglądu — wyłącza NSViewRepresentable overlay (DropTarget) i nakładki interakcji.
     /// Używany przez ImageRenderer przy generowaniu drag image.
@@ -670,6 +672,12 @@ struct PatchCanvasView: View {
     var selectedModuleIDs: Set<Int> {
         get { selection.moduleIDs }
         nonmutating set { selection.moduleIDs = newValue }
+    }
+
+    /// Kable zaznaczone ⇧-klikiem (`CanvasSelection.cables`).
+    var selectedCables: [G2Cable] {
+        get { selection.cables }
+        nonmutating set { selection.cables = newValue }
     }
 
     @State var rubberBandStart: CGPoint?
@@ -734,6 +742,8 @@ struct PatchCanvasView: View {
 
     /// Kontrolka, której dotyczą strzałki — patrz `PatchCanvasView+KeyNavigation.swift`.
     @State var focusedParam: ParameterFocus?
+    /// Gałki ruszone na Nordzie i kiedy — ramkę mają przez `deviceTouchHold` sekund.
+    @State var deviceTouchedAt: [ParameterFocus: Date] = [:]
     /// Dymek wartości po strzałkach ↑↓ — patrz `PatchCanvasView+ValueEntry.swift`.
     @State var keyHint: ParamHoverHit?
     @State var keyHintTask: Task<Void, Never>?
@@ -751,7 +761,9 @@ struct PatchCanvasView: View {
     /// (patrz `PatchState.beginStructureGesture`).
     var onStructureGestureBegan: ((_ actionName: String) -> Void)?
     var onStructureGestureEnded: (() -> Void)?
-    var onMoveModule: ((_ moduleID: Int, _ newColumn: Int, _ newRow: Int, _ push: G2Patch.PushDirection) -> Void)?
+    /// Przeciągnięte moduły (jeden albo zaznaczona grupa) przesunięte o kolumny i wiersze —
+    /// `PatchState.moveModules`, jeden krok Undo.
+    var onMoveModules: ((_ moduleIDs: Set<Int>, _ columns: Int, _ rows: Int) -> Void)?
     var onRenameModule: ((_ moduleID: Int, _ label: String) -> Void)?
     var onDeleteModules: ((_ moduleIDs: Set<Int>) -> Void)?
     var onColorModule: ((_ moduleID: Int, _ color: UInt8) -> Void)?
@@ -769,8 +781,9 @@ struct PatchCanvasView: View {
     var audibilityVisible: Bool = false
     var onReplaceModule: ((_ moduleID: Int, _ targetTypeID: Int) -> Void)?
     var onAddModuleAt: ((_ typeID: Int, _ column: Int, _ row: Int) -> Void)?
-    /// Wklej moduły ze schowka (⌘V) — wywołuje G2PatchDocument.pasteModules
-    var onPasteModules: ((_ content: G2ClipboardContent) -> Void)?
+    /// Wklej moduły ze schowka lewym górnym rogiem w polu siatki (klik po ⌘V) —
+    /// `PatchState.pasteModules`; zwraca numery wklejonych modułów do zaznaczenia.
+    var onPasteModules: ((_ content: G2ClipboardContent, _ column: Int, _ row: Int) -> Set<Int>)?
     /// Building Block upuszczony na kanwę — zwraca numery nowych modułów tego obszaru,
     /// które zostają zaznaczone (zbędny osprzęt bloku kasuje się wtedy jednym Delete).
     var onInsertBlock: ((_ url: URL, _ column: Int, _ row: Int) -> Set<Int>)?
@@ -877,6 +890,7 @@ struct PatchCanvasView: View {
             .onTapGesture { location in
                 onCanvasPress?()
                 let lp = CGPoint(x: location.x / zoom, y: location.y / zoom)
+                if placePendingPaste(at: lp) { return }
                 // Zamknij edytor nazwy klikając poza nim; kontynuuj obsługę kliknięcia
                 if editingModuleID != nil {
                     commitNameEdit()
@@ -930,7 +944,12 @@ struct PatchCanvasView: View {
                 }
                 let shiftHeld = NSEvent.modifierFlags.contains(.shift)
                 if shiftHeld {
-                    if let hit = findModuleBody(at: lp) {
+                    // Kabel przed modułem: kable leżą nad panelami i często nie mają
+                    // kawałka poza modułem, więc inaczej nie dałoby się ich zaznaczyć
+                    // (decyzja użytkownika 2026-11-04).
+                    if let cable = findCable(at: lp) {
+                        selection.toggle(cable: cable)
+                    } else if let hit = findModuleBody(at: lp) {
                         if selectedModuleIDs.contains(hit.moduleID) {
                             selectedModuleIDs.remove(hit.moduleID)
                         } else {
@@ -951,6 +970,7 @@ struct PatchCanvasView: View {
                     activeModuleID = hit.moduleID
                 }
                 selectedModuleIDs.removeAll()
+                selectedCables.removeAll()
                 if let hit = findModuleBody(at: lp),
                    let module = modules.first(where: { $0.id == hit.moduleID })
                 {
@@ -1086,6 +1106,8 @@ struct PatchCanvasView: View {
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
         .onChange(of: zoom) { _, _ in scheduleRasterZoomCommit() }
+        // Gałka kręcona na Nordzie dostaje focus jak po kliknięciu.
+        .onChange(of: deviceTouch) { _, touch in applyDeviceTouch(touch) }
         .onContinuousHover { phase in
             switch phase {
             case let .active(loc):
@@ -1100,33 +1122,12 @@ struct PatchCanvasView: View {
         }
         .contextMenu { contextMenuItems }
         .background {
-            // Delete / Backspace — usuwa całe zaznaczenie albo aktywny moduł.
-            Button("") { deleteSelectedModules() }
-                .keyboardShortcut(.delete, modifiers: [])
-                .opacity(0).allowsHitTesting(false)
-
-            Button("") { deleteSelectedModules() }
-                .keyboardShortcut(.deleteForward, modifiers: [])
-                .opacity(0).allowsHitTesting(false)
-
-            // ⌘C — kopiuj zaznaczone moduły (lub aktywny jeśli brak zaznaczenia)
-            Button("") { copySelectedModules() }
-                .keyboardShortcut("c", modifiers: .command)
-                .opacity(0).allowsHitTesting(false)
-
-            // ⌘V — wklej ze schowka
-            Button("") {
-                if let content = G2ClipboardContent.readFromPasteboard() {
-                    onPasteModules?(content)
-                }
+            // Tylko na prawdziwej kanwie. Podgląd modułu w bibliotece to też `PatchCanvasView`,
+            // a ukryty przycisk ze skrótem działa w każdym widoku okna — ⌘C trafiało do
+            // podglądu bez zaznaczenia i nic nie kopiowało, więc ⌘V wklejało stary schowek.
+            if !isPreviewMode {
+                canvasShortcutButtons
             }
-            .keyboardShortcut("v", modifiers: .command)
-            .opacity(0).allowsHitTesting(false)
-
-            // ⌘A — zaznacz wszystkie moduły bieżącego obszaru (Voice/FX)
-            Button("") { selectedModuleIDs = Set(modules.map(\.id)) }
-                .keyboardShortcut("a", modifiers: .command)
-                .opacity(0).allowsHitTesting(false)
         }
         // Drop obsługiwany przez DropTargetRepresentable (AppKit NSDraggingDestination).
         // Powód: SwiftUI .onDrop wywoływało updateDraggingItemsForDrop i zmniejszało
@@ -1136,6 +1137,7 @@ struct PatchCanvasView: View {
         // isPreviewMode: pomijamy NSViewRepresentable — ImageRenderer nie obsługuje AppKit views.
         .overlay(dropTargetOverlayView)
         .overlay(blockGhostOverlayView)
+        .overlay(pasteGhostOverlayView)
         // Zoom-do-kursora (pinch, ⌘scroll) + SPACE-drag pan ("rączka") — patrz
         // CanvasZoomPanNSView w PatchCanvasInteractionBridge.swift.
         .overlay(zoomPanOverlayView)
@@ -1189,12 +1191,75 @@ struct PatchCanvasView: View {
         }
     }
 
+    /// Delete, ⌘C, ⌘V, ⌘A kanwy — niewidoczne przyciski ze skrótami.
+    @ViewBuilder
+    private var canvasShortcutButtons: some View {
+        // Delete / Backspace — usuwa całe zaznaczenie albo aktywny moduł.
+        Button("") { deleteSelection() }
+            .keyboardShortcut(.delete, modifiers: [])
+            .opacity(0).allowsHitTesting(false)
+
+        Button("") { deleteSelection() }
+            .keyboardShortcut(.deleteForward, modifiers: [])
+            .opacity(0).allowsHitTesting(false)
+
+        // ⌘C — kopiuj zaznaczone moduły (lub aktywny jeśli brak zaznaczenia)
+        Button("") { copySelectedModules() }
+            .keyboardShortcut("c", modifiers: .command)
+            .opacity(0).allowsHitTesting(false)
+
+        // ⌘V — wklej ze schowka
+        Button("") {
+            beginPendingPaste()
+        }
+        .keyboardShortcut("v", modifiers: .command)
+        .opacity(0).allowsHitTesting(false)
+
+        // ⌘A — zaznacz wszystkie moduły bieżącego obszaru (Voice/FX)
+        Button("") { selectedModuleIDs = Set(modules.map(\.id)) }
+            .keyboardShortcut("a", modifiers: .command)
+            .opacity(0).allowsHitTesting(false)
+    }
+
     /// Duch przeciąganego Building Blocku (miernik DSP jedzie w obrazku wiersza listy).
     @ViewBuilder
     private var blockGhostOverlayView: some View {
         if let hover = blockHover, let block = BuildingBlockDragData.block(at: hover.url) {
-            BlockDropGhost(block: block, hover: hover, area: area, rowOffset: rowOffset, zoom: zoom)
+            BlockDropGhost(modules: block.modules(in: area), column: hover.column, row: hover.row,
+                           rowOffset: rowOffset, zoom: zoom)
         }
+    }
+
+    /// Moduły po ⌘V przy kursorze — obrysy tam, gdzie klik je położy.
+    @ViewBuilder
+    private var pasteGhostOverlayView: some View {
+        if let content = selection.pendingPaste, hoverInCanvas {
+            let grid = PatchLayout.gridPosition(at: CGPoint(x: hoverScreenPt.x / zoom, y: hoverScreenPt.y / zoom),
+                                                rowOffset: rowOffset)
+            BlockDropGhost(modules: content.ghostModules(in: area), column: grid.column, row: grid.row,
+                           rowOffset: rowOffset, zoom: zoom)
+        }
+    }
+
+    /// ⌘V (klawisz, Edit ▸ Paste, menu pod prawym klawiszem): moduły ze schowka zawisają
+    /// przy kursorze, klik w kanwę je kładzie — jak u Clavii (`BeginKeybPasteOperation`).
+    func beginPendingPaste() {
+        guard let content = G2ClipboardContent.readFromPasteboard(), !content.modules.isEmpty else { return }
+        selection.pendingPaste = content
+    }
+
+    /// Klik przy czekającym wklejeniu: lewy górny róg grupy w polu pod kursorem.
+    /// `true` = klik zużyty na wklejenie.
+    func placePendingPaste(at point: CGPoint) -> Bool {
+        guard let content = selection.pendingPaste else { return false }
+        selection.pendingPaste = nil
+        let grid = PatchLayout.gridPosition(at: point, rowOffset: rowOffset)
+        if let ids = onPasteModules?(content, grid.column, grid.row), !ids.isEmpty {
+            selectedModuleIDs = ids
+            selectedCables.removeAll()
+            activeModuleID = nil
+        }
+        return true
     }
 
     /// Prawy klawisz na przycisku wielostanowym i dwuklik gałki (pole wartości).

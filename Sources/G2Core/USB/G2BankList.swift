@@ -118,6 +118,28 @@ public struct G2BankGroup: Sendable, Equatable, Identifiable {
         let kind: UInt8
         let bank: Int
     }
+
+    /// Ile banków ma Nord: 32 banki patchy i 8 banków performance'ów, każdy po 128 miejsc
+    /// (instrukcja, Bank Upload / Bank Download).
+    public static func bankCount(_ kind: G2BankEntry.Kind) -> Int {
+        kind == .patch ? 32 : 8
+    }
+
+    public static let locationsPerBank = 128
+
+    /// Banki bez żadnej pozycji — lista z urządzenia ich nie zawiera, więc `grouped`
+    /// ich nie pokaże. Panel trzyma je w zwiniętej grupie „Empty Banks” (decyzja
+    /// użytkownika 2026-11-04). Najpierw patche, potem performance'y, rosnąco.
+    public static func emptyBanks(_ entries: [G2BankEntry], kinds: [G2BankEntry.Kind] = [.patch, .performance])
+        -> [G2BankGroup]
+    {
+        let used = Set(entries.map { BankKey(kind: $0.kind.rawValue, bank: $0.bank) })
+        return kinds.flatMap { kind in
+            (0 ..< bankCount(kind))
+                .filter { !used.contains(BankKey(kind: kind.rawValue, bank: $0)) }
+                .map { G2BankGroup(kind: kind, bank: $0, entries: []) }
+        }
+    }
 }
 
 /// Bank z Norda na dysk w układzie Clavii — „Synth ▸ Bank Upload (From Modular)”
@@ -172,6 +194,84 @@ public enum G2BankDump {
         }
         return Data((lines.joined(separator: "\r\n") + "\r\n").utf8)
     }
+
+    /// Linie listy `.pchList` jako (bank, miejsce, plik), liczone od 0. Po dwukropku należy
+    /// do formatu tylko JEDNA spacja — nazwy plików potrafią mieć podwójne w środku
+    /// („FATBass  NL2”). Nagłówek i linie nie do odczytania są pomijane.
+    public static func parseList(_ data: Data) -> [(bank: Int, location: Int, file: String)] {
+        String(decoding: data, as: UTF8.self).components(separatedBy: .newlines).compactMap { line in
+            let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, let bank = Int(parts[0]), let location = Int(parts[1]),
+                  bank >= 1, location >= 1 else { return nil }
+            let file = String(parts[2].hasPrefix(" ") ? parts[2].dropFirst() : parts[2])
+            return (bank - 1, location - 1, file)
+        }
+    }
+
+    /// Co Synth ▸ Upload Banks to G2… wgra z folderu do jednego banku.
+    public struct UploadPlan: Sendable, Equatable {
+        public var items: [G2BankUploadItem] = []
+        /// Pliki drugiego rodzaju (`.prf2` przy banku patchy i odwrotnie) — idą do innego banku.
+        public var otherKindCount = 0
+        /// Pliki, które się nie zmieściły (powyżej 128) albo których lista nie umiała umieścić.
+        public var leftOut: [String] = []
+        /// Miejsca wzięte z listy `.pchList`, a nie z kolejności alfabetycznej.
+        public var fromList = false
+    }
+
+    /// Plan wgrania folderu do banku. Gdy w folderze leży `.pchList` (kopia z Norda albo bank
+    /// Clavii), miejsca są z niej — numer banku z listy się pomija, bank wybiera użytkownik.
+    /// Bez listy pliki idą po kolei od miejsca 1, w kolejności Findera (`2` przed `10`).
+    public static func uploadPlan(folder: URL, kind: G2BankEntry.Kind) throws -> UploadPlan {
+        let ext = fileExtension(kind)
+        let otherExt = fileExtension(kind == .patch ? .performance : .patch)
+        let contents = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { !$0.lastPathComponent.hasPrefix(".") }
+        var plan = UploadPlan()
+        plan.otherKindCount = contents.filter { $0.pathExtension.lowercased() == otherExt }.count
+        let name = { (file: URL) in G2PatchName.sanitized(file.deletingPathExtension().lastPathComponent) }
+
+        if let list = contents.filter({ $0.pathExtension == "pchList" })
+            .min(by: { $0.lastPathComponent < $1.lastPathComponent })
+        {
+            plan.fromList = true
+            var used: Set<Int> = []
+            for line in try parseList(Data(contentsOf: list)) {
+                let file = folder.appendingPathComponent(line.file)
+                guard file.pathExtension.lowercased() == ext else { continue }
+                guard line.location < G2BankGroup.locationsPerBank, !used.contains(line.location),
+                      FileManager.default.fileExists(atPath: file.path)
+                else {
+                    plan.leftOut.append(line.file)
+                    continue
+                }
+                used.insert(line.location)
+                plan.items.append(G2BankUploadItem(location: line.location, file: file, name: name(file)))
+            }
+            plan.items.sort { $0.location < $1.location }
+            return plan
+        }
+
+        let files = contents.filter { $0.pathExtension.lowercased() == ext }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        for (index, file) in files.enumerated() {
+            if index < G2BankGroup.locationsPerBank {
+                plan.items.append(G2BankUploadItem(location: index, file: file, name: name(file)))
+            } else {
+                plan.leftOut.append(file.lastPathComponent)
+            }
+        }
+        return plan
+    }
+}
+
+/// Jeden plik z planu `G2BankDump.uploadPlan`.
+public struct G2BankUploadItem: Sendable, Equatable {
+    /// Miejsce w banku, od 0.
+    public let location: Int
+    public let file: URL
+    /// Nazwa w banku — z nazwy pliku, bo `.pch2` swojej nie ma.
+    public let name: String
 }
 
 /// Skąd urządzenie ma podać dalszy ciąg listy.
@@ -246,6 +346,30 @@ public extension G2UsbProtocol {
         guard bytes.count >= 6, bytes[bytes.count - 6] == subResponseStore else { return nil }
         return bytes[bytes.count - 1]
     }
+
+    /// SUB_COMMAND (0x0C, Flash Delete Command / BVerhue `S_CLEAR`) — **skasuj jedno miejsce
+    /// w banku**: `[typ 0 patch / 1 performance][bank][miejsce][0]`. Dwa źródła zgodne:
+    /// oryginalny edytor (Flash Delete Command) i BVerhue `AddMsgClearMessage`.
+    /// Odpowiedź: podkomenda `0x15`, a na jej końcu wynik flasha `0x0D` jak przy zapisie
+    /// (zmierzone na wirtualnym G2 2026-11-04, wynik 5) → [[Docs/usb/bank-dump]].
+    static func deleteFromBankPayload(kind: G2BankEntry.Kind, bank: Int, location: Int) -> [UInt8] {
+        [commandTag, commandReqSys, 0x41, subDeleteFromBank, kind.rawValue, UInt8(bank), UInt8(location), 0]
+    }
+
+    /// SUB_COMMAND (0x0E, Flash Delete Range Command / BVerhue `S_CLEAR_BANK`) — **skasuj
+    /// miejsca od–do w jednym banku**: `[typ][bank][od][bank][do][0]`. Cały bank = 0…127.
+    /// Odpowiedź: podkomenda `0x12` z wynikiem `0x0D` na końcu (wirtualny G2, wynik 5).
+    static func deleteBankRangePayload(kind: G2BankEntry.Kind, bank: Int, from: Int, to: Int) -> [UInt8] {
+        [commandTag, commandReqSys, 0x41, subDeleteBankRange, kind.rawValue,
+         UInt8(bank), UInt8(from), UInt8(bank), UInt8(to), 0]
+    }
+
+    static let subDeleteFromBank: UInt8 = 0x0C
+    static let subDeleteBankRange: UInt8 = 0x0E
+    /// Podkomendy, którymi urządzenie odpowiada na kasowanie (zmierzone, znaczenie poza
+    /// wynikiem `0x0D` na końcu nieopisane).
+    static let subResponseDeleted: UInt8 = 0x15
+    static let subResponseRangeDeleted: UInt8 = 0x12
 
     static func storeSucceeded(_ result: UInt8) -> Bool {
         [0, 2, 5].contains(result)

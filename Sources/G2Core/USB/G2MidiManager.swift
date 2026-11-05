@@ -651,6 +651,12 @@ public actor G2MidiManager {
             patch.name = G2UsbProtocol.decodePatchName(nameResponse.payload)
         }
 
+        // Notatnik też osobno (`0x6E` → `0x6F`) — zrzut slotu go nie niesie, a bez tego
+        // slot przejęty z Norda zapisywał się bez notatek (#177). `try?` jak przy nazwie.
+        if let notes = try? await readTextpadNow(slot) {
+            patch.notes = notes
+        }
+
         patches[Int(slot)] = patch
         return patch
     }
@@ -774,6 +780,30 @@ public actor G2MidiManager {
             // synchronizacji edytora, czyli `7D 00`. Bez tego Nord przestawał nadawać diody
             // i wskaźniki aż do wyłączenia (#163, log z 2026-10-27).
             _ = try? await performStep(G2UsbProtocol.startPayload())
+        }
+    }
+
+    /// Synth ▸ Send Controller Snapshot — wartości gałek slotu przypisanych do CC idą
+    /// z Norda przez MIDI OUT (`0x55`). Wersja slotu jak przy każdej komendzie slotu.
+    public func sendControllerSnapshot(slot: UInt8) async throws {
+        guard transport != nil else { throw G2UsbError.notConnected }
+        try await withPollingPaused {
+            guard try await performWrite(
+                G2UsbProtocol.controllerSnapshotPayload(slot: slot, version: slotVersions[Int(slot)]),
+                label: "ControllerSnapshot slot \(slot)"
+            ) else {
+                throw G2UsbError.badResponse("Controller Snapshot not acknowledged")
+            }
+        }
+    }
+
+    /// Synth ▸ Dump One — Nord wysyła zrzut SysEx aktywnego slotu przez MIDI OUT (`0x3D`).
+    public func requestMidiDump() async throws {
+        guard transport != nil else { throw G2UsbError.notConnected }
+        try await withPollingPaused {
+            guard try await performWrite(G2UsbProtocol.midiDumpPayload(), label: "MidiDump") else {
+                throw G2UsbError.badResponse("Dump One not acknowledged")
+            }
         }
     }
 
@@ -996,15 +1026,11 @@ public actor G2MidiManager {
                         {
                             let knobs = try await readGlobalKnobMapNow()
                             try PatchParser.parseUsbGlobalKnobMap(section: knobs, into: &header.settings)
-                            for index in read.indices {
-                                read[index].notes = try await readTextpadNow(UInt8(index))
-                            }
                             return (read, header)
                         }
-                    } else if var read = try await readPatchSlot(slot),
+                    } else if let read = try await readPatchSlot(slot),
                               read.name.trimmingCharacters(in: .whitespaces) == expected
                     {
-                        read.notes = try await readTextpadNow(slot)
                         return ([read], nil)
                     }
                     try await Task.sleep(nanoseconds: 400_000_000)
@@ -1018,15 +1044,17 @@ public actor G2MidiManager {
     /// `slot` 0–3 to sloty, **4 znaczy performance**. Zwraca kod wyniku z `R_STORE`
     /// (znaczenie: `G2UsbProtocol.storeResult`).
     ///
-    /// ⛔ **Tylko wirtualny G2** (decyzja 2026-09-17): zapis nadpisuje miejsce w banku
-    /// bez pytania, a na prawdziwym Nordzie ta komenda nie była jeszcze sprawdzona
+    /// ⛔ Domyślnie **tylko wirtualny G2** (decyzja 2026-09-17): zapis nadpisuje miejsce
+    /// w banku bez pytania. `allowHardware` przepuszcza prawdziwego Norda — od 2026-11-04
+    /// wyłącznie dla okien, w których użytkownik sam wskazuje miejsce albo bank: Synth ▸
+    /// Save In Synth… i Upload Banks to G2…. Sonda (`--storebanks`) zostaje przy emulatorze
     /// → [[Docs/usb/bank-dump]].
     ///
     /// Jedna próba, bez ponawiania: ponowiona komenda zapisałaby to samo miejsce drugi raz.
     /// Czas czekania długi, bo zapis do banku kasuje i programuje pamięć urządzenia.
-    public func storeToBank(slot: UInt8, bank: Int, patch: Int) async throws -> UInt8 {
+    public func storeToBank(slot: UInt8, bank: Int, patch: Int, allowHardware: Bool = false) async throws -> UInt8 {
         guard transport != nil else { throw G2UsbError.notConnected }
-        guard isEmulator else {
+        guard isEmulator || allowHardware else {
             throw G2UsbError.badResponse("writing to banks is only allowed on the virtual G2")
         }
         return try await withPollingPaused {
@@ -1040,6 +1068,85 @@ public actor G2MidiManager {
                                                          subCommand: response.subCommand ?? 0)
             else {
                 throw G2UsbError.badResponse("no bank store result (0x0D)")
+            }
+            return result
+        }
+    }
+
+    /// Plik z dysku na miejsce w banku: najpierw do slotu (`0x37`, patch do `slot`;
+    /// `.prf2` jako cały performance), potem `storeToBank`. `name` trafia do banku — plik
+    /// `.pch2` nazwy nie niesie. Wspólne dla Synth ▸ Upload Banks to G2… i sondy
+    /// `--storebanks`; ta sama furtka `allowHardware` co przy `storeToBank`, sprawdzana
+    /// przed wysyłką, żeby bez zgody nawet slot Norda nie został nadpisany.
+    public func storeFileToBank(fileData: Data, name: String, performance: Bool, slot: UInt8,
+                                bank: Int, location: Int, allowHardware: Bool = false) async throws -> UInt8
+    {
+        guard transport != nil else { throw G2UsbError.notConnected }
+        guard isEmulator || allowHardware else {
+            throw G2UsbError.badResponse("writing to banks is only allowed on the virtual G2")
+        }
+        let parsed = try PatchParser.parseFile(data: fileData)
+        if performance {
+            guard parsed.patches.count == G2UsbProtocol.maxSlots else {
+                throw G2UsbError.badResponse("the performance file does not have four slots")
+            }
+            try await sendCompletePerformanceDump(
+                name: G2PatchName.sanitized(name),
+                headerSection: PatchParser.performanceSectionStream(fileData: fileData),
+                slotStreams: (0 ..< G2UsbProtocol.maxSlots).map {
+                    try PatchParser.slotSectionStream(fileData: fileData, slot: $0)
+                },
+                knobMapSection: PatchParser.performanceKnobMapStream(fileData: fileData),
+                patches: parsed.patches
+            )
+        } else {
+            // Tą samą drogą co otwarcie pliku w edytorze: brakujące parametry uzupełnione,
+            // strumień z pliku po `saveAll`.
+            let patches = parsed.patches.map { patch in
+                var patch = patch
+                patch.fillMissingParameters()
+                return patch
+            }
+            guard var patch = patches.first else {
+                throw G2UsbError.badResponse("the file has no patch")
+            }
+            let current = try PatchParser.saveAll(originalData: fileData, patches: patches,
+                                                  performance: parsed.performance)
+            patch.name = G2PatchName.sanitized(name)
+            try await sendPatch(patch, toSlot: slot,
+                                sectionStream: PatchParser.slotSectionStream(fileData: current, slot: 0))
+        }
+        return try await storeToBank(slot: performance ? 4 : slot, bank: bank, patch: location,
+                                     allowHardware: allowHardware)
+    }
+
+    /// Kasowanie w banku: jedno miejsce (`0x0C`) albo zakres `from…to` jednego banku (`0x0E`).
+    /// Zwraca kod wyniku flasha (jak `storeToBank`). Bez `allowHardware` tylko wirtualny G2 —
+    /// na Nordzie kasuje wyłącznie panel Banks po potwierdzeniu użytkownika
+    /// → [[Docs/usb/bank-dump]]. Jedna próba: kasowanie się nie ponawia.
+    public func deleteFromBank(kind: G2BankEntry.Kind, bank: Int, from: Int, to: Int? = nil,
+                               allowHardware: Bool = false) async throws -> UInt8
+    {
+        guard transport != nil else { throw G2UsbError.notConnected }
+        guard isEmulator || allowHardware else {
+            throw G2UsbError.badResponse("deleting from banks is only allowed on the virtual G2")
+        }
+        let range = to.map { $0 != from } ?? false
+        let payload = range
+            ? G2UsbProtocol.deleteBankRangePayload(kind: kind, bank: bank, from: from, to: to ?? from)
+            : G2UsbProtocol.deleteFromBankPayload(kind: kind, bank: bank, location: from)
+        return try await withPollingPaused {
+            let response = try await performStep(
+                payload,
+                expectSub: [G2UsbProtocol.subResponseDeleted, G2UsbProtocol.subResponseRangeDeleted,
+                            G2UsbProtocol.subResponseStore],
+                timeout: 30.0, outerRetries: 1
+            )
+            guard let response,
+                  let result = G2UsbProtocol.storeResult(payload: response.payload,
+                                                         subCommand: response.subCommand ?? 0)
+            else {
+                throw G2UsbError.badResponse("no bank delete result (0x0D)")
             }
             return result
         }
@@ -1812,6 +1919,13 @@ public actor G2MidiManager {
                 continue
             }
             patches[Int(answeredSlot)].name = G2UsbProtocol.decodePatchName(response.payload)
+        }
+        // Notatki slotów (`0x6E`) — tak samo jak w `readPatchSlot`; bez nich edytor
+        // przejmujący zawartość Norda przy połączeniu gubił je przy zapisie (#177).
+        for slot in UInt8(0) ..< UInt8(G2UsbProtocol.maxSlots) {
+            if let notes = try? await readTextpadNow(slot) {
+                patches[Int(slot)].notes = notes
+            }
         }
         try await performStep(G2UsbProtocol.startPayload())
     }

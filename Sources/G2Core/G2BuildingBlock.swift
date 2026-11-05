@@ -117,7 +117,8 @@ public extension G2Patch {
             let blockModules = source.modules(in: area)
             guard !blockModules.isEmpty else { continue }
             let columnShift = max(0, column) - (blockModules.map(\.column).min() ?? 0)
-            let targetRow = area == dropArea ? max(0, row) : bottomRow(in: area)
+            let targetRow = area == dropArea
+                ? insertionRow(for: row, column: column, in: area) : bottomRow(in: area)
             let rowShift = targetRow - (blockModules.map(\.row).min() ?? 0)
 
             var usedIDs = Set(modules(in: area).map(\.id))
@@ -431,7 +432,7 @@ public extension G2Patch {
     /// Robi miejsce na wstawiane moduły: każdy dotychczasowy moduł, na który nachodzą,
     /// zjeżdża pod nie, a za nim kaskadą to, na co on z kolei najedzie. Układ samego
     /// bloku się nie zmienia.
-    private mutating func makeRoom(for incoming: [G2Module], in area: PatchArea) {
+    mutating func makeRoom(for incoming: [G2Module], in area: PatchArea) {
         var existing = modules(in: area)
         for column in Set(incoming.map(\.column)) {
             var occupied = incoming

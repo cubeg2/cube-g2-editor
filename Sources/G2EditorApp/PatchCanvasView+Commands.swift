@@ -117,9 +117,7 @@ extension PatchCanvasView {
             }
 
             Button("Paste") {
-                if let content = G2ClipboardContent.readFromPasteboard() {
-                    onPasteModules?(content)
-                }
+                beginPendingPaste()
             }
             // Świadomie NIE rozpakowujemy tu schowka. AppKit odpytuje otwarte menu
             // o stan pozycji na bieżąco, a `readFromPasteboard` dekoduje przy każdym
@@ -250,6 +248,19 @@ extension PatchCanvasView {
     }
 
     // MARK: - Delete
+
+    /// Delete / Backspace: zaznaczone kable odpina jak „Disconnect", zaznaczone moduły kasuje.
+    /// Gdy zaznaczone są same kable, aktywny moduł zostaje — bez tego Delete na kablach
+    /// kasowałby przy okazji ostatnio kliknięty moduł.
+    func deleteSelection() {
+        let cablesToDrop = selectedCables
+        if !cablesToDrop.isEmpty {
+            selectedCables.removeAll()
+            commands.disconnectCables?(cablesToDrop)
+            guard !selectedModuleIDs.isEmpty else { return }
+        }
+        deleteSelectedModules()
+    }
 
     /// Usuwa zaznaczoną grupę albo pojedynczy moduł wskazany z menu/aktywnego stanu.
     func deleteSelectedModules(targetID: Int? = nil) {

@@ -11,7 +11,9 @@ extension PatchCanvasView {
         for m in modules {
             byID[m.id] = m
         }
-        let highlighted = highlightedChain()
+        // Kable zaznaczone ⇧-klikiem świecą tak samo jak łańcuch pod kursorem
+        // (decyzja użytkownika 2026-11-04).
+        let highlighted = highlightedChain() + (isPreviewMode ? [] : selectedCables)
         // Przy dużym powiększeniu kanwa rysuje się kafelkami — kabel spoza kafelka pomijamy.
         let clip = ctx.clipBoundingRect
 

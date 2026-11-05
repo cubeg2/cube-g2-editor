@@ -567,6 +567,20 @@ final class PatchStateTests: XCTestCase {
         XCTAssertEqual(state.slotFileURLs[0], fixtureURL("simplesynth001-20240802.pch2"))
     }
 
+    /// Synth ▸ Get Active Slot from G2: użytkownik sam prosi o patch z Norda, więc slot
+    /// z otwartym plikiem też go dostaje — i przestaje być tym plikiem.
+    func testUploadActiveSlotReplacesEvenAFileNotSentToTheNord() {
+        let state = makeState()
+        state.load(url: fixtureURL("simplesynth001-20240802.pch2"))
+        XCTAssertFalse(state.mirrorsDevice)
+
+        state.replaceSlotFromDevice(slot: 0, patch: namedPatch("Nord 0"), force: true)
+
+        XCTAssertEqual(state.slots[0].name, "Nord 0")
+        XCTAssertNil(state.slotFileURLs[0])
+        XCTAssertFalse(state.hasUnsavedChanges)
+    }
+
     func testDeviceTakesOverAfterFileWentToTheNord() {
         let state = makeState()
         state.load(url: fixtureURL("simplesynth001-20240802.pch2"))
@@ -600,6 +614,19 @@ final class PatchStateTests: XCTestCase {
         state.loadFromDevice(patches: [namedPatch("Nord 0")])
 
         XCTAssertEqual(state.slots.map(\.name), ["Nord 0", "No name", "No name", "No name"])
+    }
+
+    /// Performance z banku Norda ma w tytule swoją nazwę, jak `.prf2` z dysku — nie „Nord G2”.
+    func testDeviceContentTitleIsThePerformanceName() {
+        let state = makeState()
+        state.loadFromDevice(patches: [namedPatch("Nord 0")], performanceName: "Techno machine")
+        XCTAssertEqual(state.title, "Techno machine")
+
+        state.replaceSlotsFromDevice(patches: [namedPatch("Nord 1")], performanceName: "Devine 12")
+        XCTAssertEqual(state.title, "Devine 12")
+
+        state.replaceSlotsFromDevice(patches: [namedPatch("Nord 2")], performanceName: "")
+        XCTAssertEqual(state.title, "Nord G2", "bez nazwy z Norda zostaje nazwa zawartości")
     }
 
     // MARK: - New Patch / New Performance
@@ -971,6 +998,26 @@ final class PatchStateTests: XCTestCase {
                                    value: (module.parameters[0] + 1) % 128, variation: 0)
 
         XCTAssertFalse(state.hasUnsavedChanges)
+    }
+
+    /// Gałka kręcona na Nordzie zostaje zapamiętana z pełnym adresem — kanwa daje jej focus.
+    func testDeviceParameterRemembersTouchedKnob() throws {
+        let state = makeState()
+        state.load(url: fixtureURL("simplesynth001-20240802.pch2"))
+        let module = try XCTUnwrap(state.patch.voiceModules.first { $0.parameters.count > 1 })
+        XCTAssertNil(state.deviceParameterTouch)
+
+        state.applyDeviceParameter(slot: 0, area: .voice, moduleID: module.id, paramIndex: 1,
+                                   value: module.parameters[1], variation: 0)
+
+        let touch = try XCTUnwrap(state.deviceParameterTouch)
+        XCTAssertEqual([touch.slot, touch.moduleID, touch.paramIndex], [0, module.id, 1])
+        XCTAssertEqual(touch.area, .voice)
+
+        // Ta sama gałka kręcona dalej — nowy numer, żeby kanwa odświeżyła jej ramkę.
+        state.applyDeviceParameter(slot: 0, area: .voice, moduleID: module.id, paramIndex: 1,
+                                   value: module.parameters[1], variation: 0)
+        XCTAssertEqual(state.deviceParameterTouch?.serial, touch.serial + 1)
     }
 
     /// Slot z otwartego `.prf2` nie ma własnego pliku — o jego zmiany pyta pytanie

@@ -11,6 +11,7 @@
 // połowa ma własne zaznaczenie, tak jak własny zoom → [[Docs/ui/top-bar]].
 
 import G2Core
+import G2EditorCore
 import Observation
 
 @MainActor
@@ -21,6 +22,12 @@ final class CanvasSelection {
     /// Ostatnio kliknięty moduł — rysowany inaczej niż reszta zaznaczenia i cel poleceń,
     /// gdy zaznaczenia nie ma wcale.
     var activeID: Int?
+    /// Kable zaznaczone ⇧-klikiem — Delete odpina je jak „Disconnect". Porównywane przez
+    /// `connectsSameAs`, bo kabel nie ma własnego numeru.
+    var cables: [G2Cable] = []
+    /// Moduły po ⌘V czekające na klik w kanwę — wiszą obrysami przy kursorze, klik je kładzie,
+    /// Esc odkłada (jak u Clavii: wklejenie to przeciąganie zaczęte z klawiatury).
+    var pendingPaste: G2ClipboardContent?
 
     var isEmpty: Bool {
         moduleIDs.isEmpty && activeID == nil
@@ -36,6 +43,16 @@ final class CanvasSelection {
     func clear() {
         moduleIDs = []
         activeID = nil
+        cables = []
+    }
+
+    /// ⇧-klik na kablu: dołącza go do zaznaczenia albo z niego wyjmuje.
+    func toggle(cable: G2Cable) {
+        if let index = cables.firstIndex(where: { $0.connectsSameAs(cable) }) {
+            cables.remove(at: index)
+        } else {
+            cables.append(cable)
+        }
     }
 }
 

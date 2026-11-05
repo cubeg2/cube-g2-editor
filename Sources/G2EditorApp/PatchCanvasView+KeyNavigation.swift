@@ -15,7 +15,7 @@ import G2EditorCore
 import SwiftUI
 
 /// Kontrolka, której dotyczą strzałki.
-struct ParameterFocus: Equatable {
+struct ParameterFocus: Hashable {
     let moduleID: Int
     let paramIndex: Int
 }
@@ -140,15 +140,42 @@ extension PatchCanvasView {
     /// gdy focus w ogóle jest.
     @ViewBuilder
     var parameterFocusOverlay: some View {
-        if !isPreviewMode, let focus = focusedParam, let rect = focusRect(focus) {
-            Canvas { ctx, _ in
-                ctx.scaleBy(x: zoom, y: zoom)
-                ctx.stroke(Path(roundedRect: rect.insetBy(dx: -1.2, dy: -1.2), cornerRadius: 1.5),
-                           with: .color(Color.accentColor.opacity(0.9)),
-                           style: StrokeStyle(lineWidth: 0.6))
+        if !isPreviewMode, let focus = focusedParam {
+            // „Maszerujące mrówki”: przerywana ramka, która powoli obiega gałkę — cienka
+            // jednolita zlewała się z modułem (Kuba, 2026-11-05). Obok focusu ramkę mają
+            // wszystkie gałki ruszone na Nordzie w ostatnich sekundach: kręcone naraz
+            // nie przerzucają jednej ramki tam i z powrotem.
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                let now = timeline.date
+                let phase = (now.timeIntervalSinceReferenceDate * 6).truncatingRemainder(dividingBy: 6)
+                let recent = deviceTouchedAt.filter { now.timeIntervalSince($0.value) < Self.deviceTouchHold }.keys
+                let rects = Set(recent).union([focus]).compactMap { focusRect($0) }
+                Canvas { ctx, _ in
+                    ctx.scaleBy(x: zoom, y: zoom)
+                    for rect in rects {
+                        let path = Path(roundedRect: rect.insetBy(dx: -1.5, dy: -1.5), cornerRadius: 2)
+                        ctx.stroke(path, with: .color(Color.accentColor),
+                                   style: StrokeStyle(lineWidth: 1.2, dash: [3, 3], dashPhase: -phase))
+                    }
+                }
             }
             .allowsHitTesting(false)
         }
+    }
+
+    /// Jak długo gałka ruszona na Nordzie trzyma ramkę obok focusu.
+    static let deviceTouchHold: TimeInterval = 3
+
+    /// Gałka kręcona na Nordzie: focus (strzałki) idzie za ostatnią, a ramkę dostaje
+    /// każda ruszona w ostatnich `deviceTouchHold` sekundach.
+    func applyDeviceTouch(_ touch: PatchState.DeviceParameterTouch?) {
+        guard let touch, !isPreviewMode else { return }
+        let focus = ParameterFocus(moduleID: touch.moduleID, paramIndex: touch.paramIndex)
+        let now = Date()
+        deviceTouchedAt = deviceTouchedAt.filter { now.timeIntervalSince($0.value) < Self.deviceTouchHold }
+        deviceTouchedAt[focus] = now
+        focusedParam = focus
+        activeModuleID = touch.moduleID
     }
 
     /// Prostokąt kontrolki z focusem w układzie canvasu.

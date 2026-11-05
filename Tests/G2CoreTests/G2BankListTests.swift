@@ -131,6 +131,36 @@ final class G2BankListTests: XCTestCase {
         XCTAssertEqual(groups[0].entries.map(\.patch), [0, 1, 2])
     }
 
+    /// Puste banki: 32 patchy + 8 performance'ów minus te, które mają choć jedną pozycję.
+    func testEmptyBanksAreTheOnesTheDeviceListLeavesOut() {
+        let empty = G2BankGroup.emptyBanks(sample)
+        XCTAssertEqual(empty.count, 30 + 7)
+        XCTAssertEqual(empty.first?.kind, .patch)
+        XCTAssertEqual(empty.first?.bank, 2, "banki 1 i 2 mają patche")
+        XCTAssertEqual(empty.last?.kind, .performance)
+        XCTAssertEqual(empty.last?.bank, 7)
+        XCTAssertFalse(empty.contains { $0.kind == .performance && $0.bank == 0 })
+        XCTAssertEqual(G2BankGroup.emptyBanks(sample, kinds: [.performance]).count, 7)
+        XCTAssertEqual(G2BankGroup.emptyBanks([]).count, 40)
+    }
+
+    /// Bajty zmierzone na wirtualnym G2 2026-11-04 (`USBProbe --send`).
+    func testDeletePayloadsMatchTheMeasuredCommands() {
+        XCTAssertEqual(G2UsbProtocol.deleteFromBankPayload(kind: .patch, bank: 0, location: 2),
+                       [0x01, 0x2C, 0x41, 0x0C, 0x00, 0x00, 0x02, 0x00])
+        XCTAssertEqual(G2UsbProtocol.deleteBankRangePayload(kind: .patch, bank: 1, from: 0, to: 127),
+                       [0x01, 0x2C, 0x41, 0x0E, 0x00, 0x01, 0x00, 0x01, 0x7F, 0x00])
+        XCTAssertEqual(G2UsbProtocol.deleteFromBankPayload(kind: .performance, bank: 7, location: 127)[4], 0x01)
+        // Odpowiedzi z pomiaru: wynik flasha 0x0D na końcu, 5 = OK.
+        XCTAssertEqual(G2UsbProtocol.storeResult(
+            payload: [0x00, 0x00, 0x02, 0x13, 0x1E, 0x02, 0x0D, 0x00, 0x00, 0x02, 0x00, 0x05], subCommand: 0x15
+        ), 5)
+        XCTAssertEqual(G2UsbProtocol.storeResult(
+            payload: [0x00, 0x01, 0x00, 0x01, 0x7F, 0x13, 0x50, 0x01, 0x0D, 0x00, 0x01, 0x00, 0x00, 0x05],
+            subCommand: 0x12
+        ), 5)
+    }
+
     func testSortingByNameAndCategoryStaysInsideTheBank() {
         let byName = G2BankGroup.grouped(sample, sort: .name)
         XCTAssertEqual(byName[0].entries.map(\.name), ["-- Welcome G2 --", "Accordion", "BackTo72"])
@@ -179,5 +209,70 @@ final class G2BankListTests: XCTestCase {
             "Pad.pch2", "pad 2.pch2", "Pad 3.pch2", "A-B-C.pch2", "_hidden.pch2",
             "FATBass  NL2.pch2", "Arp.prf2",
         ])
+    }
+
+    // MARK: - Upload Banks to G2 — folder do jednego banku (2026-11-04)
+
+    private func folder(_ files: [String: String]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bankplan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        for (name, text) in files {
+            try Data(text.utf8).write(to: url.appendingPathComponent(name))
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    /// Bez listy: kolejność Findera („2” przed „10”), od miejsca 1; nazwa w banku z nazwy
+    /// pliku, najwyżej 16 znaków; `.prf2` liczone osobno, ukryte pliki pomijane.
+    func testUploadPlanWithoutListFillsTheBankInFinderOrder() throws {
+        let url = try folder(["Pad 10.pch2": "", "Pad 2.pch2": "", "Sound FX & textures FM4.pch2": "",
+                              "Techno machine.prf2": "", "._Pad 2.pch2": "", "notes.txt": ""])
+        let plan = try G2BankDump.uploadPlan(folder: url, kind: .patch)
+
+        XCTAssertFalse(plan.fromList)
+        XCTAssertEqual(plan.items.map(\.name), ["Pad 2", "Pad 10", "Sound FX & textu"])
+        XCTAssertEqual(plan.items.map(\.location), [0, 1, 2])
+        XCTAssertEqual(plan.otherKindCount, 1)
+        XCTAssertTrue(plan.leftOut.isEmpty)
+
+        let performances = try G2BankDump.uploadPlan(folder: url, kind: .performance)
+        XCTAssertEqual(performances.items.map(\.name), ["Techno machine"])
+        XCTAssertEqual(performances.otherKindCount, 3)
+    }
+
+    func testUploadPlanLeavesOutWhatDoesNotFitInABank() throws {
+        let files = Dictionary(uniqueKeysWithValues: (1 ... 130).map { ("P\($0).pch2", "") })
+        let plan = try G2BankDump.uploadPlan(folder: folder(files), kind: .patch)
+
+        XCTAssertEqual(plan.items.count, 128)
+        XCTAssertEqual(plan.items.last?.location, 127)
+        XCTAssertEqual(plan.leftOut, ["P129.pch2", "P130.pch2"])
+    }
+
+    /// Z listą `.pchList` miejsca są z listy (bank z listy się pomija), linie bez pliku
+    /// albo z zajętym miejscem trafiają do pominiętych.
+    func testUploadPlanWithListKeepsTheListedLocations() throws {
+        let list = "Version=Nord Modular G2 Bank Dump\r\n3:5: FATBass  NL2.pch2\r\n3:1: CryMe.pch2\r\n"
+            + "3:1: Again.pch2\r\n3:9: Missing.pch2\r\n"
+        let url = try folder(["PatchBank3.pchList": list, "FATBass  NL2.pch2": "", "CryMe.pch2": "",
+                              "Again.pch2": "", "Extra.pch2": ""])
+        let plan = try G2BankDump.uploadPlan(folder: url, kind: .patch)
+
+        XCTAssertTrue(plan.fromList)
+        XCTAssertEqual(plan.items.map(\.location), [0, 4])
+        XCTAssertEqual(plan.items.map(\.name), ["CryMe", "FATBass  NL2"])
+        XCTAssertEqual(plan.leftOut, ["Again.pch2", "Missing.pch2"])
+    }
+
+    func testParsedListIsTheWrittenListBackwards() {
+        let entries = [entry("CryMe", patch: 0), entry("FATBass  NL2", patch: 6)]
+        let list = G2BankDump.listFile(entries: entries, fileNames: G2BankDump.fileNames(for: entries))
+        let parsed = G2BankDump.parseList(list)
+
+        XCTAssertEqual(parsed.map(\.bank), [1, 1])
+        XCTAssertEqual(parsed.map(\.location), [0, 6])
+        XCTAssertEqual(parsed.map(\.file), ["CryMe.pch2", "FATBass  NL2.pch2"])
     }
 }

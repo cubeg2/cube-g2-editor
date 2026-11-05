@@ -66,6 +66,7 @@ struct CanvasPane: View {
             bufferName: state.activeVariationFader(slot: slot) != nil ? "Fader" : "Mutator",
             onCanvasPress: { state.hideVariationFaderChanges(slot: slot) },
             selection: selections.selection(for: area),
+            deviceTouch: state.deviceParameterTouch.flatMap { $0.slot == slot && $0.area == area ? $0 : nil },
             minSize: minSize,
             onParameterChange: { moduleID, paramIndex, value in
                 state.setParameter(moduleID: moduleID,
@@ -122,12 +123,8 @@ struct CanvasPane: View {
             onStructureGestureEnded: {
                 state.endStructureGesture()
             },
-            onMoveModule: { moduleID, newColumn, newRow, push in
-                state.moveModule(moduleID: moduleID,
-                                 newColumn: newColumn,
-                                 newRow: newRow,
-                                 area: area,
-                                 push: push)
+            onMoveModules: { moduleIDs, columns, rows in
+                state.moveModules(moduleIDs, columns: columns, rows: rows, area: area)
             },
             onRenameModule: { moduleID, label in
                 state.renameModule(moduleID: moduleID, label: label, area: area)
@@ -157,8 +154,8 @@ struct CanvasPane: View {
                 state.addModule(typeID: typeID, area: area, column: col, row: row)
                 onModuleAdded(typeID)
             },
-            onPasteModules: { content in
-                state.pasteModules(content, area: area)
+            onPasteModules: { content, column, row in
+                state.pasteModules(content, area: area, column: column, row: row)
             },
             onInsertBlock: { url, column, row in
                 BuildingBlockInsert.insert(url, into: state, area: area, column: column, row: row)
@@ -216,6 +213,7 @@ struct CanvasPane: View {
             assignMidiToModules: { state.assignMidiControllers(toModules: $0, area: area) },
             clearMidiFromModules: { state.clearMidiControllers(forModules: $0, area: area) },
             disconnectCable: { state.disconnectCable($0, area: area) },
+            disconnectCables: { state.disconnectCables($0, area: area) },
             breakCable: { state.breakCable($0, area: area) },
             deleteCableChain: { state.deleteCableChain($0, area: area) },
             setCableColor: { cable, color in

@@ -423,6 +423,13 @@ let storeBanksFolder: String? = {
     return args[index + 1]
 }()
 
+/// `--bank N` (od 1) przy `--storebanks` — cały folder do jednego banku (z `--perf` do banku
+/// performance'ów), tym samym planem co Synth ▸ Upload Banks to G2….
+let bankArgument: Int? = {
+    guard let index = args.firstIndex(of: "--bank"), index + 1 < args.count else { return nil }
+    return Int(args[index + 1])
+}()
+
 /// `--verifyfile <plik.pch2|.prf2>` — porównanie CZTERECH slotów urządzenia z plikiem.
 /// Nic nie wysyła: czyta sloty przy handshake'u i sprawdza, czy leży w nich to, co w pliku.
 /// Do sprawdzania wgrań zrobionych z aplikacji — „OK" w odpowiedzi niczego nie dowodzi.
@@ -933,7 +940,7 @@ do {
     }
     for (slot, patch) in patches.enumerated() where !fastConnect {
         let letter = Character(UnicodeScalar(UInt8(65 + slot)))
-        say("Slot \(letter): \"\(patch.name)\" — fx: \(patch.fxModules.count) modułów/\(patch.fxCables.count) kabli, voice: \(patch.voiceModules.count) modułów/\(patch.voiceCables.count) kabli")
+        say("Slot \(letter): \"\(patch.name)\" — fx: \(patch.fxModules.count) modułów/\(patch.fxCables.count) kabli, voice: \(patch.voiceModules.count) modułów/\(patch.voiceCables.count) kabli, notatki: \(patch.notes.count) znaków")
         for module in (patch.fxModules + patch.voiceModules).prefix(5) {
             say("    [\(module.area)] id \(module.id) typeID \(module.typeID) \"\(module.label)\" params: \(module.parameters.prefix(6))…")
         }
@@ -3043,76 +3050,51 @@ do {
             print("⛔ --storebanks działa tylko z wirtualnym G2 — do Norda zapis do banków jest wyłączony.")
             exit(1)
         }
-        struct StoreFailure: Error, CustomStringConvertible { let description: String }
         let root = URL(fileURLWithPath: folder)
-        let lists = (FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
-            .compactMap { $0 as? URL } ?? [])
-            .filter { $0.pathExtension == "pchList" }
-            .sorted { $0.path < $1.path }
-        print("\n--- STOREBANKS: \(lists.count) list(y) banków w \(folder) ---")
+        // `--bank N`: folder (z listą albo bez) do jednego banku — ten sam plan co
+        // Synth ▸ Upload Banks to G2…; bez niego wszystkie listy `.pchList` z drzewa.
+        var jobs: [(bank: Int, location: Int, file: URL, name: String)] = []
+        if let bankArg = bankArgument {
+            let kind: G2BankEntry.Kind = args.contains("--perf") ? .performance : .patch
+            let plan = try G2BankDump.uploadPlan(folder: root, kind: kind)
+            print("\n--- STOREBANK: \(plan.items.count) plik(ów) do banku \(bankArg)"
+                + (plan.fromList ? " według listy" : " po kolei") + ", drugi rodzaj: \(plan.otherKindCount)"
+                + ", pominięte: \(plan.leftOut.count) ---")
+            jobs = plan.items.map { (bankArg - 1, $0.location, $0.file, $0.name) }
+        } else {
+            let lists = (FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
+                .compactMap { $0 as? URL } ?? [])
+                .filter { $0.pathExtension == "pchList" }
+                .sorted { $0.path < $1.path }
+            print("\n--- STOREBANKS: \(lists.count) list(y) banków w \(folder) ---")
+            for list in lists {
+                for line in try G2BankDump.parseList(Data(contentsOf: list)) {
+                    let file = list.deletingLastPathComponent().appendingPathComponent(line.file)
+                    jobs.append((line.bank, line.location, file,
+                                 String(file.deletingPathExtension().lastPathComponent.prefix(16))))
+                }
+            }
+        }
         let started = Date()
         var stored = 0
         var failures: [String] = []
-        for list in lists {
-            let data = try Data(contentsOf: list)
-            let text = String(decoding: data, as: UTF8.self)
-            for line in text.components(separatedBy: .newlines) {
-                let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
-                guard parts.count == 3, let bank = Int(parts[0]), let location = Int(parts[1]),
-                      bank >= 1, location >= 1 else { continue }
-                // Tylko JEDNA spacja po dwukropku należy do formatu — nazwy plików
-                // potrafią mieć podwójne spacje w środku („FATBass  NL2").
-                let fileName = String(parts[2].hasPrefix(" ") ? parts[2].dropFirst() : parts[2])
-                let file = list.deletingLastPathComponent().appendingPathComponent(fileName)
-                let label = "\(bank):\(location) \(fileName)"
-                do {
-                    let fileData = try Data(contentsOf: file)
-                    let parsed = try PatchParser.parseFile(data: fileData)
-                    let name = String(file.deletingPathExtension().lastPathComponent.prefix(16))
-                    let slot: UInt8
-                    if file.pathExtension.lowercased() == "prf2" {
-                        guard parsed.patches.count == G2UsbProtocol.maxSlots else {
-                            throw StoreFailure(description: "performance bez czterech slotów")
-                        }
-                        let header = try PatchParser.performanceSectionStream(fileData: fileData)
-                        let knobs = try PatchParser.performanceKnobMapStream(fileData: fileData)
-                        let streams = try (0 ..< G2UsbProtocol.maxSlots).map {
-                            try PatchParser.slotSectionStream(fileData: fileData, slot: $0)
-                        }
-                        try await manager.sendCompletePerformanceDump(
-                            name: name, headerSection: header, slotStreams: streams, knobMapSection: knobs,
-                            patches: parsed.patches
-                        )
-                        slot = 4
-                    } else {
-                        // Tą samą drogą co `--loadfile` (i edytor): brakujące parametry
-                        // uzupełnione, strumień z pliku po `saveAll`.
-                        let patches = parsed.patches.map { patch in
-                            var patch = patch
-                            patch.fillMissingParameters()
-                            return patch
-                        }
-                        guard var patch = patches.first else {
-                            throw StoreFailure(description: "plik bez patcha")
-                        }
-                        let current = try PatchParser.saveAll(originalData: fileData, patches: patches,
-                                                              performance: parsed.performance)
-                        let stream = try PatchParser.slotSectionStream(fileData: current, slot: 0)
-                        patch.name = name
-                        try await manager.sendPatch(patch, toSlot: 0, sectionStream: stream)
-                        slot = 0
-                    }
-                    let result = try await manager.storeToBank(slot: slot, bank: bank - 1, patch: location - 1)
-                    guard G2UsbProtocol.storeSucceeded(result) else {
-                        throw StoreFailure(description: result == 3 ? "wynik 3 — Flash memory full"
-                            : result == 4 ? "wynik 4 — Memory protect on" : "wynik \(result)")
-                    }
-                    stored += 1
-                    print(String(format: "  ✅ %@  (%.0f s)", label, Date().timeIntervalSince(started)))
-                } catch {
-                    failures.append("\(label): \(error)")
-                    print("  ❌ \(label): \(error)")
+        for job in jobs {
+            let label = "\(job.bank + 1):\(job.location + 1) \(job.file.lastPathComponent)"
+            do {
+                let performance = job.file.pathExtension.lowercased() == "prf2"
+                let result = try await manager.storeFileToBank(
+                    fileData: Data(contentsOf: job.file), name: job.name, performance: performance,
+                    slot: 0, bank: job.bank, location: job.location
+                )
+                guard G2UsbProtocol.storeSucceeded(result) else {
+                    throw G2UsbError.badResponse(result == 3 ? "wynik 3 — Flash memory full"
+                        : result == 4 ? "wynik 4 — Memory protect on" : "wynik \(result)")
                 }
+                stored += 1
+                print(String(format: "  ✅ %@  (%.0f s)", label, Date().timeIntervalSince(started)))
+            } catch {
+                failures.append("\(label): \(error)")
+                print("  ❌ \(label): \(error)")
             }
         }
         print("\nZapisano \(stored), nie wyszło \(failures.count), czas \(Int(Date().timeIntervalSince(started))) s.")
@@ -4360,6 +4342,20 @@ do {
         }
 
         let start = entries.first?.time ?? Date()
+
+        // Zaznaczony parametr (`0x2F`) osobno — w liście niżej tonie pod ruchem gałki.
+        // Obok ostatni ruch gałki przed nim: czy focus idzie za kręconą gałką, czy tylko
+        // za nawigacją po modułach w trybie edycji patcha.
+        let focusNotes = entries.filter { $0.note.subCommand == 0x2F }
+        print("\n--- Zaznaczony parametr (0x2F): \(focusNotes.count) ---")
+        for entry in focusNotes {
+            let lastKnob = knobs.last { $0.time <= entry.time }
+                .flatMap { G2UsbProtocol.decodeParamChange($0.note.payload) }
+                .map { "  (ostatnia gałka: obszar \($0.location) moduł \($0.moduleID) param \($0.paramIndex))" } ?? ""
+            print(String(format: "  %6.2fs  slot %d  [%@]%@", entry.time.timeIntervalSince(start),
+                         Int(entry.note.slot), hexString(entry.note.payload), lastKnob))
+        }
+
         print("\n--- Zdarzenia sterujące (bez VU/LED/DSP) ---")
         var shown = 0
         for entry in entries where !streamSubCommands.contains(entry.note.subCommand) {

@@ -442,15 +442,67 @@ public struct G2Patch: Equatable {
     }
 
     /// Wstawia nowy moduł z priorytetem pozycji i rozsuwa kolidujące moduły w dół.
+    /// Rozsuwa jak Building Block (`makeRoom`), nie przez `resolveCollisions`: tamta kaskada
+    /// przy nowym module zaczynającym się w rzędzie istniejącego potrafiła przestawić kolejność.
     public mutating func insert(module: G2Module) {
+        var module = module
+        module.column = max(0, module.column)
+        module.row = insertionRow(for: module.row, column: module.column, in: module.area)
+        makeRoom(for: [module], in: module.area)
         add(module: module)
-        moveModule(
-            moduleID: module.id,
-            newColumn: module.column,
-            newRow: module.row,
-            in: module.area,
-            push: .down
-        )
+    }
+
+    /// Wkleja grupę modułów (⌘V) lewym górnym rogiem w `column`/`row`, w tym samym układzie,
+    /// i rozsuwa to, na co wpadnie — jak upuszczenie modułu albo bloku. Numery i kable
+    /// ustawia wołający.
+    public mutating func insert(modules incoming: [G2Module], column: Int, row: Int, in area: PatchArea) {
+        guard !incoming.isEmpty else { return }
+        let anchorColumn = max(0, column)
+        let columnShift = anchorColumn - (incoming.map(\.column).min() ?? 0)
+        let rowShift = insertionRow(for: row, column: anchorColumn, in: area) - (incoming.map(\.row).min() ?? 0)
+        let placed = incoming.map { module -> G2Module in
+            var module = module
+            module.area = area
+            module.column += columnShift
+            module.row += rowShift
+            return module
+        }
+        makeRoom(for: placed, in: area)
+        placed.forEach { add(module: $0) }
+    }
+
+    /// Przesuwa moduły przeciągnięte po kanwie (jeden albo zaznaczoną grupę) o `columns`/`rows`.
+    /// Zdejmuje je z dawnego miejsca i kładzie jak wstawiane (`insert(modules:)`): róg w środku
+    /// modułu dociąga do jego bliższej krawędzi, a kolumna rozsuwa się tylko o tyle, ile trzeba —
+    /// jak oryginał przy przenoszeniu (to samo robienie miejsca co przy wstawianiu). Dawne
+    /// `moveModule` + `resolveCollisions` zostawiało przerwę i potrafiło przestawić kolejność.
+    /// Kolejność modułów w pliku zostaje.
+    public mutating func moveModules(_ ids: Set<Int>, columns: Int, rows: Int, in area: PatchArea) {
+        let all = modules(in: area)
+        let moving = all.filter { ids.contains($0.id) }
+        guard let left = moving.map(\.column).min(), let top = moving.map(\.row).min() else { return }
+        let order = Dictionary(uniqueKeysWithValues: all.enumerated().map { ($1.id, $0) })
+        setModules(all.filter { !ids.contains($0.id) }, in: area)
+        insert(modules: moving, column: left + columns, row: top + rows, in: area)
+        setModules(modules(in: area).sorted { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }, in: area)
+    }
+
+    private mutating func setModules(_ modules: [G2Module], in area: PatchArea) {
+        if area == .voice { voiceModules = modules } else { fxModules = modules }
+    }
+
+    /// Wiersz, od którego naprawdę zaczyna się wstawiany moduł (#175). Górny róg puszczony
+    /// w środek istniejącego modułu dociąga się do jego bliższej krawędzi: górna połowa →
+    /// przed nim, dolna → pod nim. Inaczej trafiony moduł skacze pod nowy, nad nowym zostaje
+    /// pusta przerwa, a reszta kolumny zjeżdża o więcej niż wysokość nowego modułu.
+    func insertionRow(for row: Int, column: Int, in area: PatchArea) -> Int {
+        let row = max(0, row)
+        guard let hit = modules(in: area).first(where: {
+            $0.column == max(0, column) && $0.row < row
+                && row < $0.row + (ModuleDatabase.module(id: $0.typeID)?.height ?? 2)
+        }) else { return row }
+        let height = ModuleDatabase.module(id: hit.typeID)?.height ?? 2
+        return (row - hit.row) * 2 <= height ? hit.row : hit.row + height
     }
 
     public mutating func add(cable: G2Cable) {

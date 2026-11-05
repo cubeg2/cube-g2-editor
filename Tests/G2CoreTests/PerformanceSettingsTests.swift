@@ -413,6 +413,14 @@ final class PerformanceSettingsTests: XCTestCase {
                        [0x01, 0x2C, 0x41, 0x3E, 0x00, 0x00])
     }
 
+    /// Send Controller Snapshot i Dump One — bajty, na które Nord odpowiedział danymi
+    /// na MIDI OUT (2026-11-04: slot A w wersji 25 → 9 komunikatów CC; zrzut → 28 SysEx).
+    func testMidiOutRequestPayloads() {
+        XCTAssertEqual(G2UsbProtocol.controllerSnapshotPayload(slot: 0, version: 0x19), [0x01, 0x28, 0x19, 0x55])
+        XCTAssertEqual(G2UsbProtocol.controllerSnapshotPayload(slot: 3, version: 0x06), [0x01, 0x2B, 0x06, 0x55])
+        XCTAssertEqual(G2UsbProtocol.midiDumpPayload(), [0x01, 0x2C, 0x41, 0x3D])
+    }
+
     /// Tryb siedzi w najstarszym bicie bajtu tuż za nazwą urządzenia — nazwa może być
     /// krótsza niż 16 znaków (wtedy kończy ją terminator) albo zająć pełne 16.
     func testPerformanceModeIsReadFromTheByteAfterTheName() {

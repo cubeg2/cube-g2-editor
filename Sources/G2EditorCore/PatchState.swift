@@ -58,6 +58,13 @@ public final class PatchState {
     public var showSynthSettings: Bool = false
     /// Okno Synth ▸ Bank Upload… — tak samo tylko przełącznik, dane bierze z Norda.
     public var showBankUpload: Bool = false
+    /// Okno Synth ▸ Upload Banks to G2… — folder z dysku do banku Norda.
+    public var showBankDownload: Bool = false
+    /// Okno Synth ▸ Save In Synth… — zapis slotu albo performance'u do banku Norda.
+    public var showSaveInSynth: Bool = false
+    /// Bank wskazany przed otwarciem okna Save In Synth (pusty bank w panelu Banks);
+    /// okno bierze go raz przy otwarciu i zeruje.
+    public var saveInSynthBank: (kind: G2BankEntry.Kind, bank: Int)?
 
     /// Ustawienia performance'u z sekcji 0x11 pliku `.prf2` (BPM, zegar, zakres
     /// klawiatury, cztery sloty). `hasPerformanceSettings` mówi, czy plik faktycznie
@@ -127,8 +134,13 @@ public final class PatchState {
     }
 
     /// Tytuł okna: plik oglądanego slotu albo performance'u, inaczej nazwa zawartości.
+    /// Zawartość Norda (podłączenie, performance z banku) bierze nazwę performance'u
+    /// z urządzenia — do 2026-11-04 stało tam zawsze „Nord G2”, a performance z pliku
+    /// pokazywał swoją nazwę. „Nord G2” zostaje, gdy Nord nazwy nie podał.
     public var title: String {
-        fileURL?.lastPathComponent ?? fileName
+        if let fileURL { return fileURL.lastPathComponent }
+        let name = performanceName.trimmingCharacters(in: .whitespaces)
+        return mirrorsDevice && !name.isEmpty ? name : fileName
     }
 
     public var isLoaded: Bool {
@@ -264,6 +276,18 @@ public final class PatchState {
         performanceFileData = nil
         savedSlots = slots
         markPerformanceSaved()
+    }
+
+    /// Selekcja slotów ustawiona przyciskami slotów (Shift/Ctrl-klik) i przyjęta przez Norda.
+    /// U Clavii to jedno pole `CPerformance` — to samo, które zapisuje Save Performance —
+    /// więc i u nas trafia do ustawień performance'u, a dokument staje się zmieniony.
+    /// Dawniej szła tylko do stanu urządzenia i zapis jej nie widział (bug #174).
+    public func applySlotSelection(enabled: [Bool], keyboard: [Bool]) {
+        guard hasPerformanceSettings else { return }
+        for index in performance.slots.indices {
+            if enabled.indices.contains(index) { performance.slots[index].enabled = enabled[index] }
+            if keyboard.indices.contains(index) { performance.slots[index].keyboard = keyboard[index] }
+        }
     }
 
     @ObservationIgnored private var undoObservers: [NSObjectProtocol] = []
@@ -2894,6 +2918,13 @@ public final class PatchState {
         mutateCables("Disconnect Cable") { $0.disconnectCable(cable, in: area) }
     }
 
+    /// Zaznaczone kable (⇧-klik) skasowane klawiszem Delete — jak „Disconnect", jeden krok undo.
+    public func disconnectCables(_ cables: [G2Cable], area: PatchArea) {
+        mutateCables(cables.count == 1 ? "Disconnect Cable" : "Disconnect Cables") {
+            $0.disconnectCables(cables, in: area)
+        }
+    }
+
     /// „Break" — usuwa sam kabel; reszta łańcucha zostaje wpięta, ale bez sygnału.
     public func breakCable(_ cable: G2Cable, area: PatchArea) {
         mutateCables("Break Cable") { patch in
@@ -3234,9 +3265,14 @@ public final class PatchState {
     }
 
     /// Wkleja moduły ze schowka do patcha.
+    /// Z `column`/`row` (⌘V jak u Clavii: klik w kanwę) lewy górny róg wklejonej grupy ląduje
+    /// tam, a kolumna rozsuwa się jak przy upuszczeniu; bez nich moduły wracają na swoje
+    /// pozycje ze schowka.
     /// Zwraca zestaw nowo dodanych ID modułów (żeby canvas mógł je zaznaczyć).
     @discardableResult
-    public func pasteModules(_ content: G2ClipboardContent, area: PatchArea) -> Set<Int> {
+    public func pasteModules(_ content: G2ClipboardContent, area: PatchArea,
+                             column: Int? = nil, row: Int? = nil) -> Set<Int>
+    {
         let slot = selectedSlot
         guard slots.indices.contains(slot) else { return [] }
         let snapshot = slots[slot]
@@ -3254,6 +3290,7 @@ public final class PatchState {
         }
 
         // Dodaj moduły z nowymi ID
+        var pasted: [G2Module] = []
         for clip in content.modules {
             guard let newID = idMap[clip.originalID],
                   let def = ModuleDatabase.module(id: clip.typeID) else { continue }
@@ -3271,7 +3308,12 @@ public final class PatchState {
             mod.modes = clip.modes.isEmpty
                 ? Array(repeating: 0, count: def.modeNames.count)
                 : clip.modes
-            slots[slot].add(module: mod)
+            pasted.append(mod)
+        }
+        if let column, let row {
+            slots[slot].insert(modules: pasted, column: column, row: row, in: area)
+        } else {
+            pasted.forEach { slots[slot].add(module: $0) }
         }
 
         // Podpisy modułów (sekcja 0x5B) pod nowe numery — bez tego wklejony mikser tracił nazwy kanałów.
@@ -3346,6 +3388,20 @@ public final class PatchState {
             target.restoreModulePositions(snapshot, area: area, slot: slot)
         }
         undoManager.setActionName("Move Module")
+        structureChanged(slot: slot)
+    }
+
+    /// Moduły przeciągnięte po kanwie (jeden albo zaznaczona grupa) — jeden krok Undo.
+    /// Kładzie je jak wstawiane: `G2Patch.moveModules`.
+    public func moveModules(_ ids: Set<Int>, columns: Int, rows: Int, area: PatchArea) {
+        let slot = selectedSlot
+        guard slots.indices.contains(slot), !ids.isEmpty else { return }
+        let snapshot = slots[slot].modules(in: area)
+        slots[slot].moveModules(ids, columns: columns, rows: rows, in: area)
+        undoManager.registerUndo(withTarget: self) { [snapshot] target in
+            target.restoreModulePositions(snapshot, area: area, slot: slot)
+        }
+        undoManager.setActionName(ids.count == 1 ? "Move Module" : "Move Modules")
         structureChanged(slot: slot)
     }
 
@@ -3562,6 +3618,30 @@ public final class PatchState {
 
     // MARK: - Zmiany przychodzące Z URZĄDZENIA
 
+    /// Gałka ruszona ostatnio NA FRONCIE Norda. Kanwa daje jej focus (obwódkę) tak samo
+    /// jak po kliknięciu, więc strzałki dostrajają potem właśnie ją. Nord sam nie zgłasza
+    /// zaznaczonego parametru (`0x2F` tylko na pytanie `0x2E`, podsłuch 2026-11-04), ale
+    /// każdy ruch gałki przychodzi z pełnym adresem → [[Docs/usb/notifications]].
+    public struct DeviceParameterTouch: Equatable {
+        public let slot: Int
+        public let area: PatchArea
+        public let moduleID: Int
+        public let paramIndex: Int
+        /// Kolejny numer ruchu — ta sama gałka kręcona dalej to nowa wartość, więc kanwa
+        /// odświeża czas, przez który trzyma jej ramkę.
+        public let serial: Int
+
+        public init(slot: Int, area: PatchArea, moduleID: Int, paramIndex: Int, serial: Int) {
+            self.slot = slot
+            self.area = area
+            self.moduleID = moduleID
+            self.paramIndex = paramIndex
+            self.serial = serial
+        }
+    }
+
+    public private(set) var deviceParameterTouch: DeviceParameterTouch?
+
     /// Parametr zmieniony NA FRONCIE Norda. Zapisujemy do modelu, ale **nie** odsyłamy
     /// z powrotem (`onLiveParameterChange` pominięty) — inaczej powstałaby pętla echa —
     /// i **nie** rejestrujemy undo: to lustro stanu sprzętu, a nie edycja użytkownika,
@@ -3570,6 +3650,9 @@ public final class PatchState {
                                      paramIndex: Int, value: Int, variation: Int)
     {
         guard slots.indices.contains(slot) else { return }
+        deviceParameterTouch = DeviceParameterTouch(slot: slot, area: area, moduleID: moduleID,
+                                                    paramIndex: paramIndex,
+                                                    serial: (deviceParameterTouch?.serial ?? 0) + 1)
         followingDevice(slot: slot) {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: paramIndex,
                                      value: value, in: area, variation: variation)
@@ -3629,8 +3712,11 @@ public final class PatchState {
     /// Undo czyścimy w całości, bo akcje snapshotowe (usunięcie, wklejenie) cofnęłyby
     /// się na świeżo wczytany patch — ten sam powód co przy `loadFromDevice`. Slot traci
     /// swój plik: jego zawartość przyszła z Norda, nie z dysku.
-    public func replaceSlotFromDevice(slot: Int, patch: G2Patch) {
-        guard mirrorsDevice, slots.indices.contains(slot) else { return }
+    ///
+    /// `force` — Synth ▸ Get Active Slot from G2: użytkownik sam prosi o patch z Norda,
+    /// więc podmieniamy slot także wtedy, gdy edytor pokazywał coś innego.
+    public func replaceSlotFromDevice(slot: Int, patch: G2Patch, force: Bool = false) {
+        guard force || mirrorsDevice, slots.indices.contains(slot) else { return }
         slots[slot] = patch
         slotFileURLs[slot] = nil
         slotFileData[slot] = nil

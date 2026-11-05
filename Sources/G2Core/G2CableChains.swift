@@ -212,6 +212,22 @@ public extension G2Patch {
         recolorUnusedChains(in: area)
     }
 
+    /// Zaznaczone kable (⇧-klik) skasowane klawiszem Delete — każdy jak „Disconnect".
+    /// Najpierw kable najdalej w szeregu: gdyby odpiąć najpierw początek, kabel dalej
+    /// zostałby przepięty na źródło, przestał pasować do zaznaczenia i przeżył.
+    mutating func disconnectCables(_ selected: [G2Cable], in area: PatchArea) {
+        let isSelected = { (cable: G2Cable) in selected.contains { $0.connectsSameAs(cable) } }
+        while true {
+            let left = cables(in: area).filter(isSelected)
+            let last = left.first { candidate in
+                !left.contains { $0.sourceConnector == candidate.destinationConnector }
+            }
+            guard let cable = last ?? left.first else { break }
+            disconnectCable(cable, in: area)
+        }
+        recolorUnusedChains(in: area)
+    }
+
     /// „Disconnect All Cables" z menu tła — oba obszary, Voice i FX.
     mutating func disconnectAllCables() {
         voiceCables.removeAll()

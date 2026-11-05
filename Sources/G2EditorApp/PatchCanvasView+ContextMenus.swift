@@ -227,9 +227,7 @@ extension PatchCanvasView {
                 .disabled(selectedModuleIDs.isEmpty && activeModuleID == nil)
 
             Button("Paste") {
-                if let content = G2ClipboardContent.readFromPasteboard() {
-                    onPasteModules?(content)
-                }
+                beginPendingPaste()
             }
             .disabled(!G2ClipboardContent.hasModulesOnPasteboard)
 

@@ -9,7 +9,7 @@ extension PatchCanvasView {
     var combinedDragGesture: some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .local)
             .onChanged { g in
-                guard !exportingBlock else { return }
+                guard !exportingBlock, selection.pendingPaste == nil else { return }
                 let startLP = CGPoint(x: g.startLocation.x / zoom, y: g.startLocation.y / zoom)
                 let curLP = CGPoint(x: g.location.x / zoom, y: g.location.y / zoom)
 
@@ -72,6 +72,7 @@ extension PatchCanvasView {
                                 .map { (id: $0.id, startColumn: $0.column, startRow: $0.row) }
                         } else {
                             selectedModuleIDs.removeAll()
+                            selectedCables.removeAll()
                             extras = []
                         }
                         moduleDrag = ModuleDragState(moduleID: hit.moduleID,
@@ -83,7 +84,10 @@ extension PatchCanvasView {
                         // Drag na pustym tle → rubber-band selection.
                         // Bez Shift zaczynamy od czystego zaznaczenia (ramka je zastępuje),
                         // z Shift dokładamy do bieżącego (onEnded robi wtedy toggle).
-                        if !shiftHeld { selectedModuleIDs.removeAll() }
+                        if !shiftHeld {
+                            selectedModuleIDs.removeAll()
+                            selectedCables.removeAll()
+                        }
                         rubberBandStart = startLP
                         rubberBandCurrent = startLP
                     }
@@ -162,6 +166,7 @@ extension PatchCanvasView {
                 }
                 guard !exportingBlock else { return }
                 let endLP = CGPoint(x: g.location.x / zoom, y: g.location.y / zoom)
+                if placePendingPaste(at: endLP) { return }
 
                 // Rubber-band → toggle zaznaczenia modułów w prostokącie
                 if let rbStart = rubberBandStart, let rbEnd = rubberBandCurrent {
@@ -191,16 +196,10 @@ extension PatchCanvasView {
                     let dCol = snapped.column - drag.startColumn
                     let dRow = snapped.row - drag.startRow
                     if dCol != 0 || dRow != 0 {
-                        // Kierunek push z kierunku ruchu, nie z geometrii kolizji.
-                        // push .down gdy moduł idzie w dół lub zostaje; .up gdy idzie w górę.
-                        let push: G2Patch.PushDirection = dRow >= 0 ? .down : .up
-                        onMoveModule?(drag.moduleID, snapped.column, snapped.row, push)
-                        for extra in drag.extraModules {
-                            onMoveModule?(extra.id,
-                                          max(0, extra.startColumn + dCol),
-                                          max(0, extra.startRow + dRow),
-                                          push)
-                        }
+                        // Cała grupa naraz i jak wstawiana (#177): róg w środku modułu dociąga
+                        // do jego bliższej krawędzi, kolumna rozsuwa się tylko o tyle, ile trzeba.
+                        let ids = Set([drag.moduleID] + drag.extraModules.map(\.id))
+                        onMoveModules?(ids, dCol, dRow)
                     }
                 }
             }
@@ -250,7 +249,7 @@ extension PatchCanvasView {
     var incDecPressGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { g in
-                guard incDecHold == nil else { return }
+                guard incDecHold == nil, selection.pendingPaste == nil else { return }
                 let lp = CGPoint(x: g.startLocation.x / zoom, y: g.startLocation.y / zoom)
                 guard let hit = findIncDecButton(at: lp) else { return }
                 incDecHold = hit

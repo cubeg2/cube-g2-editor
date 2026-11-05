@@ -1,3 +1,21 @@
+## 0.1.9 — November 5, 2026
+This release is mostly about the G2's own memory: you can now store patches and whole banks in the G2 and tidy its banks from the editor.
+- **Save In Synth.** Synth ▸ Save In Synth… stores the patch in the active slot, or the whole performance, at a place you pick in one of the G2's banks. The window shows which banks are empty and lets you name the patch. The editor first sends what you see on screen, so the G2 stores exactly that.
+- **Upload Banks to G2.** Synth ▸ Upload Banks to G2… sends a folder of patch (or performance) files into one bank of the G2 — in the order of the folder's .pchList if it has one, otherwise in Finder order. A bank that already holds patches is erased first, and the window warns you before it does.
+- **Delete patches and banks in the G2.** Right-click a patch or a bank in the Banks list to delete it from the G2's memory (the editor asks first). ⌘-click and Shift-click select several patches.
+- **Empty banks** are collected in a folded "Empty Banks" group at the end of the Banks list. Click one to open Save In Synth on that bank.
+- **Get Active Slot from G2 (⌘U).** Synth ▸ Get Active Slot from G2 brings the patch from the slot that is active on the G2 into the editor. The command that sends a patch the other way is now called Patch ▸ Send to G2 Slot (⌘D), so the two directions can't be mixed up.
+- **Notes come along from the G2.** Patches read from the G2 when you connect, when you change a patch on the G2's front panel or with Get Active Slot used to arrive without their notes (Textpad), and saving them lost the notes. The editor now asks the G2 for the notes of every slot.
+- **Slot buttons are saved with the performance.** Slots switched on with Shift-click and keyboards switched on with Ctrl-click on the slot buttons were forgotten by Save Performance. They are now saved.
+- **File ▸ Save Performance As…** saves the performance under a new name.
+- **Knobs turned on the G2 are marked in the editor.** A knob you turn on the G2 gets the same focus frame as a clicked one, so the arrow keys fine-tune it next. Every knob turned in the last few seconds keeps its frame. The focus frame is now a moving dashed line, easier to see on a busy module.
+- **Copy and paste modules with ⌘C and ⌘V.** ⌘C copies the selected modules (before, it only worked from the right-click menu). ⌘V hangs the copies at the pointer as outlines; click to place them, Esc to cancel. Before, pasted modules landed on top of the originals.
+- **Modules dropped into a column make exactly enough room.** A module, a block or a dragged group dropped in the middle of a column now goes before or after the module it lands on, and the column below moves down by exactly its height — no more empty gap above it.
+- **Select cables with Shift-click** (they light up in light blue) and press Delete to disconnect them, like Disconnect in the cable menu. One ⌘Z brings them back.
+- **The window title shows the name of the performance on the G2** instead of "Nord G2".
+- **Synth ▸ Send Controller Snapshot and Dump One work:** the G2 sends the current knob values as MIDI CCs, or the patch as SysEx, from its MIDI OUT.
+- The File menu no longer shows greyed-out SysEx save items that don't work yet.
+
 ## 0.1.8 — November 4, 2026
 Most of this release is about variations, and three of the new features come from the Wish List on the electro-music forum.
 - **Variation fader (wish #13).** Under the eight variation buttons in the toolbar there is now a slider that fades smoothly from one variation to the next. Drag the green knob: every dot under a button is a stop, and between two stops you hear a mix of the two neighbouring variations. Knobs and faders glide; switches, waveforms and filter types can't be mixed, so they jump when the slider reaches the next stop. While you drag, the patch shows what is changing on the way to the next stop. Release on a dot and that variation plays as usual; release between two dots and you keep the in-between sound. To keep it, right-click the variation bar ▸ Store Fader Sound To ▸ Variation 1–8. One ⌘Z takes the whole move back. Variations that are identical to the one before them share a stop. The eight variations and the file stay unchanged until you store the sound.

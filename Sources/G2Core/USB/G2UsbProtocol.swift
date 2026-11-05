@@ -52,6 +52,8 @@ public enum G2UsbProtocol {
     /// tej samej co w pliku `.prf2` (patrz `setPerformanceHeaderPayload`).
     public static let subPerformanceHeaderDump: UInt8 = 0x11
     private static let subPerformanceMode: UInt8 = 0x3E // Performance Mode Change
+    private static let subMidiDump: UInt8 = 0x3D // Dump One — zrzut SysEx na MIDI OUT
+    private static let subControllerSnapshot: UInt8 = 0x55 // Send Controller Snapshot
     /// Slot Focus Dump u Clavii — który slot jest EDYTOWANY. Nazwa „SelectSlot" jest
     /// z G2-Edita i myli: to nie jest wybór slotu, który gra (patrz `subSlotSelection`).
     private static let subSelectSlot: UInt8 = 0x09
@@ -446,6 +448,21 @@ public enum G2UsbProtocol {
     /// Układ bajtów za `g2ools/g2ctl.py cmd_mode`: `[CMD_SYS, 0x41, 0x3E, tryb, 0x00]`.
     public static func performanceModePayload(performance: Bool) -> [UInt8] {
         [commandTag, commandReqSys, 0x41, subPerformanceMode, performance ? 1 : 0, 0x00]
+    }
+
+    /// Synth ▸ Send Controller Snapshot (`0x55`, komenda slotu): Nord wysyła przez MIDI OUT
+    /// bieżące wartości gałek tego slotu przypisanych do CC (instrukcja, str. 124).
+    /// Odpowiedzią USB jest samo `OK` — także przy złej wersji, więc nie dowodzi skutku
+    /// (2026-11-04: podsłuch MIDI OUT przy wersji z Norda dał 9 komunikatów CC).
+    public static func controllerSnapshotPayload(slot: UInt8, version: UInt8) -> [UInt8] {
+        [commandTag, commandReqSlot(slot), version, subControllerSnapshot]
+    }
+
+    /// Synth ▸ Dump One (`0x3D`, komenda systemowa): Nord wysyła przez MIDI OUT zrzut SysEx
+    /// patcha aktywnego slotu — to samo, co Shift+SYSTEM na panelu (instrukcja, rozdz. 9).
+    /// Odpowiedź USB: `OK`; zrzut idzie kablem MIDI (2026-11-04: 28 komunikatów, 14 231 B).
+    public static func midiDumpPayload() -> [UInt8] {
+        [commandTag, commandReqSys, 0x41, subMidiDump]
     }
 
     /// Ustawienia synta (Synth Data Request, 0x02). Odpowiedź: nazwa urządzenia,

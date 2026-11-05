@@ -67,6 +67,33 @@ final class CableChainTests: XCTestCase {
         XCTAssertTrue(rerouted.sourceIsOutput, "przepięty kabel wychodzi teraz z wyjścia")
     }
 
+    /// Delete na kilku kablach zaznaczonych ⇧-klikiem: zaznaczone znikają wszystkie, także
+    /// gdy jeden leży w szeregu za drugim (odpięcie początku przepięłoby go na źródło).
+    func testDisconnectingSelectedCablesRemovesEveryOneOfThem() {
+        var patch = G2Patch()
+        let first = fromOutput(1, 0, to: 2, 0)
+        let second = fromInput(2, 0, to: 3, 0)
+        patch.voiceCables = [first, second]
+
+        patch.disconnectCables([first, second], in: .voice)
+
+        XCTAssertTrue(patch.voiceCables.isEmpty)
+    }
+
+    /// Niezaznaczony kabel w środku szeregu zszywa się ze źródłem jak przy „Disconnect".
+    func testDisconnectingSelectedCablesStitchesTheUnselectedOnes() {
+        var patch = G2Patch()
+        let first = fromOutput(1, 0, to: 2, 0)
+        let middle = fromInput(2, 0, to: 3, 0)
+        let last = fromInput(3, 0, to: 4, 0)
+        patch.voiceCables = [first, middle, last]
+
+        patch.disconnectCables([first, last], in: .voice)
+
+        XCTAssertEqual(patch.voiceCables.count, 1)
+        XCTAssertTrue(patch.voiceCables[0].connectsSameAs(fromOutput(1, 0, to: 3, 0)))
+    }
+
     /// „Break" nie zszywa niczego — ogon łańcucha zostaje wpięty, ale bez sygnału.
     func testBreakLeavesTheTailDangling() {
         var patch = G2Patch()

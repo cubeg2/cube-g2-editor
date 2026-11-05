@@ -184,4 +184,55 @@ final class UploadRejectionTests: XCTestCase {
         XCTAssertTrue(refused.hasPrefix("Slot B:"))
         XCTAssertTrue(refused.contains("Textpad"))
     }
+
+    // MARK: - Save In Synth (zapis do banku, 2026-11-04)
+
+    /// Zapis do banku prawdziwego Norda idzie wyłącznie przez Save In Synth, które samo
+    /// zezwala (`allowHardware`). Każda inna droga — np. sonda `--storebanks` — ma odbić się
+    /// od Norda, zanim cokolwiek poleci kablem.
+    func testBankStoreToTheRealNordNeedsExplicitPermission() async {
+        let transport = AnsweringTransport()
+        let manager = G2MidiManager()
+        await manager.attachTransportForTesting(transport)
+
+        do {
+            _ = try await manager.storeToBank(slot: 0, bank: 31, patch: 0)
+            XCTFail("bez allowHardware zapis do Norda ma być odrzucony")
+        } catch {}
+        XCTAssertTrue(transport.written.isEmpty, "odmowa przed wysłaniem czegokolwiek")
+    }
+
+    func testBankDeleteOnTheRealNordNeedsExplicitPermission() async {
+        let transport = AnsweringTransport()
+        let manager = G2MidiManager()
+        await manager.attachTransportForTesting(transport)
+
+        do {
+            _ = try await manager.deleteFromBank(kind: .patch, bank: 31, from: 1)
+            XCTFail("bez allowHardware kasowanie w Nordzie ma być odrzucone")
+        } catch {}
+        XCTAssertTrue(transport.written.isEmpty, "odmowa przed wysłaniem czegokolwiek")
+    }
+
+    /// Upload Banks to G2 wysyła plik do slotu przed zapisem — bez zgody nawet slot Norda
+    /// ma zostać nietknięty.
+    func testFileStoreToTheRealNordNeedsExplicitPermission() async {
+        let transport = AnsweringTransport()
+        let manager = G2MidiManager()
+        await manager.attachTransportForTesting(transport)
+
+        do {
+            _ = try await manager.storeFileToBank(fileData: PatchParser.emptyPatchFile, name: "Test",
+                                                  performance: false, slot: 3, bank: 13, location: 0)
+            XCTFail("bez allowHardware wgranie pliku do banku Norda ma być odrzucone")
+        } catch {}
+        XCTAssertTrue(transport.written.isEmpty, "odmowa przed wysłaniem czegokolwiek")
+    }
+
+    func testStoreFailureMessagesNameTheCause() {
+        XCTAssertTrue(DeviceConnection.storeFailureMessage(4).contains("Memory Protect"))
+        XCTAssertTrue(DeviceConnection.storeFailureMessage(3).contains("full"))
+        XCTAssertTrue(DeviceConnection.storeFailureMessage(9).contains("code 9"))
+        XCTAssertTrue([0, 2, 5].allSatisfy(G2UsbProtocol.storeSucceeded))
+    }
 }

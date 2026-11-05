@@ -176,6 +176,55 @@ final class SaveAsStateTests: XCTestCase {
         XCTAssertTrue(parsed.slots[2].enabled)
     }
 
+    /// Shift/Ctrl-klik przycisku slotu zmienia selekcję w Nordzie — i ma ją zmienić także
+    /// w dokumencie, bo to dokument idzie do pliku. Do 2026-11-04 po zapisie i ponownym
+    /// otwarciu `WeirdFM.prf2` wszystkie sloty były wyłączone (bug #174).
+    func testSlotButtonSelectionIsSavedWithThePerformance() throws {
+        var silent = G2PerformanceSettings()
+        for index in silent.slots.indices {
+            silent.slots[index].enabled = false
+            silent.slots[index].keyboard = false
+        }
+        let state = PatchState()
+        state.loadFromDevice(patches: Array(repeating: G2Patch(), count: 4),
+                             performanceName: "WeirdFM", performance: silent)
+        let url = temporaryURL("prf2")
+        defer { try? FileManager.default.removeItem(at: url) }
+        state.savePerformance(as: url)
+        XCTAssertFalse(state.hasUnsavedChanges)
+
+        state.applySlotSelection(enabled: [true, true, true, true], keyboard: [true, true, true, true])
+        XCTAssertTrue(state.hasUnsavedChanges, "zmiana slotów to zmiana performance'u")
+        state.savePerformance()
+        XCTAssertNil(state.errorMessage)
+
+        let parsed = try XCTUnwrap(PatchParser.parseFile(data: Data(contentsOf: url)).performance)
+        XCTAssertEqual(parsed.slots.map(\.enabled), [true, true, true, true])
+        XCTAssertEqual(parsed.slots.map(\.keyboard), [true, true, true, true])
+    }
+
+    /// Po Save Performance nic nie jest niezapisane, choć ⌘Z dalej cofa (zapis nie czyści
+    /// historii, jak w `NSDocument`). Kto pyta „czy można podmienić okno", musi pytać
+    /// `hasUnsavedChanges`, nie `canUndo` — inaczej świeżo zapisany plik wygląda na zmieniony.
+    func testSavePerformanceClearsUnsavedChangesButKeepsUndo() {
+        let state = PatchState()
+        state.undoManager.groupsByEvent = false
+        state.loadFromDevice(patches: Array(repeating: G2Patch(), count: 4), performanceName: "From G2")
+        let url = temporaryURL("prf2")
+        defer { try? FileManager.default.removeItem(at: url) }
+        state.savePerformance(as: url)
+
+        state.undoManager.beginUndoGrouping()
+        state.addModule(typeID: 1, area: .voice, column: 0, row: 0)
+        state.undoManager.endUndoGrouping()
+        XCTAssertTrue(state.hasUnsavedChanges)
+
+        state.savePerformance()
+        XCTAssertNil(state.errorMessage)
+        XCTAssertFalse(state.hasUnsavedChanges)
+        XCTAssertTrue(state.undoManager.canUndo)
+    }
+
     /// „Save From ▸ Slot X" wyjmuje jeden slot jako osobny `.pch2` i **nie rusza**
     /// pliku dokumentu — instrukcja: „leaving any original Patch intact on the disk".
     func testSaveFromSlotWritesOneSlotAndLeavesTheDocumentAlone() throws {

@@ -134,6 +134,9 @@ struct RootView: View {
                 guard state.slots.indices.contains(slot) else { return }
                 state.selectedSlot = slot
             }
+            device.onSlotSelectionEdited = { [state] enabled, keyboard in
+                state.applySlotSelection(enabled: enabled, keyboard: keyboard)
+            }
             device.onDeviceVariationChange = { [state] slot, variation in
                 state.applyDeviceVariation(slot: slot, variation: variation)
             }
@@ -453,7 +456,8 @@ struct ContentView: View {
         }
         // Skróty jednoklawiszowe z instrukcji (1–8, A–D, V, F, R, F5–F8) — patrz
         // `EditorKeyboardShortcuts`. Warstwa jest przezroczysta i nie łapie myszy.
-        .background(EditorKeyboardShortcuts(state: state, viewState: viewState, device: device))
+        .background(EditorKeyboardShortcuts(state: state, viewState: viewState, device: device,
+                                            selections: selections))
         // Esc zamyka wysuniętą szufladę i oddaje fokus canvasowi.
         .onExitCommand { withAnimation(.easeInOut(duration: 0.18)) { panels.close() } }
         // Biblioteka z obrazkami czeka przy starcie schowana, aż podglądy będą gotowe,
@@ -492,6 +496,14 @@ struct ContentView: View {
             BankUploadSheet(isPresented: $state.showBankUpload, device: device)
         }
         .onChange(of: state.showBankUpload) { _, on in claimSheet(.bankUpload, on) }
+        .sheet(isPresented: sheetBinding(.bankDownload, $state.showBankDownload)) {
+            BankDownloadSheet(isPresented: $state.showBankDownload, device: device)
+        }
+        .onChange(of: state.showBankDownload) { _, on in claimSheet(.bankDownload, on) }
+        .sheet(isPresented: sheetBinding(.saveInSynth, $state.showSaveInSynth)) {
+            SaveInSynthSheet(isPresented: $state.showSaveInSynth, state: state, device: device)
+        }
+        .onChange(of: state.showSaveInSynth) { _, on in claimSheet(.saveInSynth, on) }
         // Tytuł i podtytuł liczy osobny widok — podtytuł czyta patch (liczby modułów).
         .background(DocumentTitles(state: state, slot: slot, layout: slotLayout))
         .frame(minWidth: 900, minHeight: 600)
@@ -511,7 +523,7 @@ struct ContentView: View {
     /// Arkusze wspólne dla wszystkich okien slotów — ich flagi mieszkają w `PatchState`,
     /// bo otwiera je menu, a to nie wie, które okno ma je pokazać.
     private enum SharedSheet: Hashable {
-        case patchNotes, bankUpload
+        case patchNotes, bankUpload, bankDownload, saveInSynth
     }
 
     /// Flaga z menu otwiera okno Settings na zakładce i od razu gaśnie — przy oknach

@@ -43,6 +43,8 @@ struct PatchCanvasCommands {
 
     /// „Disconnect" — odpina gniazdo i zszywa łańcuch.
     var disconnectCable: ((G2Cable) -> Void)?
+    /// Delete na kablach zaznaczonych ⇧-klikiem — każdy jak „Disconnect", jeden krok undo.
+    var disconnectCables: (([G2Cable]) -> Void)?
     /// „Break" — przerywa łańcuch bez zszywania.
     var breakCable: ((G2Cable) -> Void)?
     /// „Delete" — cały łańcuch szeregowy.

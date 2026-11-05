@@ -77,3 +77,18 @@ extension G2ClipboardContent {
         )
     }
 }
+
+// MARK: - Duch wklejenia
+
+extension G2ClipboardContent {
+    /// Moduły ze schowka jako obrysy dla `BlockDropGhost` — typ, pozycja i nazwa.
+    func ghostModules(in area: PatchArea) -> [G2Module] {
+        modules.enumerated().map { index, clip in
+            var module = G2Module(id: index + 1, typeID: clip.typeID, area: area)
+            module.column = clip.column
+            module.row = clip.row
+            module.label = clip.label
+            return module
+        }
+    }
+}

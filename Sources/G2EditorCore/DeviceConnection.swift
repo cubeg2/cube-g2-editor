@@ -221,6 +221,9 @@ public final class DeviceConnection {
     public var onDeviceSettingChange: ((_ slot: Int, _ moduleID: Int, _ paramIndex: Int, _ value: Int, _ variation: Int) -> Void)?
     /// Przełączenie slotu na froncie urządzenia.
     public var onDeviceSlotChange: ((Int) -> Void)?
+    /// Selekcja slotów (grające, klawiatura) zmieniona przyciskami slotów w edytorze
+    /// i przyjęta przez Norda — dokument ma ją zapisać razem z performance'em (bug #174).
+    public var onSlotSelectionEdited: ((_ enabled: [Bool], _ keyboard: [Bool]) -> Void)?
     /// Przełączenie wariacji na froncie urządzenia.
     public var onDeviceVariationChange: ((_ slot: Int, _ variation: Int) -> Void)?
     /// Strona parametrów wybrana NA PANELU Norda (przyciski A…E / 1…3). `global`
@@ -916,6 +919,162 @@ public final class DeviceConnection {
         }
     }
 
+    /// Synth ▸ Get Active Slot from G2 (instrukcja, rozdz. 9): patch ze slotu aktywnego NA NORDZIE
+    /// wraca do edytora. „Upload" u Clavii liczy się od strony Norda — wysyłkę w drugą stronę
+    /// robi Patch ▸ Send to G2 Slot. To świadoma prośba użytkownika, więc bez warunku
+    /// `mayReplaceEditorContent`; o niezapisaną pracę pyta menu przed wywołaniem.
+    public func uploadActiveSlot() async -> (slot: Int, patch: G2Patch)? {
+        guard status == .connected, !isSending else { return nil }
+        let slot = activeSlot
+        var result: (slot: Int, patch: G2Patch)?
+        await withLoadProgress("Loading slot \(Self.slotLabels[slot])…") {
+            do {
+                let patch = try await manager.reloadPatch(slot: UInt8(slot))
+                if slot == meterSlot { clearVisuals() }
+                confirmSlots([slot])
+                result = (slot, patch)
+            } catch {
+                status = .error(error.localizedDescription)
+            }
+        }
+        return result
+    }
+
+    /// Synth ▸ Send Controller Snapshot (instrukcja, str. 124): Nord wysyła przez MIDI OUT
+    /// bieżące wartości gałek przypisanych do CC — do nagrania w sekwencerze przed partią.
+    /// Slot ten, który edytor ma na wierzchu, jak u Clavii (polecenie okna patcha).
+    public func sendControllerSnapshot(slot: Int) async {
+        guard status == .connected, !isBusy, Self.slotLabels.indices.contains(slot) else { return }
+        do {
+            try await manager.sendControllerSnapshot(slot: UInt8(slot))
+        } catch {
+            status = .error(error.localizedDescription)
+        }
+    }
+
+    /// Synth ▸ Dump One (instrukcja, rozdz. 9): Nord wysyła przez MIDI OUT zrzut SysEx
+    /// patcha aktywnego slotu — kopia zapasowa w sekwencerze albo dla drugiego G2.
+    public func dumpOne() async {
+        guard status == .connected, !isBusy else { return }
+        do {
+            try await manager.requestMidiDump()
+        } catch {
+            status = .error(error.localizedDescription)
+        }
+    }
+
+    /// Synth ▸ Save In Synth… — patch slotu z focusem (albo cały performance) do jednego
+    /// miejsca w banku Norda (`0x0B`, to samo co STORE na froncie). `bank` i `location`
+    /// od 0. `name` — nazwa z okna, wpisana w slot (performance) przed zapisem.
+    ///
+    /// Nord zapisuje to, co ma u siebie w slocie, **razem z nazwą** — a zmiana nazwy w edytorze
+    /// do Norda sama nie leci (`PatchState.setPatchName`). Dlatego zawartość edytora idzie
+    /// najpierw zawsze (patch ~0,6 s), inaczej w banku lądowała stara nazwa: 2026-11-04 okno
+    /// pokazało „No name”, a do banku trafiło „dlg_osc_mov”.
+    /// Zwraca opis błędu albo `nil`, gdy zapis się udał; po nim lista banków jest
+    /// czytana na świeżo → [[Docs/usb/bank-dump]].
+    public func saveInSynth(_ state: PatchState, kind: G2BankEntry.Kind, bank: Int, location: Int,
+                            name: String? = nil) async -> String?
+    {
+        guard status == .connected, !isBusy else { return "The G2 is busy — try again in a moment." }
+        let slot = min(max(state.selectedSlot, 0), max(state.slots.count - 1, 0))
+        let performance = kind == .performance
+        if let name {
+            if performance { state.performanceName = name } else { state.setPatchName(name, slot: slot) }
+        }
+        let touched = performance ? Array(0 ..< min(state.slots.count, Self.slotLabels.count)) : [slot]
+        await send(state, onlyFocusedSlot: !performance)
+        guard status == .connected, touched.allSatisfy(isSlotConfirmed) else {
+            return "The G2 did not accept the editor content, so nothing was saved."
+        }
+        let title = "\(performance ? "Performance" : "Patch") Bank \(bank + 1):\(location + 1)"
+        var failure: String?
+        await withLoadProgress("Saving to \(title)…") {
+            do {
+                let result = try await manager.storeToBank(slot: performance ? 4 : UInt8(slot), bank: bank,
+                                                           patch: location, allowHardware: true)
+                guard G2UsbProtocol.storeSucceeded(result) else {
+                    failure = Self.storeFailureMessage(result)
+                    return
+                }
+                bankEntries = try await manager.readBankList()
+                bankLoads = [:]
+            } catch {
+                failure = "Saving to \(title) failed: \(error.localizedDescription)"
+            }
+        }
+        return failure
+    }
+
+    /// Panel Banks ▸ Delete — jedno miejsce (`location`) albo cały bank (`nil`) z pamięci
+    /// Norda. Pytanie „na pewno?” zadaje panel. Po kasowaniu lista banków jest czytana
+    /// na świeżo. Zwraca opis błędu albo `nil` → [[Docs/usb/bank-dump]].
+    public func deleteFromBank(kind: G2BankEntry.Kind, bank: Int, location: Int?) async -> String? {
+        guard status == .connected, !isBusy else { return "The G2 is busy — try again in a moment." }
+        let title = "\(kind == .patch ? "Patch" : "Performance") Bank \(bank + 1)"
+            + (location.map { ":\($0 + 1)" } ?? "")
+        var failure: String?
+        await withLoadProgress("Deleting \(title)…") {
+            do {
+                let result = try await manager.deleteFromBank(
+                    kind: kind, bank: bank, from: location ?? 0,
+                    to: location == nil ? G2BankGroup.locationsPerBank - 1 : nil, allowHardware: true
+                )
+                guard G2UsbProtocol.storeSucceeded(result) else {
+                    failure = Self.storeFailureMessage(result)
+                    return
+                }
+                bankEntries = try await manager.readBankList()
+                bankLoads = [:]
+            } catch {
+                failure = "Deleting \(title) failed: \(error.localizedDescription)"
+            }
+        }
+        return failure
+    }
+
+    /// Kilka pozycji naraz (zaznaczenie ⌘/Shift w panelu Banks) — po kolei, każda osobną
+    /// komendą `0x0C`; pierwszy błąd zatrzymuje resztę. Lista banków czytana raz, na końcu,
+    /// także po błędzie — żeby panel pokazał, co już zniknęło.
+    public func deleteFromBank(_ entries: [G2BankEntry]) async -> String? {
+        guard status == .connected, !isBusy else { return "The G2 is busy — try again in a moment." }
+        var failure: String?
+        var deleted = 0
+        await withLoadProgress("Deleting \(entries.count) items…") {
+            for entry in entries {
+                loadProgress = "Deleting \(deleted + 1) of \(entries.count): \(entry.name)…"
+                do {
+                    let result = try await manager.deleteFromBank(kind: entry.kind, bank: entry.bank,
+                                                                  from: entry.patch, allowHardware: true)
+                    guard G2UsbProtocol.storeSucceeded(result) else {
+                        failure = Self.storeFailureMessage(result)
+                        break
+                    }
+                    deleted += 1
+                } catch {
+                    failure = "Deleting “\(entry.name)” failed: \(error.localizedDescription)"
+                    break
+                }
+            }
+            if let entries = try? await manager.readBankList() {
+                bankEntries = entries
+                bankLoads = [:]
+            }
+        }
+        guard let failure else { return nil }
+        return deleted == 0 ? failure : "\(deleted) of \(entries.count) were deleted. \(failure)"
+    }
+
+    /// Znaczenie kodów wyniku za oryginalnym edytorem (Flash Data, HandleFlashCommandResult).
+    static func storeFailureMessage(_ result: UInt8) -> String {
+        switch result {
+        case 1: "The G2 could not use its memory (code 1)."
+        case 3: "The G2 memory is full (code 3)."
+        case 4: "Memory Protect is on in the G2 — switch it off in the synth settings and try again (code 4)."
+        default: "The G2 reported an unknown result (code \(result))."
+        }
+    }
+
     // MARK: - Wyjścia do urządzenia
 
     private static let slotLabels = ["A", "B", "C", "D"]
@@ -1255,6 +1414,7 @@ public final class DeviceConnection {
                 try await manager.setSlotSelection(selection.enabled, keyboard: selection.keyboard)
                 applyPlayingSlots(selection.enabled)
                 applyKeyboardSlots(selection.keyboard)
+                onSlotSelectionEdited?(playingSlots, keyboardSlots)
             }
             if slotChanged { try await manager.selectSlot(UInt8(slot)) }
         } catch {
@@ -1319,6 +1479,7 @@ public final class DeviceConnection {
         do {
             try await manager.setSlotSelection(enabled, keyboard: keyboard)
             applyKeyboardSlots(keyboard)
+            onSlotSelectionEdited?(playingSlots, keyboardSlots)
         } catch {
             status = .error(error.localizedDescription)
         }
@@ -1490,8 +1651,11 @@ public final class DeviceConnection {
         enabled[slot].toggle()
         guard enabled.contains(true) else { return }
         do {
-            try await manager.setSlotSelection(enabled, keyboard: keyboardAfter(enabled))
+            let keyboard = keyboardAfter(enabled)
+            try await manager.setSlotSelection(enabled, keyboard: keyboard)
             applyPlayingSlots(enabled)
+            applyKeyboardSlots(keyboard)
+            onSlotSelectionEdited?(playingSlots, keyboardSlots)
         } catch {
             status = .error(error.localizedDescription)
         }
@@ -1585,7 +1749,7 @@ public final class DeviceConnection {
         if case .rejected? = error as? G2UsbError {
             return "Slot \(label): the G2 did not accept this patch, so the slot is silent. One known cause: "
                 + "a patch note (Textpad) longer than about 1000 characters. After fixing it, use "
-                + "Patch ▸ Download To Slot — a change to modules or cables also sends the patch again."
+                + "Patch ▸ Send to G2 Slot — a change to modules or cables also sends the patch again."
         }
         return "Slot \(label): the G2 stopped responding while receiving this patch. If its display and "
             + "buttons no longer react, switch the G2 off and on — the editor reconnects by itself."
@@ -1660,24 +1824,9 @@ public final class DeviceConnection {
             ignoreDeviceReloadsUntil = Date().addingTimeInterval(1.5)
         }
 
-        // Stan sprzed kopii. Patche zmieniają tylko slot D, performance'y — wszystkie
-        // cztery sloty, nagłówek i tryb Performance/Patch.
-        var original: [G2Patch] = []
-        var originalHeader: (name: String, settings: G2PerformanceSettings, section: [UInt8])?
-        var originalMode: Bool?
+        let snapshot: DeviceSnapshot
         do {
-            for slot in UInt8(0) ..< UInt8(G2UsbProtocol.maxSlots) where hasPerformances || slot == 3 {
-                try await original.append(manager.reloadPatch(slot: slot))
-            }
-            if hasPerformances {
-                originalHeader = try await manager.readPerformanceHeader()
-                originalMode = try await manager.readPerformanceMode()
-                guard originalHeader != nil else {
-                    throw G2UsbError.badResponse("the performance header could not be read")
-                }
-                // Bez tego przywrócenie wysłałoby pustą mapę i skasowało gałki globalne.
-                try await manager.readGlobalKnobMap(into: &originalHeader!.settings)
-            }
+            snapshot = try await snapshotForRestore(performances: hasPerformances)
         } catch {
             result.restoreProblem = "Nothing was copied — the current state of the G2 could not be read "
                 + "(\(error.localizedDescription))."
@@ -1743,18 +1892,143 @@ public final class DeviceConnection {
         }
 
         bankUpload?.current = "Restoring the G2…"
-        // Osobne zadanie nie dziedziczy Stop: przywrócenie ma się wykonać zawsze. Do
-        // 2026-10-14 Stop w trakcie pozycji przerywał także je i Nord zostawał z kopią.
+        result.restoreProblem = await restore(snapshot)
+        return result
+    }
+
+    // MARK: - Bank Download (folder z dysku do banku Norda)
+
+    /// „Synth ▸ Bank Download (To Modular)” Clavii — u nas Synth ▸ Upload Banks to G2…:
+    /// pliki z planu (`G2BankDump.uploadPlan`) na swoje miejsca w JEDNYM banku. Jak u Clavii
+    /// bank jest najpierw czyszczony („All patches in the bank will be erased.”), żeby po
+    /// wgraniu zawierał dokładnie zawartość folderu → [[Docs/usb/bank-dump]].
+    ///
+    /// Każdy plik idzie przez slot D (performance — przez cały performance) i dopiero stamtąd
+    /// do banku, więc stan Norda sprzed wgrania jest zapamiętany i na końcu oddany, także
+    /// po Stop. Kod wyniku inny niż „zapisane” (pamięć pełna, Memory Protect) zatrzymuje resztę.
+    public func downloadBank(_ plan: G2BankDump.UploadPlan, kind: G2BankEntry.Kind,
+                             bank: Int) async -> BankUploadResult
+    {
+        var result = BankUploadResult()
+        guard status == .connected, !isBusy, bankUpload == nil, !plan.items.isEmpty else { return result }
+        let performance = kind == .performance
+        let bankTitle = (performance ? "Performance" : "Patch") + " Bank \(bank + 1)"
+        let total = plan.items.count
+        var progress = BankUploadProgress(bankTitle: bankTitle, bankNumber: 1, bankCount: 1,
+                                          done: 0, total: total, current: "Reading the current state…")
+        bankUpload = progress
+        ignoreDeviceReloadsUntil = .distantFuture
+        defer {
+            bankUpload = nil
+            ignoreDeviceReloadsUntil = Date().addingTimeInterval(1.5)
+        }
+
+        let snapshot: DeviceSnapshot
+        do {
+            snapshot = try await snapshotForRestore(performances: performance)
+        } catch {
+            result.restoreProblem = "Nothing was uploaded — the current state of the G2 could not be read "
+                + "(\(error.localizedDescription))."
+            return result
+        }
+
+        if bankEntries.contains(where: { $0.kind == kind && $0.bank == bank }) {
+            progress.current = "Erasing \(bankTitle)…"
+            bankUpload = progress
+            do {
+                let erased = try await manager.deleteFromBank(kind: kind, bank: bank, from: 0,
+                                                              to: G2BankGroup.locationsPerBank - 1,
+                                                              allowHardware: true)
+                if !G2UsbProtocol.storeSucceeded(erased) {
+                    result.failures.append("\(bankTitle) — \(Self.storeFailureMessage(erased))")
+                    result.cancelled = true
+                }
+            } catch {
+                result.failures.append("Erasing \(bankTitle) — \(error.localizedDescription)")
+                result.cancelled = true
+            }
+        }
+
+        for item in plan.items where !result.cancelled {
+            if Task.isCancelled {
+                result.cancelled = true
+                break
+            }
+            progress.current = item.name
+            bankUpload = progress
+            let place = "\(bank + 1):\(item.location + 1) \(item.name)"
+            do {
+                let stored = try await manager.storeFileToBank(
+                    fileData: Data(contentsOf: item.file), name: item.name, performance: performance,
+                    slot: 3, bank: bank, location: item.location, allowHardware: true
+                )
+                if G2UsbProtocol.storeSucceeded(stored) {
+                    result.saved += 1
+                } else {
+                    result.failures.append("\(place) — \(Self.storeFailureMessage(stored))")
+                    result.cancelled = true
+                }
+            } catch is CancellationError {
+                result.cancelled = true
+            } catch {
+                result.failures.append("\(place) — \(error.localizedDescription)")
+                if case .notConnected? = error as? G2UsbError { result.cancelled = true }
+            }
+            progress.done += 1
+        }
+
+        progress.current = "Restoring the G2…"
+        bankUpload = progress
+        result.restoreProblem = await restore(snapshot)
+        // Osobne zadanie z tego samego powodu co przywrócenie: po Stop lista też ma przyjść.
+        let fresh = Task { @MainActor in try await self.manager.readBankList() }
+        if let entries = try? await fresh.value {
+            bankEntries = entries
+            bankLoads = [:]
+        }
+        return result
+    }
+
+    /// Stan Norda sprzed pracy na bankach: patche zmieniają tylko slot D, performance'y —
+    /// wszystkie cztery sloty, nagłówek i tryb Performance/Patch.
+    private typealias DeviceSnapshot = (patches: [G2Patch],
+                                        header: (name: String, settings: G2PerformanceSettings, section: [UInt8])?,
+                                        mode: Bool?)
+
+    private func snapshotForRestore(performances: Bool) async throws -> DeviceSnapshot {
+        var original: [G2Patch] = []
+        var originalHeader: (name: String, settings: G2PerformanceSettings, section: [UInt8])?
+        var originalMode: Bool?
+        for slot in UInt8(0) ..< UInt8(G2UsbProtocol.maxSlots) where performances || slot == 3 {
+            try await original.append(manager.reloadPatch(slot: slot))
+        }
+        if performances {
+            originalHeader = try await manager.readPerformanceHeader()
+            originalMode = try await manager.readPerformanceMode()
+            guard originalHeader != nil else {
+                throw G2UsbError.badResponse("the performance header could not be read")
+            }
+            // Bez tego przywrócenie wysłałoby pustą mapę i skasowało gałki globalne.
+            try await manager.readGlobalKnobMap(into: &originalHeader!.settings)
+        }
+        return (original, originalHeader, originalMode)
+    }
+
+    /// Oddaje Nordowi stan z `snapshot`. Osobne zadanie nie dziedziczy Stop: przywrócenie
+    /// ma się wykonać zawsze — do 2026-10-14 Stop w trakcie pozycji przerywał także je
+    /// i Nord zostawał z kopią. Zwraca opis problemu albo `nil`.
+    private func restore(_ snapshot: DeviceSnapshot) async -> String? {
         let restore = Task { @MainActor in
-            try await self.restoreAfterUpload(original: original, header: originalHeader, mode: originalMode)
+            try await self.restoreAfterUpload(original: snapshot.patches, header: snapshot.header,
+                                              mode: snapshot.mode)
         }
         do {
             try await restore.value
+            return nil
         } catch {
-            result.restoreProblem = "The G2 could not be put back as it was (\(error.localizedDescription)). "
+            return "The G2 could not be put back as it was (\(error.localizedDescription)). "
                 + "Reload the patch you were working on."
         }
-        return result
     }
 
     private func restoreAfterUpload(original: [G2Patch],

@@ -18,10 +18,11 @@ struct BlockDropHover: Equatable {
     var row: Int
 }
 
+/// Obrysy grupy modułów lewym górnym rogiem w `column`/`row` — duch bloku i wklejenia ⌘V.
 struct BlockDropGhost: View {
-    let block: G2Patch
-    let hover: BlockDropHover
-    let area: PatchArea
+    let modules: [G2Module]
+    let column: Int
+    let row: Int
     let rowOffset: Int
     let zoom: CGFloat
 
@@ -36,15 +37,14 @@ struct BlockDropGhost: View {
         .allowsHitTesting(false)
     }
 
-    /// Moduły bloku z tego obszaru, przesunięte tak jak zrobi to `insertBlock`.
+    /// Moduły przesunięte tak jak zrobi to `insertBlock` / `insert(modules:)`.
     private var moduleRects: [(name: String, rect: CGRect)] {
-        let modules = block.modules(in: area)
         let left = modules.map(\.column).min() ?? 0
         let top = modules.map(\.row).min() ?? 0
         return modules.map { module in
             var placed = module
-            placed.column = hover.column + module.column - left
-            placed.row = hover.row + module.row - top
+            placed.column = column + module.column - left
+            placed.row = row + module.row - top
             let def = ModuleDatabase.module(id: module.typeID)
             let rect = PatchLayout.moduleRect(placed, def: def, rowOffset: rowOffset)
             let name = module.label.isEmpty ? (def?.shortName ?? "") : module.label

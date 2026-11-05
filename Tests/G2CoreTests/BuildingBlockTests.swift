@@ -56,10 +56,11 @@ final class BuildingBlockTests: XCTestCase {
 
         XCTAssertEqual(inserted, [.voice: [4, 5]])
         let rows = Dictionary(uniqueKeysWithValues: patch.voiceModules.map { ($0.id, $0.row) })
-        XCTAssertEqual(rows[4], 1, "block corner lands on the drop point")
-        XCTAssertEqual(rows[5], 1 + height, "block layout is kept")
-        XCTAssertEqual(rows[1], 1 + 2 * height, "overlapped module goes under the block")
-        XCTAssertEqual(rows[2], 1 + 3 * height, "and pushes the next one down")
+        // Róg puszczony w górną połowę modułu 1 dociąga się do jego góry (#175) — bez przerwy.
+        XCTAssertEqual(rows[4], 0, "block corner snaps to the top of the module it hits")
+        XCTAssertEqual(rows[5], height, "block layout is kept")
+        XCTAssertEqual(rows[1], 2 * height, "overlapped module goes under the block")
+        XCTAssertEqual(rows[2], 3 * height, "and pushes the next one down")
         XCTAssertEqual(rows[3], 0, "other columns stay put")
         XCTAssertEqual(patch.voiceCables.last, cable(4, 5))
         XCTAssertEqual(patch.voiceModules.first { $0.id == 4 }?.label, "M1")

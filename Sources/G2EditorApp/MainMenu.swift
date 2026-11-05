@@ -187,8 +187,8 @@ struct MainMenuCommands: Commands {
             }
             .disabled(state?.isLoaded != true)
 
-            Button("Save Patch as SysEx") {}
-                .disabled(true) // Faza 2 USB
+            // „Save Patch as SysEx" i „Save Performance as SysEx" UKRYTE 2026-11-04 (decyzja
+            // użytkownika): niezrobione, a wyszarzone tylko myliły → [[Docs/roadmap]].
             // „Save Patch as FXP" USUNIĘTE 2026-09-11: `.fxp` to preset wtyczki VST
             // BVerhue, która istnieje wyłącznie na Windows. Bez własnej wtyczki ten
             // plik nie ma czego otworzyć → [[Docs/roadmap]].
@@ -202,8 +202,7 @@ struct MainMenuCommands: Commands {
                 .keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(fileOpen == nil)
             FileMenuSavePerfButton(state: state)
-            Button("Save Performance as SysEx") {}
-                .disabled(true) // Faza 2
+            FileMenuSavePerfAsButton(state: state)
         }
 
         // Edit — trzy grupy naraz, patrz `EditMenuCommands`. Osobno się nie zmieszczą:
@@ -231,7 +230,9 @@ struct MainMenuCommands: Commands {
             // Cały patch slotu z focusem jeszcze raz do G2. Bez okna wyboru slotu z oryginału:
             // u nas slot edytora i urządzenia to ta sama liczba. To też droga ratunkowa po
             // patchu, którego G2 nie przyjął (#143) — poprawiona notatka sama do Norda nie jedzie.
-            Button("Download To Slot") {
+            // U Clavii „Download To Slot” — nazwa zmieniona 2026-11-04 na prośbę użytkownika:
+            // „Download/Upload” znaczyły w tym menu raz jeden kierunek, raz drugi.
+            Button("Send to G2 Slot") {
                 guard let state, let device else { return }
                 Task { await device.send(state, onlyFocusedSlot: true) }
             }
@@ -266,11 +267,11 @@ struct MainMenuCommands: Commands {
             // Ustawienia samego urządzenia — pozycja zapala się dopiero, gdy Nord odpowie
             // na `0x02`: w pliku patcha ani performance'u tych pól NIE MA.
             SynthSettingsButton(state: state, device: device)
-            Button("Upload Active Slot") {}
-                .keyboardShortcut("u", modifiers: [.command])
-                .disabled(true) // Faza 2
-            Button("Save In Synth…") {}
-                .disabled(true) // Faza 2
+            UploadActiveSlotButton(state: state, device: device)
+            // Zapis do banku prawdziwego Norda — od 2026-11-04, tylko tą drogą (jedno
+            // miejsce wskazane przez użytkownika) → [[Docs/usb/bank-dump]].
+            Button("Save In Synth…") { state?.showSaveInSynth = true }
+                .disabled(state == nil || device?.status != .connected || device?.isBusy == true)
 
             Divider()
 
@@ -279,15 +280,16 @@ struct MainMenuCommands: Commands {
             // Działa też z wirtualnym G2 — jego flash ma bank fabryczny (krok 2 bank-dump).
             Button("Download Banks from G2…") { state?.showBankUpload = true }
                 .disabled(device?.status != .connected || device?.bankEntries.isEmpty != false)
-            Button("Upload Banks to G2…") {}.disabled(true) // Faza 2
+            // Folder do jednego banku Norda — od 2026-11-04 (decyzja użytkownika).
+            Button("Upload Banks to G2…") { state?.showBankDownload = true }
+                .disabled(device?.status != .connected || device?.isBusy == true)
 
             Divider()
 
-            Button("Send Controller Snapshot") {}
-                .disabled(true) // Faza 2 (skrót ⌘M zajęty przez Minimize Window)
-            Button("Dump One") {}
-                .keyboardShortcut("1", modifiers: [.command, .shift])
-                .disabled(true) // Faza 2
+            // Oba polecenia każą Nordowi nadać dane przez MIDI OUT — edytor nic nie dostaje
+            // z powrotem (✅ Nord 2026-11-04, podsłuch MIDI). Snapshot bez skrótu:
+            // ⌘M to Minimize Window.
+            MidiOutButtons(state: state, device: device)
         }
 
         // Tools — narzędzia pracujące PRZY patchu. Wszystkie mieszkają w pływających
@@ -534,6 +536,20 @@ private struct FileMenuSavePerfButton: View {
     }
 }
 
+/// Save Performance As… — zawsze okno zapisu: kopia performance'u pod nową nazwą, która
+/// od tej chwili jest plikiem performance'u (nazwa idzie za nazwą pliku).
+private struct FileMenuSavePerfAsButton: View {
+    let state: PatchState?
+
+    var body: some View {
+        Button("Save Performance As…") {
+            guard let state else { return }
+            SaveActions.savePerformanceAs(state)
+        }
+        .disabled(state?.isLoaded != true)
+    }
+}
+
 /// Tryb urządzenia: Performance (cztery sloty razem) albo Patch (gra jeden).
 /// Komenda `0x3E`; stan czytamy przy łączeniu → [[Docs/usb/slots]].
 /// „Synth Settings…" — osobny widok, żeby obserwacja `DeviceConnection` działała:
@@ -546,6 +562,54 @@ private struct SynthSettingsButton: View {
         Button("Synth Settings…") { state?.showSynthSettings = true }
             .keyboardShortcut("g", modifiers: [.command])
             .disabled(device?.synthSettings == nil)
+    }
+}
+
+/// „Get Active Slot from G2" (⌘U) — patch ze slotu aktywnego na Nordzie do tego samego slotu
+/// edytora (instrukcja, rozdz. 9). Clavia otwiera go w nowym oknie; u nas slotów jest
+/// zawsze cztery, więc ląduje w swoim i dostaje focus. Osobny widok z tego samego powodu
+/// co `SynthSettingsButton`. U Clavii „Upload Active Slot” — nazwa zmieniona 2026-11-04,
+/// patrz „Send to G2 Slot”.
+private struct UploadActiveSlotButton: View {
+    let state: PatchState?
+    let device: DeviceConnection?
+
+    var body: some View {
+        Button("Get Active Slot from G2") {
+            guard let state, let device else { return }
+            guard UnsavedChangesGuard.shared.confirmDiscard(slot: device.activeSlot) else { return }
+            Task {
+                guard let upload = await device.uploadActiveSlot() else { return }
+                state.replaceSlotFromDevice(slot: upload.slot, patch: upload.patch, force: true)
+                state.selectedSlot = upload.slot
+            }
+        }
+        .keyboardShortcut("u", modifiers: [.command])
+        .disabled(state == nil || device?.status != .connected || device?.isSending == true)
+    }
+}
+
+/// „Send Controller Snapshot” i „Dump One” — osobny widok z tego samego powodu
+/// co `SynthSettingsButton` (stan `DeviceConnection` musi zapalać pozycje).
+private struct MidiOutButtons: View {
+    let state: PatchState?
+    let device: DeviceConnection?
+
+    var body: some View {
+        let ready = device?.status == .connected && device?.isBusy != true
+        Button("Send Controller Snapshot") {
+            guard let state, let device else { return }
+            Task { await device.sendControllerSnapshot(slot: state.selectedSlot) }
+        }
+        .disabled(state == nil || !ready)
+        .help("The G2 sends the current values of the knobs assigned to MIDI CCs out of its MIDI OUT.")
+        Button("Dump One") {
+            guard let device else { return }
+            Task { await device.dumpOne() }
+        }
+        .keyboardShortcut("1", modifiers: [.command, .shift])
+        .disabled(!ready)
+        .help("The G2 sends the patch in its active slot as SysEx out of its MIDI OUT.")
     }
 }
 
@@ -975,10 +1039,14 @@ private struct EditPasteboardCommands: View {
         .disabled(state?.isLoaded != true || selection?.isEmpty != false)
     }
 
-    /// `sendAction` zwraca `false`, gdy nikt w łańcuchu respondera polecenia nie zna —
-    /// wtedy i tylko wtedy zajmuje się nim kanwa.
+    /// Polecenie idzie do łańcucha respondera tylko przy pisaniu (kursor w polu tekstowym);
+    /// inaczej zajmuje się nim kanwa. Dawniej szło zawsze, a kanwa brała je tylko, gdy
+    /// nikt go nie przyjął — lecz lista po lewej (biblioteka modułów, Patches) zostaje
+    /// pierwszym respondentem po kliknięciu i przyjmuje `copy:`/`selectAll:`, nic nie robiąc:
+    /// ⌘C nie kopiowało zaznaczonych modułów, ⌘A nie zaznaczało (zgłoszenie Kuby 2026-11-05).
     private func forward(_ selector: Selector, otherwise action: () -> Void) {
-        guard !NSApp.sendAction(selector, to: nil, from: nil) else { return }
+        if let window = NSApp.keyWindow, KeyEventScope.isTyping(in: window),
+           NSApp.sendAction(selector, to: nil, from: nil) { return }
         action()
     }
 
@@ -1005,13 +1073,25 @@ private struct EditPasteboardCommands: View {
         delete()
     }
 
+    /// Jak ⌘V na kanwie: moduły zawisają przy kursorze, klik w kanwę je kładzie.
     private func paste() {
-        guard let state, let content = G2ClipboardContent.readFromPasteboard() else { return }
-        state.pasteModules(content, area: area)
+        guard let content = G2ClipboardContent.readFromPasteboard(), !content.modules.isEmpty else { return }
+        if let selection {
+            selection.pendingPaste = content
+        } else {
+            state?.pasteModules(content, area: area)
+        }
     }
 
     private func delete() {
         guard let state, let selection else { return }
+        // Jak Delete na kanwie (`PatchCanvasView.deleteSelection`): same kable nie ruszają
+        // aktywnego modułu.
+        if !selection.cables.isEmpty {
+            state.disconnectCables(selection.cables, area: area)
+            selection.cables = []
+            guard !selection.moduleIDs.isEmpty else { return }
+        }
         let targets = selection.targets
         guard !targets.isEmpty else { return }
         state.deleteModules(moduleIDs: targets, area: area)

@@ -20,6 +20,8 @@ struct EditorKeyboardShortcuts: NSViewRepresentable {
     let state: PatchState
     let viewState: CanvasViewState
     let device: DeviceConnection
+    /// Zaznaczenia kanw — Esc odkłada w nich czekające wklejenie.
+    var selections: CanvasSelectionHub?
 
     func makeNSView(context _: Context) -> SingleKeyMonitorNSView {
         let view = SingleKeyMonitorNSView()
@@ -42,6 +44,11 @@ struct EditorKeyboardShortcuts: NSViewRepresentable {
         // Esc kończy porównanie wariacji (Shift-klik w pasku wariacji) i gasi zmiany spod
         // fadera wariacji, które zostały na kanwie; bez nich zostaje dla innych.
         if keyCode == 53 {
+            // Wklejenie czekające na klik (⌘V) — Esc je odkłada.
+            if let selections, let waiting = [selections.voice, selections.fx].first(where: { $0.pendingPaste != nil }) {
+                waiting.pendingPaste = nil
+                return true
+            }
             return state.endCanvasComparison(slot: state.selectedSlot)
         }
 

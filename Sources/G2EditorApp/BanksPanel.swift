@@ -355,6 +355,11 @@ struct BanksPanel: View {
     @AppStorage("g2_nord_banks_reversed") private var nordSortReversed = false
     @AppStorage("g2_nord_banks_expanded") private var nordExpandedRaw = ""
     @State private var nordCategory: Int?
+    /// Zaznaczone pozycje banków Norda (`G2BankEntry.id`) — ⌘-klik dodaje/zdejmuje,
+    /// Shift-klik zaznacza od kotwicy do klikniętego, jak w Finderze. Zwykły klik dalej
+    /// ładuje patch i czyści zaznaczenie. Służy kasowaniu wielu naraz (2026-11-04).
+    @State private var nordSelection: Set<String> = []
+    @State private var nordSelectionAnchor: String?
 
     private var source: Source {
         Source(rawValue: sourceRaw) ?? .disk
@@ -461,11 +466,13 @@ struct BanksPanel: View {
                             nordBankRow(group)
                         }
                     }
+                    emptyBanksGroup
                 }
                 // Póki poprzedni patch się ładuje, lista jest wyszarzona — kolejny klik
                 // poszedłby w środek transferu (prośba użytkownika 2026-10-15).
                 .disabled(!device.acceptsPatchChange)
                 .listStyle(.plain)
+                .onExitCommand { clearNordSelection() }
             }
         }
     }
@@ -501,7 +508,14 @@ struct BanksPanel: View {
 
     private func nordRow(_ entry: G2BankEntry) -> some View {
         let slots = loadedSlots(entry)
+        let selected = nordSelection.contains(entry.id)
         return Button {
+            let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+            if modifiers.contains(.command) || modifiers.contains(.shift) {
+                selectNordEntry(entry, extend: modifiers.contains(.shift))
+                return
+            }
+            clearNordSelection()
             // Opcja „jak oryginał” obejmuje też patch z banku Norda: A, B–D puste (#137).
             if entry.kind == .patch, PatchOpenMode.stored == .likeOriginal {
                 guard UnsavedChangesGuard.shared.confirmDiscard() else { return }
@@ -536,9 +550,111 @@ struct BanksPanel: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Ten sam wygląd co otwarty plik w źródle „Disk”.
-        .listRowBackground(slots.isEmpty ? nil : Color.accentColor.opacity(0.22))
-        .help(slots.isEmpty ? "Load into the device" : "Loaded into slot \(slots) — click to load again")
+        // Ten sam wygląd co otwarty plik w źródle „Disk”; zaznaczenie mocniej.
+        .listRowBackground(selected ? Color.accentColor.opacity(0.5)
+            : slots.isEmpty ? nil : Color.accentColor.opacity(0.22))
+        .help(slots.isEmpty ? "Load into the device — ⌘-click or Shift-click to select several"
+            : "Loaded into slot \(slots) — click to load again")
+        .contextMenu {
+            let targets = deletionTargets(for: entry)
+            if targets.count > 1 {
+                Button("Delete \(targets.count) Items from the G2…") { deleteFromNord(targets) }
+                    .disabled(device.isBusy)
+            } else {
+                Button("Delete “\(entry.name)” from the G2…") { deleteFromNord([entry]) }
+                    .disabled(device.isBusy)
+            }
+        }
+    }
+
+    // MARK: - Zaznaczanie wielu pozycji (⌘ / Shift)
+
+    /// Pozycje w kolejności, w jakiej stoją na ekranie — tylko z rozwiniętych banków,
+    /// bo Shift-klik nie może zaznaczyć czegoś, czego nie widać.
+    private var visibleNordEntries: [G2BankEntry] {
+        nordGroups.filter { nordExpansion(of: $0.id).wrappedValue }.flatMap(\.entries)
+    }
+
+    private func selectNordEntry(_ entry: G2BankEntry, extend: Bool) {
+        let visible = visibleNordEntries
+        if extend, let anchor = nordSelectionAnchor,
+           let from = visible.firstIndex(where: { $0.id == anchor }),
+           let to = visible.firstIndex(where: { $0.id == entry.id })
+        {
+            nordSelection.formUnion(visible[min(from, to) ... max(from, to)].map(\.id))
+            return
+        }
+        if nordSelection.contains(entry.id) { nordSelection.remove(entry.id) } else { nordSelection.insert(entry.id) }
+        nordSelectionAnchor = entry.id
+    }
+
+    private func clearNordSelection() {
+        nordSelection.removeAll()
+        nordSelectionAnchor = nil
+    }
+
+    /// Prawy klik na zaznaczonym wierszu kasuje całe zaznaczenie, na innym — tylko ten wiersz.
+    private func deletionTargets(for entry: G2BankEntry) -> [G2BankEntry] {
+        guard nordSelection.contains(entry.id) else { return [entry] }
+        return device.bankEntries.filter { nordSelection.contains($0.id) }
+    }
+
+    // MARK: - Kasowanie w pamięci Norda (2026-11-04)
+
+    /// Pozycje z banków Norda — jedno pytanie na wszystkie. Skasowanego miejsca Nord nie oddaje.
+    private func deleteFromNord(_ entries: [G2BankEntry]) {
+        guard let first = entries.first else { return }
+        let title: String
+        let detail: String
+        if entries.count == 1 {
+            let noun = first.kind == .patch ? "patch" : "performance"
+            title = "Delete “\(first.name)” from the G2 memory?"
+            detail = "Location \(first.displayLocation) becomes empty. The \(noun) cannot be brought back "
+                + "from the G2 — only from a copy on disk."
+        } else {
+            let names = entries.prefix(8).map { "\($0.displayLocation)  \($0.name)" }.joined(separator: "\n")
+            let more = entries.count > 8 ? "\n… and \(entries.count - 8) more" : ""
+            title = "Delete \(entries.count) items from the G2 memory?"
+            detail = names + more + "\n\nThey cannot be brought back from the G2 — only from a copy on disk."
+        }
+        guard confirmDeletion(title: title, detail: detail, button: "Delete") else { return }
+        clearNordSelection()
+        Task { await reportDeletion(device.deleteFromBank(entries)) }
+    }
+
+    /// Cały bank — jak u Clavii prawy przycisk na ikonie banku („delete all Patches…
+    /// of the entire Bank”).
+    private func deleteBankFromNord(_ group: G2BankGroup) {
+        let noun = group.kind == .patch ? "patches" : "performances"
+        // Liczba z całej listy, nie z grupy — przy szukaniu grupa trzyma tylko trafienia.
+        let count = device.bankEntries.filter { $0.kind == group.kind && $0.bank == group.bank }.count
+        guard confirmDeletion(
+            title: "Delete everything in \(group.title)?",
+            detail: "All \(count) \(noun) in this bank are erased from the G2 memory. "
+                + "They cannot be brought back from the G2 — only from a copy on disk "
+                + "(Synth ▸ Download Banks from G2…).",
+            button: "Delete All"
+        ) else { return }
+        Task { await reportDeletion(device.deleteFromBank(kind: group.kind, bank: group.bank, location: nil)) }
+    }
+
+    private func confirmDeletion(title: String, detail: String, button: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: button).hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    @MainActor
+    private func reportDeletion(_ failure: String?) {
+        guard let failure else { return }
+        let alert = NSAlert()
+        alert.messageText = "Deleting did not finish"
+        alert.informativeText = failure
+        alert.runModal()
     }
 
     /// Nagłówek banku — kliknięcie w całą szerokość rozwija i zwija, jak trójkąt obok.
@@ -561,7 +677,65 @@ struct BanksPanel: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("Delete All in \(group.title)…") { deleteBankFromNord(group) }
+                .disabled(device.isBusy)
+        }
     }
+
+    /// Puste banki — lista Norda ich nie podaje. Zwinięta grupa na dole (decyzja użytkownika
+    /// 2026-11-04 zamiast opcji w ustawieniach); przy szukaniu i filtrze kategorii znika,
+    /// bo pusty bank nie jest trafieniem. Klik w bank otwiera Save In Synth na nim.
+    @ViewBuilder
+    private var emptyBanksGroup: some View {
+        let kinds: [G2BankEntry.Kind] = [.patch, .performance]
+            .filter { library.showsKind(performance: $0 == .performance) }
+        let empty = G2BankGroup.emptyBanks(device.bankEntries, kinds: kinds)
+        if !isSearching, nordCategory == nil, !empty.isEmpty {
+            DisclosureGroup(isExpanded: nordExpansion(of: Self.emptyBanksID)) {
+                ForEach(empty) { emptyBankRow($0) }
+            } label: {
+                // Jak nagłówek banku: klik w całą szerokość rozwija i zwija.
+                Button {
+                    nordExpansion(of: Self.emptyBanksID).wrappedValue.toggle()
+                } label: {
+                    Text("Empty Banks (\(empty.count))")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func emptyBankRow(_ group: G2BankGroup) -> some View {
+        let kind = group.kind
+        let open = {
+            state.saveInSynthBank = (kind, group.bank)
+            state.showSaveInSynth = true
+        }
+        return Button(action: open) {
+            HStack(spacing: 5) {
+                Image(systemName: kind == .patch ? "rectangle.stack" : "square.grid.2x2")
+                    .font(.system(size: 10))
+                Text(group.title).font(.system(size: 11)).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(device.isBusy)
+        .contextMenu {
+            Button(kind == .patch ? "Save Patch Here…" : "Save Performance Here…", action: open)
+        }
+        .help("Empty — click to save the \(kind == .patch ? "patch" : "performance") here")
+    }
+
+    private static let emptyBanksID = "empty"
 
     /// Przy szukaniu i filtrze kategorii wszystkie banki stoją otwarte — trafienie
     /// schowane w zwiniętym banku wyglądałoby na brak wyników. Zapamiętane rozwinięcia
