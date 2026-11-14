@@ -191,6 +191,44 @@ public final class DeviceConnection {
     /// najwyżej mignięcie czerwonej kropki, a slot milczał dalej → [[Docs/context/bug-history]] #143.
     public private(set) var uploadFailure: String?
 
+    /// Patch, którego komunikat przekracza `largeUploadThreshold`: wysyłka czeka, aż użytkownik
+    /// powie, czy go wysłać. `nil`, gdy nic nie czeka. Okno pytania pokazuje ContentView.
+    public private(set) var largeUploadPrompt: LargeUploadPrompt?
+    private var largeUploadAnswer: CheckedContinuation<Bool, Never>?
+    /// Ostatnia próba wysłania całego performance'u skończyła się odmową użytkownika.
+    private var declinedLargePerformance = false
+
+    /// Powyżej tylu bajtów w jednym komunikacie `0x37` pytamy, zanim wyślemy.
+    /// Zmierzone 2026-11-13 na G2 V1.62: pliki do 64 KB przyjmowane bez zawieszenia.
+    /// Próg równa się twardemu limitowi ramki USB — okno w praktyce nie odpala dla żadnego
+    /// realnego pliku (największy znany: 64 288 B < 65 535 B) → [[Docs/usb/protocol-map]].
+    public static let largeUploadThreshold = 65535
+
+    /// Wysyłka, o którą pytamy: co to jest („Slot B” / „Performance”), czym jest („patch” /
+    /// „performance”) i ile bajtów ma komunikat.
+    public struct LargeUploadPrompt: Equatable {
+        public let subject: String
+        public let noun: String
+        public let bytes: Int
+
+        /// Tytuł okna: „Large Patch” albo „Large Performance”.
+        public var title: String {
+            "Large \(noun.prefix(1).uppercased() + noun.dropFirst())"
+        }
+
+        public var message: String {
+            "\(subject): this \(noun) is \(bytes / 1024) KB. The G2 may stop responding to messages "
+                + "larger than \(DeviceConnection.largeUploadThreshold / 1024) KB, and then has to be switched "
+                + "off and on. Send it anyway?"
+        }
+    }
+
+    /// Użytkownik odmówił wysyłki dużego patcha — idzie torem nieudanej wysyłki (slot zostaje
+    /// niepotwierdzony, pasek mówi dlaczego).
+    struct LargeUploadDeclined: Error {
+        let bytes: Int
+    }
+
     /// Sloty, których ostatniej wysyłki całości urządzenie NIE potwierdziło (odmowa `0x7E`
     /// albo cisza). Co w nich leży, nie wiadomo — Nord podbija numer sesji nawet patchowi,
     /// którego nie zbudował — więc różnica liczona wobec lustra `patches[]` byłaby
@@ -335,6 +373,8 @@ public final class DeviceConnection {
             // `connect()` zacznie od zera. Nie pokazujemy tego jako błędu aplikacji —
             // z punktu widzenia użytkownika Nord po prostu zniknął.
             if status == .connected {
+                // Pytanie o duży patch nie może wisieć gdy urządzenia już nie ma.
+                answerLargeUpload(send: false)
                 clearVisuals()
                 patchLoad = [:]
                 assignedVoices = nil
@@ -427,6 +467,8 @@ public final class DeviceConnection {
     }
 
     public func disconnect() async {
+        // Pytanie o duży patch nie może wisieć na urządzeniu, którego już nie ma.
+        answerLargeUpload(send: false)
         stopAutoConnect()
         notificationTask?.cancel()
         notificationTask = nil
@@ -1201,6 +1243,7 @@ public final class DeviceConnection {
                 // Pusty strumień znaczy „nie umiem zbudować tego slotu z pliku", nie
                 // „wgraj pusty patch" — wtedy wracamy do wysyłki molekułami.
                 let stream = streams.indices.contains(offset) ? streams[offset] : []
+                try await confirmOversizedStream(stream.count, slot: slot)
                 // Odczyt `0x72` należy do patcha, nie do slotu — tak trzyma go też
                 // oryginał. Kasujemy go PRZED wysyłką, bo nowy raport przychodzi
                 // w jej trakcie — a dla slotu, który nie gra, nie przychodzi wcale (#167).
@@ -1346,6 +1389,7 @@ public final class DeviceConnection {
               state.slots.count == G2UsbProtocol.maxSlots,
               let original = state.performanceFileData
         else { return false }
+        declinedLargePerformance = false
         do {
             // Te same bajty, które trafiłyby do pliku przy `Save` — czyli to, co widać
             // na ekranie, a nie to, co leżało w pliku przed edycją. Każdy slot z „Vol: Off"
@@ -1362,6 +1406,11 @@ public final class DeviceConnection {
             }
             guard !header.isEmpty, !streams.contains(where: \.isEmpty) else { return false }
             let knobs = try PatchParser.performanceKnobMapStream(fileData: current)
+            let total = header.count + streams.reduce(0) { $0 + $1.count } + knobs.count
+            guard await confirmOversizedPerformance(total, state: state) else {
+                declinedLargePerformance = true
+                return true
+            }
 
             clearVisuals()
             patchLoad = [:] // nowe patche we wszystkich slotach — patrz `performUpload` (#167)
@@ -1741,11 +1790,69 @@ public final class DeviceConnection {
         uploadFailure = nil
     }
 
+    /// Czy strumień sekcji jednego patcha jest na tyle duży, że przed wysyłką pytamy.
+    static func isLargeUpload(sectionBytes: Int) -> Bool {
+        sectionBytes > largeUploadThreshold
+    }
+
+    /// Pyta użytkownika i czeka na odpowiedź. Odpowiada `answerLargeUpload`.
+    func confirmLargeUpload(subject: String, noun: String, bytes: Int) async -> Bool {
+        largeUploadPrompt = LargeUploadPrompt(subject: subject, noun: noun, bytes: bytes)
+        return await withCheckedContinuation { largeUploadAnswer = $0 }
+    }
+
+    /// Odpowiedź z okna pytania. Bez pytania nic nie robi.
+    public func answerLargeUpload(send: Bool) {
+        largeUploadPrompt = nil
+        largeUploadAnswer?.resume(returning: send)
+        largeUploadAnswer = nil
+    }
+
+    /// Przed wysyłką dużego patcha pyta, czy go wysłać; odmowa rzuca `LargeUploadDeclined`.
+    /// Pasek postępu mówi na ten czas, na co czekamy — `isSending` musi zostać prawdziwe.
+    private func confirmOversizedStream(_ bytes: Int, slot: Int) async throws {
+        guard Self.isLargeUpload(sectionBytes: bytes) else { return }
+        let previous = sendProgress
+        sendProgress = "Waiting for your answer…"
+        let confirmed = await confirmLargeUpload(subject: "Slot \(Self.slotLabels[slot])", noun: "patch", bytes: bytes)
+        sendProgress = previous
+        if !confirmed { throw LargeUploadDeclined(bytes: bytes) }
+    }
+
+    /// Cały performance jednym komunikatem: pytanie przed wysyłką. `false` = użytkownik odmówił;
+    /// wtedy cztery sloty zostają niepotwierdzone (Nord trzyma poprzednią zawartość), a pasek
+    /// mówi dlaczego. Do wysyłki slot po slocie NIE wracamy po cichu — to inna droga niż ta,
+    /// o którą użytkownik był pytany.
+    private func confirmOversizedPerformance(_ bytes: Int, state: PatchState) async -> Bool {
+        guard Self.isLargeUpload(sectionBytes: bytes) else { return true }
+        let previous = sendProgress
+        sendProgress = "Waiting for your answer…"
+        let confirmed = await confirmLargeUpload(subject: "Performance", noun: "performance", bytes: bytes)
+        sendProgress = previous
+        if !confirmed {
+            for slot in 0 ..< G2UsbProtocol.maxSlots {
+                unconfirmedSlots[slot] = state.slotFileData.indices.contains(slot) ? state.slotFileData[slot] : nil
+            }
+            uploadFailure = Self.declinedPerformanceMessage(bytes: bytes)
+        }
+        return confirmed
+    }
+
+    static func declinedPerformanceMessage(bytes: Int) -> String {
+        "Performance not sent — it is \(bytes / 1024) KB and the G2 may stop responding to messages that "
+            + "large. The G2 still holds its previous performance. Open the file again to be asked once more."
+    }
+
     /// Tekst paska po nieudanej wysyłce. Odmowa `0x7E` i milczenie to różne sytuacje: po
     /// odmowie Nord żyje i czeka na poprawiony patch, a milczący bywa zawieszony i pomaga
     /// dopiero wyłączenie i włączenie. Do 2026-10-25 oba dostawały radę o notatce (#157).
     static func uploadFailureMessage(slot: Int, error: Error) -> String {
         let label = slotLabels[slot]
+        if let declined = error as? LargeUploadDeclined {
+            return "Slot \(label): not sent — this patch is \(declined.bytes / 1024) KB and the G2 may stop "
+                + "responding to messages that large. The slot still holds its previous patch. "
+                + "Use Patch ▸ Send to G2 Slot to send it anyway."
+        }
         if case .rejected? = error as? G2UsbError {
             return "Slot \(label): the G2 did not accept this patch, so the slot is silent. One known cause: "
                 + "a patch note (Textpad) longer than about 1000 characters. After fixing it, use "
@@ -2667,7 +2774,8 @@ public final class DeviceConnection {
             // jej w Nordzie byłoby podpisaniem cudzej zawartości → [[Docs/usb/slots]].
             // Cały performance JEDNĄ komendą, jak oryginał — gdy dokument da się tak wysłać.
             if await sendCompletePerformance(state) {
-                if status == .connected { state.markSentToDevice() }
+                // Odmowa wysyłki dużego performance'u to nie wysyłka — dokument nie jest w Nordzie.
+                if status == .connected, !declinedLargePerformance { state.markSentToDevice() }
                 return
             }
             var headerSent = false

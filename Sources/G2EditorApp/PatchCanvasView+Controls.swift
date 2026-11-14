@@ -384,18 +384,9 @@ extension PatchCanvasView {
                     }
                     return
                 }
-                if btn.type == "Push" {
-                    // Push Clavii jest akcją chwilową: ustawia 1 tylko na czas
-                    // RequestChange, po czym od razu wraca do 0. Krótka zwłoka
-                    // zachowuje czytelne wciśnięcie także na ekranie Canvasu.
-                    startMomentaryFlash(moduleID: module.id, codeRef: btn.codeRef)
-                    onMomentaryParameterChange?(module.id, btn.codeRef, 1)
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 120_000_000)
-                        onMomentaryParameterChange?(module.id, btn.codeRef, 0)
-                    }
-                    return
-                }
+                // Push obsługuje pushPressGesture (1 na czas trzymania myszy) —
+                // tap nie może go przełączać jak zwykłego przycisku.
+                if btn.type == "Push" { return }
                 let cur = btn.codeRef < module.parameters.count ? module.parameters[btn.codeRef] : 0
                 onParameterChange?(module.id, btn.codeRef, cur == 0 ? 1 : 0)
                 return

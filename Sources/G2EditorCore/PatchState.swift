@@ -3837,7 +3837,9 @@ public final class PatchState {
             performanceName = url.deletingPathExtension().lastPathComponent
             if let loaded = parsed.performance {
                 performance = loaded
+                performance.shiftGlobalKnobsOfReshapedParameters(original: parsed.patches)
                 performance.dropGlobalKnobs(removedFrom: parsed.patches, upgraded: slots)
+                performance.swapMorphGlobalKnobs(original: parsed.patches)
                 hasPerformanceSettings = true
                 // Pole `focus` mówi, na którym slocie performance ma się otworzyć.
                 selectedSlot = min(max(loaded.focusedSlot, 0), slots.count - 1)
@@ -3970,9 +3972,11 @@ public final class PatchState {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
+            let tags = FinderTags.read(at: url)
             let data = try PatchParser.saveAll(originalData: slotFileData[slot] ?? PatchParser.emptyPatchFile,
                                                patches: [slots[slot]])
             try data.write(to: url, options: .atomic)
+            FinderTags.restore(tags, at: url)
             variationLockMemory.store(slots[slot], key: VariationLockMemory.key(for: url))
             RecentFiles.remember(url)
         } catch {
@@ -4040,6 +4044,11 @@ public final class PatchState {
     /// Nazwa proponowana w oknie zapisu performance'u.
     public var suggestedPerformanceFileName: String {
         let trimmed = performanceName.trimmingCharacters(in: .whitespaces)
+        guard trimmed.isEmpty || trimmed == Self.emptyPerformanceName else { return trimmed }
+        // Gdy performance nie ma własnej nazwy, zaproponuj nazwę otwartego pliku slotu.
+        if let url = slotFileURLs.compactMap({ $0 }).first {
+            return url.deletingPathExtension().lastPathComponent
+        }
         return trimmed.isEmpty ? Self.emptyPerformanceName : trimmed
     }
 
@@ -4055,8 +4064,10 @@ public final class PatchState {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
+            let tags = FinderTags.read(at: url)
             let newData = try PatchParser.saveAll(originalData: original, patches: [slots[slot]])
             try newData.write(to: url, options: .atomic)
+            FinderTags.restore(tags, at: url)
             variationLockMemory.store(slots[slot], key: VariationLockMemory.key(for: url))
             slotFileData[slot] = newData
             markSlotSaved(slot)
@@ -4083,9 +4094,11 @@ public final class PatchState {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
+            let tags = FinderTags.read(at: url)
             let newData = try PatchParser.saveAll(originalData: original, patches: slots,
                                                   performance: settings)
             try newData.write(to: url, options: .atomic)
+            FinderTags.restore(tags, at: url)
             for slot in slots.indices {
                 variationLockMemory.store(slots[slot], key: VariationLockMemory.key(for: url, slot: slot))
             }

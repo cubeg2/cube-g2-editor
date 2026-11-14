@@ -238,8 +238,10 @@ enum BuildingBlockSave {
         var block = block
         block.name = url.deletingPathExtension().lastPathComponent
         do {
+            let tags = FinderTags.read(at: url)
             let data = try PatchParser.saveAll(originalData: PatchParser.emptyPatchFile, patches: [block])
             try data.write(to: url, options: .atomic)
+            FinderTags.restore(tags, at: url)
         } catch {
             let alert = NSAlert()
             alert.messageText = "The block \u{201C}\(block.name)\u{201D} could not be saved."

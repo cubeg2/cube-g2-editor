@@ -66,16 +66,17 @@ extension PatchCanvasView {
     @ViewBuilder
     private func morphAssignButton(for hit: ParamHoverHit) -> some View {
         let assigned = morphRange(moduleID: hit.moduleID, paramIndex: hit.paramIndex) != 0
+        let count = patch.morphedParameterCount(in: patch.activeVariation)
         Button {
             onMorphRangeChange?(hit.moduleID, hit.paramIndex,
                                 assigned ? 0 : defaultMorphRange(moduleID: hit.moduleID,
                                                                  paramIndex: hit.paramIndex))
         } label: {
             Text(assigned
-                ? "✓ Morph Assign (\(morphName(focusedMorph)))"
-                : "Morph Assign (\(morphName(focusedMorph)))")
+                ? "✓ Morph Assign (\(morphName(focusedMorph))) · \(count)/25"
+                : "Morph Assign (\(morphName(focusedMorph))) · \(count)/25")
         }
-        .disabled(onMorphRangeChange == nil)
+        .disabled(onMorphRangeChange == nil || (!assigned && count >= 25))
     }
 
     /// „Lock Across Variations" — jedna wartość we wszystkich ośmiu wariacjach.

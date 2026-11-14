@@ -337,4 +337,46 @@ extension PatchCanvasView {
         if incDecHold != nil { onParameterGestureEnded?() }
         incDecHold = nil
     }
+
+    /// Przycisk `Push` (SwOnOffM "On"): mouseDown przejmuje mysz i ustawia 1,
+    /// puszczenie (`Release`) wysyła 0 — przełącznik jest zamknięty tak długo, jak
+    /// trzymasz przycisk. Ten sam wzorzec co `incDecPressGesture`.
+    var pushPressGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { g in
+                guard pushHold == nil, selection.pendingPaste == nil else { return }
+                let lp = CGPoint(x: g.startLocation.x / zoom, y: g.startLocation.y / zoom)
+                guard let hit = findPushButton(at: lp) else { return }
+                pushHold = hit
+                momentaryFlashTask?.cancel()
+                momentaryFlash = hit
+                onMomentaryParameterChange?(hit.moduleID, hit.codeRef, 1)
+            }
+            .onEnded { _ in
+                guard let hit = pushHold else { return }
+                pushHold = nil
+                momentaryFlash = nil
+                onMomentaryParameterChange?(hit.moduleID, hit.codeRef, 0)
+            }
+    }
+
+    /// Musi się zgadzać z prostokątem `ButtonText` w `handleButtonTap`. `Clr`/`Rnd`
+    /// sekwencerów też mają typ Push, ale obsługuje je tap (zmieniają fadery).
+    private func findPushButton(at point: CGPoint) -> (moduleID: Int, codeRef: Int)? {
+        let ro = rowOffset
+        let mods = modules
+        for module in mods {
+            guard let ui = ModuleUIDatabase.shared.uiDef(forID: module.typeID) else { continue }
+            let rect = PatchLayout.moduleRect(module, def: moduleDefinition(module.typeID),
+                                              rowOffset: ro, allModules: mods)
+            for btn in ui.buttonsText where btn.type == "Push" && btn.text != "Clr" && btn.text != "Rnd" {
+                let buttonRect = CGRect(x: rect.minX + btn.xPt,
+                                        y: rect.minY + rndClkADiceYPt(module: module, btn: btn, ui: ui),
+                                        width: max(btn.widthPt, 6),
+                                        height: buttonTextHeight(module: module, button: btn))
+                if buttonRect.contains(point) { return (module.id, btn.codeRef) }
+            }
+        }
+        return nil
+    }
 }

@@ -222,6 +222,17 @@ struct RootView: View {
         } message: {
             Text(state.errorMessage ?? "")
         }
+        // Bardzo duży patch: pytamy przed wysyłką, bo Nord może przestać odpowiadać (obserwacja
+        // z cudzego edytora, nie fakt z oryginału) → DeviceConnection.largeUploadThreshold.
+        .alert(device.largeUploadPrompt?.title ?? "Large Patch", isPresented: .init(
+            get: { device.largeUploadPrompt != nil },
+            set: { _ in }
+        ), presenting: device.largeUploadPrompt) { _ in
+            Button("Send Anyway", role: .destructive) { device.answerLargeUpload(send: true) }
+            Button("Don't Send", role: .cancel) { device.answerLargeUpload(send: false) }
+        } message: { prompt in
+            Text(prompt.message)
+        }
         // Wystaw state + binding do menu commands (MainMenu.swift).
         .focusedSceneValue(\.patchState, state)
         .focusedSceneValue(\.canvasViewState, viewState)

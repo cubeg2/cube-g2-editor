@@ -409,6 +409,14 @@ public struct G2Patch: Equatable {
     public var voiceCables: [G2Cable] = []
     public var fxCables: [G2Cable] = []
 
+    /// Wersja formatu, którą bieżący firmware zapisuje i rozumie.
+    public static let currentFormatVersion = 23
+
+    /// Wersja formatu pliku, z którego patch pochodzi (bajt za nagłówkiem tekstowym).
+    /// Przeliczenie wartości starych plików (`convertLegacyValues`) nie jest idempotentne,
+    /// więc po konwersji pole mówi 23, a zapis wpisuje to do pliku → [[Docs/parser/file-conversion]].
+    public var sourceFormatVersion: Int = G2Patch.currentFormatVersion
+
     /// Licznik wariantów z nagłówka sekcji 0x4d, osobno dla każdego obszaru.
     /// Ma znaczenie tylko dla sekcji bez modułów z parametrami: oryginał zapisuje
     /// tam licznik faktycznie dodanych zestawów, czyli zwykle 0 — ale w 28 z 5 119

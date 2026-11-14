@@ -65,17 +65,32 @@ final class MusicalTyping {
             guard let self else { return event }
             return self.handle(event)
         }
+        // Caps Lock przełączony, gdy edytor nie był na wierzchu, nie daje nam zdarzenia
+        // `flagsChanged` — po powrocie czytamy stan sami (litery na klawiszach okna też).
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncCapsLock(NSEvent.modifierFlags.contains(.capsLock)) }
+        }
+    }
+
+    private var activationObserver: Any?
+
+    private func syncCapsLock(_ on: Bool) {
+        guard on != isOn else { return }
+        isOn = on
+        if !on { releaseAll() }
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         if event.type == .flagsChanged {
-            let on = event.modifierFlags.contains(.capsLock)
-            if on != isOn {
-                isOn = on
-                if !on { releaseAll() }
-            }
+            syncCapsLock(event.modifierFlags.contains(.capsLock))
             return event
         }
+        // Każde wciśnięcie klawisza niesie aktualny stan Caps Locka. Samo `flagsChanged`
+        // nie wystarcza: gdy Caps Lock zmienił się poza edytorem, `isOn` był nieaktualny
+        // i litery milczały mimo świecącej diody.
+        if event.type == .keyDown { syncCapsLock(event.modifierFlags.contains(.capsLock)) }
         // ⌘S ma dalej zapisywać, a litera wpisywana w pole nazwy ma się wpisać.
         guard isOn, event.modifierFlags.isDisjoint(with: [.command, .option, .control]),
               !isEditingText(event.window ?? NSApp.keyWindow)

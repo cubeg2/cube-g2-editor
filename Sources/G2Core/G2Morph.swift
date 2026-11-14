@@ -44,6 +44,25 @@ public enum G2Morph {
     /// w kolekcji referencyjnej 100 z 32 652 wariacji ma więcej (rekord: 50),
     /// więc przy wczytywaniu pliku niczego nie przycinamy.
     public static let maxAssignmentsPerVariation = 25
+
+    /// Przycięcie przypisań do limitu jak `CopyMorphs` oryginału: wpisy idą w podanej kolejności
+    /// (porządek klucza: obszar, moduł, parametr, morf — wpisy jednego parametru leżą obok siebie),
+    /// a kopiowanie **kończy się na pierwszym wpisie, który wprowadziłby 26. różny parametr**.
+    /// Pierwsze 25 parametrów zostaje ze wszystkimi swoimi morfami. Przycinanie wpisów do 25
+    /// obcinałoby też dozwolone przypisania parametrów z kilkoma grupami.
+    public static func keepingFirstParameters(of entries: [G2MorphAssignment]) -> [G2MorphAssignment] {
+        var kept: [G2MorphAssignment] = []
+        var parameters = Set<[Int]>()
+        for entry in entries {
+            let parameter = [Int(entry.location), entry.moduleID, entry.paramIndex]
+            if !parameters.contains(parameter) {
+                if parameters.count == maxAssignmentsPerVariation { break }
+                parameters.insert(parameter)
+            }
+            kept.append(entry)
+        }
+        return kept
+    }
 }
 
 // MARK: - Przypisanie morfu do parametru

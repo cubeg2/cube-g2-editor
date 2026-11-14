@@ -181,6 +181,14 @@ public actor G2MidiManager {
     /// obudzenie `@MainActor` kosztuje przerysowanie kanwy, a patch w ciszy nadaje
     /// w kółko te same zera → [[Docs/usb/notifications]] „Jak radzi sobie z tym oryginał".
     private var lastVisualPayload: [UInt16: [UInt8]] = [:]
+    /// Scalanie zmian parametrów (0x40) per (slot, location, moduleID, paramIndex): to samo
+    /// co dla wskaźników, bo przy wielu biegnących sekwencerach 0x40 leci równie gęsto
+    /// i blokuje kolejkę przed zdarzeniami sterującymi (ruch gałki, przełączenie slotu).
+    /// Klucz UInt32 = slot(8) | location(8) | moduleID(8) | paramIndex(8) — każdy parametr
+    /// ma własne okno, więc żaden krok żadnego sekwencera nie „wchodzi na" kroki innego.
+    private var lastParamDispatch: [UInt32: Date] = [:]
+    private var lastParamPayload: [UInt32: [UInt8]] = [:]
+    private var pendingParam: [UInt32: [UInt8]] = [:]
     /// Ile komunikatów pakujemy w jedną ramkę przy wgrywaniu patcha. Ostrożnie: ramka musi
     /// zmieścić się w buforze urządzenia, a przy odrzuceniu tracimy całą paczkę (jest
     /// wtedy powtarzana pojedynczo). 8 × ~30 B ≈ 240 B — z dużym zapasem.
@@ -201,6 +209,7 @@ public actor G2MidiManager {
         visualStreamEnabled = enabled
         if !enabled {
             pendingVisual.removeAll(keepingCapacity: true)
+            pendingParam.removeAll(keepingCapacity: true)
             visualFlushTask?.cancel()
             visualFlushTask = nil
         }
@@ -234,6 +243,22 @@ public actor G2MidiManager {
             }
             lastVisualDispatch[key] = now
             pendingVisual[key] = nil
+        } else if subCommand == G2UsbProtocol.subResponseParamChange, response.payload.count >= 3 {
+            // Klucz per-parametr: slot | location | moduleID | paramIndex (każdy 8 bitów).
+            let paramKey = UInt32(slot) << 24 | UInt32(response.payload[0]) << 16
+                | UInt32(response.payload[1]) << 8 | UInt32(response.payload[2])
+            guard lastParamPayload[paramKey] != response.payload else { return }
+            lastParamPayload[paramKey] = response.payload
+            let now = Date()
+            guard now.timeIntervalSince(lastParamDispatch[paramKey] ?? .distantPast)
+                >= Self.visualDispatchInterval
+            else {
+                pendingParam[paramKey] = response.payload
+                scheduleVisualFlush()
+                return
+            }
+            lastParamDispatch[paramKey] = now
+            pendingParam[paramKey] = nil
         }
         emit(slot: slot, subCommand: subCommand, payload: response.payload)
     }
@@ -263,7 +288,7 @@ public actor G2MidiManager {
 
     /// Wysyła to, co czeka, i mówi, czy zostało jeszcze coś do zrobienia.
     private func flushPendingVisual() -> Bool {
-        guard !pendingVisual.isEmpty else { return false }
+        guard !pendingVisual.isEmpty || !pendingParam.isEmpty else { return false }
         let now = Date()
         for (key, payload) in pendingVisual {
             guard now.timeIntervalSince(lastVisualDispatch[key] ?? .distantPast)
@@ -272,7 +297,15 @@ public actor G2MidiManager {
             pendingVisual[key] = nil
             emit(slot: UInt8(key & 0xFF), subCommand: UInt8(key >> 8), payload: payload)
         }
-        return !pendingVisual.isEmpty
+        for (paramKey, payload) in pendingParam {
+            guard now.timeIntervalSince(lastParamDispatch[paramKey] ?? .distantPast)
+                >= Self.visualDispatchInterval else { continue }
+            lastParamDispatch[paramKey] = now
+            pendingParam[paramKey] = nil
+            emit(slot: UInt8(paramKey >> 24), subCommand: G2UsbProtocol.subResponseParamChange,
+                 payload: payload)
+        }
+        return !pendingVisual.isEmpty || !pendingParam.isEmpty
     }
 
     /// Podpina logger surowych bajtów i kodów błędów libusb (diagnostyka na żywym sprzęcie).

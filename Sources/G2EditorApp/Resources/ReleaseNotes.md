@@ -1,3 +1,21 @@
+## 0.1.10 — November 14, 2026
+This release fixes several bugs found during testing on a real G2, and adds morph limit feedback in the context menu.
+
+**Bug Fixes:**
+- **Legacy patches sound like the original.** Patches in format 13–21 (made with the original Clavia editor before 2002) are now converted exactly like Clavia's editor: FilterHP frequency, LFO tempos, Glide times, morph 5↔6 swap with all assignments and dials. Verified 1:1 on 10 reference files.
+- **Smoother canvas when sequencers are running.** The editor was sluggish while patches with many sequencers were playing (gas.prf2 and similar). The 0x40 stream is now rate-limited per parameter to 50 Hz, the same way LED and VU streams already were. Noticeable on slower Macs.
+- **Finder tags survive saving.** Coloured Finder tags on a patch file no longer disappear after ⌘S, Save As, or Save Performance.
+- **Caps Lock and Musical Typing.** Keyboard letters could stop playing notes if Caps Lock changed while the editor was not in front. Fixed.
+- **Push buttons held for the full press.** SwOnOffM "On" and similar buttons with Type:Push now stay closed for as long as you hold the mouse button, instead of sending a brief pulse.
+- **Large Performance dialog closes on cable unplug.** The "Large Performance" sheet now dismisses when you unplug the USB cable instead of staying open.
+- **Save Performance As suggests the right name.** The dialog now suggests the file's own name instead of "Empty perf".
+- **Mutator respects the 25-parameter morph limit correctly.** The limit counts distinct parameters, not entries — a parameter assigned to two morph groups now takes just one slot of the 25, matching the original editor.
+
+**New:**
+- **Morph Assign menu shows the count.** The "Morph Assign" item in the parameter context menu now shows the current morphed parameter count (e.g. "· 12/25") and greys out when the limit is reached and the parameter is not yet assigned to the focused morph.
+
+---
+
 ## 0.1.9 — November 5, 2026
 This release is mostly about the G2's own memory: you can now store patches and whole banks in the G2 and tidy its banks from the editor.
 - **Save In Synth.** Synth ▸ Save In Synth… stores the patch in the active slot, or the whole performance, at a place you pick in one of the G2's banks. The window shows which banks are empty and lets you name the patch. The editor first sends what you see on screen, so the G2 stores exactly that.

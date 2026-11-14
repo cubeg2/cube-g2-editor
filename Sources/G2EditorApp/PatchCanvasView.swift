@@ -727,6 +727,8 @@ struct PatchCanvasView: View {
     // BVButtonIncDec (+/-): przytrzymanie → auto-powtarzanie kroku (patrz incDecPressGesture)
     @State var incDecHold: IncDecHoldState?
     @State var incDecRepeatTask: Task<Void, Never>?
+    // Przycisk Push (np. On w SwOnOffM): wciśnięty do puszczenia myszy (patrz pushPressGesture)
+    @State var pushHold: (moduleID: Int, codeRef: Int)?
     /// Rozwijana lista wartości ekranowego selektora.
     @State var selectorPicker: SelectorPickerState?
     /// Wartość wiersza rozwiniętej listy aktualnie pod kursorem (podświetlenie).
@@ -998,6 +1000,7 @@ struct PatchCanvasView: View {
             // Umieszczenie go wewnątrz `.gesture(...)` przejmowało każdy mouseDown na Canvasie
             // i blokowało zwykłe przyciski, radio-buttony oraz inne elementy klikalne.
             .simultaneousGesture(incDecPressGesture)
+            .simultaneousGesture(pushPressGesture)
 
             // Wskaźniki i diody na żywo — osobna, przezroczysta kanwa nad panelami.
             // Tylko ona czyta strumień z urządzenia, więc tylko ona przerysowuje się

@@ -12,6 +12,7 @@ public extension G2Patch {
     /// Doprowadza moduły do definicji bieżącego firmware'u. Patch zapisany przez nowy OS
     /// zostaje bez zmian. Plik na dysku zmienia się dopiero przy zapisie.
     mutating func upgradeLegacyModules() {
+        convertLegacyValues()
         for area in [PatchArea.voice, .fx] {
             let retired = modules(in: area).filter { Self.retiredModuleTypes.contains($0.typeID) }.map(\.id)
             deleteModules(moduleIDs: Set(retired), in: area)

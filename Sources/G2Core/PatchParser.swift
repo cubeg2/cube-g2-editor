@@ -335,6 +335,12 @@ public class PatchParser {
             bytes.replaceSubrange(rep.range, with: rep.newBytes)
         }
 
+        // Patch przeliczony do nowszego formatu (`convertLegacyValues`) musi to powiedzieć
+        // w pliku — inaczej następne otwarcie przeliczyłoby go drugi raz. Wersji nie obniżamy.
+        if let version = patches.first?.sourceFormatVersion, bytes.indices.contains(headerLength + 1) {
+            bytes[headerLength + 1] = max(bytes[headerLength + 1], UInt8(clamping: version))
+        }
+
         // Aktualizuj CRC-16 na końcu pliku (ostatnie 2 bajty).
         // CRC obejmuje binarną część pliku od bajtu po \0 (włącznie z version+type)
         // do przedostatniego bajtu (z wyłączeniem samego CRC).
@@ -876,6 +882,10 @@ public class PatchParser {
         var slots = [G2Patch(), G2Patch(), G2Patch(), G2Patch()]
         var performance: G2PerformanceSettings?
         let slotCount = try parseBinarySections(&slots, performance: &performance, bytes: binaryBytes)
+        let formatVersion = Int(bytes[headerLength + 1])
+        for index in slots.indices {
+            slots[index].sourceFormatVersion = formatVersion
+        }
         // Nazwy patchy w slotach performance'u leżą wyłącznie w sekcji 0x11.
         for (index, slot) in (performance?.slots ?? []).enumerated() where index < slots.count {
             slots[index].name = slot.name

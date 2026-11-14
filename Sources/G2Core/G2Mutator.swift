@@ -982,7 +982,9 @@ public extension G2Patch {
     ///
     /// Morfy wariacji są **wymieniane** na morfy osobnika, jak w `CopyMorphs`
     /// oryginału: w porządku klucza (obszar, moduł, parametr, morf) i najwyżej
-    /// **pierwsze 25** — reszta po cichu przepada, dokładnie tak, jak u Clavii.
+    /// **pierwsze 25 RÓŻNYCH parametrów** (z wszystkimi ich morfami) — reszta po cichu
+    /// przepada, tak jak u Clavii (`G2Morph.keepingFirstParameters`). Do 2026-11-13 ucinaliśmy
+    /// pierwsze 25 WPISÓW, co gubiło dozwolone przypisania parametrów z kilkoma grupami.
     @discardableResult
     mutating func apply(_ individual: G2Individual, variation: Int) -> G2IndividualChanges {
         var changes = G2IndividualChanges()
@@ -1017,13 +1019,13 @@ public extension G2Patch {
         guard morphAssignments.indices.contains(variation) else { return changes }
 
         let settingKeys = Set(G2Mutator.settingKeys)
-        let incoming = individual.morphAssignments.filter { entry in
+        let incoming = G2Morph.keepingFirstParameters(of: individual.morphAssignments.filter { entry in
             guard let area = entry.area else {
                 return settingKeys.contains(.setting(module: entry.moduleID, param: entry.paramIndex))
             }
             guard let count = present[area]?[entry.moduleID] else { return false }
             return entry.paramIndex < count
-        }.prefix(G2Morph.maxAssignmentsPerVariation)
+        })
         let old = morphAssignments[variation]
 
         let same = { (a: G2MorphAssignment, b: G2MorphAssignment) in
