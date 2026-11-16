@@ -51,7 +51,7 @@ extension PatchCanvasView {
     private func cableShakeOffset(cableIndex: Int) -> CGFloat {
         guard cableShakeSeed != 0 else { return 0 }
         let hash = cableShakeSeed &* 6_364_136_223_846_793_005 &+ UInt64(cableIndex) &* 1_442_695_040_888_963_407
-        return (CGFloat(hash >> 32) / CGFloat(UInt32.max) - 0.5) * 30
+        return (CGFloat(hash >> 32) / CGFloat(UInt32.max) - 0.5) * 100
     }
 
     private func drawCable(_ ctx: GraphicsContext, from p1: CGPoint, to p2: CGPoint,

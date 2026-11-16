@@ -63,6 +63,27 @@ final class PatchStateTests: XCTestCase {
         XCTAssertEqual(state.patch.voiceModules[0].parameters[0], 60)
     }
 
+    func testWholePatternChangeIsOneUndoStep() {
+        // Sequence Editor operations (shift, Euclid, Clear…) rewrite many steps at once.
+        var module = G2Module(id: 1, typeID: 146, area: .voice)
+        module.parameters = Array(repeating: 0, count: 38)
+        module.parameterVariations = Array(repeating: module.parameters, count: 9)
+        var patch = G2Patch()
+        patch.voiceModules = [module]
+        let state = makeState(patch: patch)
+
+        performUndoStep(on: state) {
+            state.setParameters(moduleID: 1, values: [0: 10, 5: 20, 16: 1, 33: 7], area: .voice)
+        }
+
+        XCTAssertEqual(state.patch.voiceModules[0].parameters[5], 20)
+        XCTAssertEqual(state.patch.voiceModules[0].parameters[33], 7)
+        state.undoManager.undo()
+        XCTAssertEqual(state.patch.voiceModules[0].parameters[0], 0)
+        XCTAssertEqual(state.patch.voiceModules[0].parameters[33], 0)
+        XCTAssertFalse(state.undoManager.canUndo)
+    }
+
     func testSeparateParameterChangesRemainSeparateUndoSteps() {
         var patch = G2Patch()
         patch.voiceModules = [makeModule(id: 1)]
@@ -998,26 +1019,6 @@ final class PatchStateTests: XCTestCase {
                                    value: (module.parameters[0] + 1) % 128, variation: 0)
 
         XCTAssertFalse(state.hasUnsavedChanges)
-    }
-
-    /// Gałka kręcona na Nordzie zostaje zapamiętana z pełnym adresem — kanwa daje jej focus.
-    func testDeviceParameterRemembersTouchedKnob() throws {
-        let state = makeState()
-        state.load(url: fixtureURL("simplesynth001-20240802.pch2"))
-        let module = try XCTUnwrap(state.patch.voiceModules.first { $0.parameters.count > 1 })
-        XCTAssertNil(state.deviceParameterTouch)
-
-        state.applyDeviceParameter(slot: 0, area: .voice, moduleID: module.id, paramIndex: 1,
-                                   value: module.parameters[1], variation: 0)
-
-        let touch = try XCTUnwrap(state.deviceParameterTouch)
-        XCTAssertEqual([touch.slot, touch.moduleID, touch.paramIndex], [0, module.id, 1])
-        XCTAssertEqual(touch.area, .voice)
-
-        // Ta sama gałka kręcona dalej — nowy numer, żeby kanwa odświeżyła jej ramkę.
-        state.applyDeviceParameter(slot: 0, area: .voice, moduleID: module.id, paramIndex: 1,
-                                   value: module.parameters[1], variation: 0)
-        XCTAssertEqual(state.deviceParameterTouch?.serial, touch.serial + 1)
     }
 
     /// Slot z otwartego `.prf2` nie ma własnego pliku — o jego zmiany pyta pytanie

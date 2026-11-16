@@ -254,6 +254,10 @@ public final class DeviceConnection {
     public var onPatchesDownloaded: (([G2Patch]) -> Void)?
     /// Ruch gałki NA NORDZIE — parametr zmieniony na froncie urządzenia.
     public var onDeviceParameterChange: ((_ slot: Int, _ area: PatchArea, _ moduleID: Int, _ paramIndex: Int, _ value: Int, _ variation: Int) -> Void)?
+    /// Wywoływane przed batchem ≥2 parametrów — odbiorca może wywołać `beginDeviceParameterBatch()`.
+    public var onDeviceParameterBatchWillStart: (() -> Void)?
+    /// Wywoływane po batchu — slot/area/moduleID/paramIndex ostatniego param, łączna liczba.
+    public var onDeviceParameterBatchDidEnd: ((_ slot: Int, _ area: PatchArea, _ moduleID: Int, _ paramIndex: Int, _ count: Int) -> Void)?
     /// To samo dla obszaru USTAWIEŃ patcha (2): gałki i źródła morfów (moduł 1) oraz
     /// Glide/Bend/Vibrato/Arp (moduły 3–7).
     public var onDeviceSettingChange: ((_ slot: Int, _ moduleID: Int, _ paramIndex: Int, _ value: Int, _ variation: Int) -> Void)?
@@ -841,15 +845,35 @@ public final class DeviceConnection {
     private func flushParameters() {
         let batch = pendingParameters
         pendingParameters.removeAll(keepingCapacity: true)
+
+        // Policz parametry (nie-settings) żeby zdecydować o trybie batch.
+        let paramCount = batch.filter { $0.key.location != G2UsbProtocol.settingsLocation }.count
+        let useBatch = paramCount > 1
+        if useBatch { onDeviceParameterBatchWillStart?() }
+
+        var lastParamSlot = 0
+        var lastParamArea = PatchArea.voice
+        var lastParamModuleID = 0
+        var lastParamIndex = 0
+
         for (key, change) in batch {
             if key.location == G2UsbProtocol.settingsLocation {
                 onDeviceSettingChange?(key.slot, key.moduleID, key.paramIndex,
                                        change.value, change.variation)
             } else {
-                onDeviceParameterChange?(key.slot, key.location == 1 ? .voice : .fx,
-                                         key.moduleID, key.paramIndex,
+                let area: PatchArea = key.location == 1 ? .voice : .fx
+                onDeviceParameterChange?(key.slot, area, key.moduleID, key.paramIndex,
                                          change.value, change.variation)
+                lastParamSlot = key.slot
+                lastParamArea = area
+                lastParamModuleID = key.moduleID
+                lastParamIndex = key.paramIndex
             }
+        }
+
+        if useBatch {
+            onDeviceParameterBatchDidEnd?(lastParamSlot, lastParamArea,
+                                          lastParamModuleID, lastParamIndex, paramCount)
         }
     }
 

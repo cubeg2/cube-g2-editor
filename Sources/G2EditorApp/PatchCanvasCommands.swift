@@ -74,4 +74,8 @@ struct PatchCanvasCommands {
     /// „Delete Unused Modules" z menu tła.
     var deleteUnusedModules: (() -> Void)?
     var unusedModuleCount: (() -> Int)?
+    /// „Sequence Editor…" on a step-sequencer module — shows it in the editor window.
+    var openSequenceEditor: ((_ moduleID: Int) -> Void)?
+    /// A module became the clicked one — the open Sequence Editor follows sequencers.
+    var moduleClicked: ((_ moduleID: Int) -> Void)?
 }

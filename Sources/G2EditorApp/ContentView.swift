@@ -126,6 +126,13 @@ struct RootView: View {
                 state.applyDeviceParameter(slot: slot, area: area, moduleID: moduleID,
                                            paramIndex: paramIndex, value: value, variation: variation)
             }
+            device.onDeviceParameterBatchWillStart = { [state] in
+                state.beginDeviceParameterBatch()
+            }
+            device.onDeviceParameterBatchDidEnd = { [state] slot, area, moduleID, paramIndex, count in
+                state.endDeviceParameterBatch(slot: slot, area: area, moduleID: moduleID,
+                                              paramIndex: paramIndex, batchCount: count)
+            }
             device.onDeviceSettingChange = { [state] slot, moduleID, paramIndex, value, variation in
                 state.applyDeviceSetting(slot: slot, moduleID: moduleID, paramIndex: paramIndex,
                                          value: value, variation: variation)
@@ -264,6 +271,14 @@ struct RootView: View {
         .onAppear {
             PanelWindows.shared.sync(panels: panels, context: panelContext)
             syncSlotWindows()
+            panels.onSelectModule = { [selections, viewState] area, moduleID in
+                if viewState.isAreaVisible(area) { viewState.selectedArea = area } else { viewState.toggleArea(area) }
+                selections.selection(for: area == .voice ? .fx : .voice).clear()
+                let selection = selections.selection(for: area)
+                selection.cables = []
+                selection.moduleIDs = [moduleID]
+                selection.activeID = moduleID
+            }
         }
     }
 
@@ -751,6 +766,7 @@ struct ContentView: View {
                 windowButton(.mutator)
                 windowButton(.dsp)
                 windowButton(.keyboard)
+                windowButton(.sequenceEditor)
                 windowButton(.colors)
                 // Oba słuchają wirtualnego G2 albo wejść interfejsu audio (wybór w oknie),
                 // więc działają też bez emulatora — z Nordem podpiętym do interfejsu.
@@ -889,9 +905,24 @@ struct ContentView: View {
     private func windowButton(_ panel: PanelController.Panel) -> some View {
         let open = panels.isOpen(panel)
         return TopBarButton(content: .icon(panel.symbol), isOn: open) {
+            if panel == .sequenceEditor, !open { prepareSequenceEditor() }
             panels.toggle(panel)
         }
         .help("\(panel.title) — \(open ? "close the window" : "open in a window") (\(shortcutHint(panel)))")
+    }
+
+    /// The top-bar button opens the Sequence Editor on its All tab. The window needs a sequencer
+    /// to show, so without one picked yet it takes the first sequencer of the watched slot.
+    private func prepareSequenceEditor() {
+        panels.sequenceOpensOnAll = true
+        guard panels.sequenceTarget == nil, slot < state.slotCount else { return }
+        let patch = state.patch(inSlot: slot)
+        for area in [selectedArea, selectedArea == .voice ? PatchArea.fx : PatchArea.voice] {
+            if let module = patch.modules(in: area).first(where: { SequencerLayout.isSequencer(typeID: $0.typeID) }) {
+                panels.sequenceTarget = .init(slot: slot, area: area, moduleID: module.id)
+                return
+            }
+        }
     }
 
     private func shortcutHint(_ panel: PanelController.Panel) -> String {
@@ -902,9 +933,9 @@ struct ContentView: View {
     /// najechania, nie przy każdym przerysowaniu.
     private func dspLoad(area: PatchArea) -> G2PatchLoad? {
         if let reported = device.patchLoad(slot: slot, area: area) { return reported }
-        guard state.slots.indices.contains(slot) else { return nil }
-        return .estimate(area: area, modules: state.slots[slot].modules(in: area),
-                         cables: state.slots[slot].cables(in: area))
+        guard slot < state.slotCount else { return nil }
+        let patch = state.patch(inSlot: slot)
+        return .estimate(area: area, modules: patch.modules(in: area), cables: patch.cables(in: area))
     }
 
     /// Dodaje typeID na początek listy ostatnio używanych (max 10, bez duplikatów).

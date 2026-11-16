@@ -313,6 +313,7 @@ struct GeneralSettingsTab: View {
     @AppStorage(SilentSlotClick.storageKey) private var silentSlotClick = SilentSlotClick.addToPlaying.rawValue
     @AppStorage(UnsavedChangesGuard.askOnReplaceKey) private var askOnReplace = true
     @AppStorage(UnsavedChangesGuard.askOnInitPatchKey) private var askOnInitPatch = true
+    @AppStorage(CmdSavePreference.storageKey) private var cmdSavesPerformance = false
     @AppStorage(ExpansionBoard.storageKey) private var hasExpansion = false
 
     var body: some View {
@@ -345,13 +346,15 @@ struct GeneralSettingsTab: View {
                             RadioChoices(selection: $silentSlotClick,
                                          options: SilentSlotClick.allCases.map { ($0.rawValue, $0.title) })
                         }
-                        SettingsCard(title: "Unsaved Changes",
-                                     caption: "When off, an edited patch is replaced without asking and the "
-                                         + "changes are lost. Quitting the editor always asks.",
+                        SettingsCard(title: "Saving",
+                                     caption: "What ⌘S does depends on what is open. "
+                                         + "\"Ask to save\" prompts only when replacing an edited patch.",
                                      width: cardWidth(3))
                         {
                             Toggle("Ask to save before opening another patch", isOn: $askOnReplace)
                             Toggle("Ask to save before Init 1 / Init 2", isOn: $askOnInitPatch)
+                            Divider().padding(.vertical, 2)
+                            Toggle("⌘S saves whole performance when open", isOn: $cmdSavesPerformance)
                         }
                     }
                     GridRow {

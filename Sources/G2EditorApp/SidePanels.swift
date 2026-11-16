@@ -126,6 +126,8 @@ struct PanelContent: View {
             MutatorTreeView(state: context.state, panels: context.panels, tile: 36, showsWindowButton: false)
                 .padding(10)
                 .background(MutatorColor.panelBackground)
+        case .sequenceEditor:
+            SequenceEditorPanel(state: context.state, panels: context.panels, device: context.device)
         }
     }
 }

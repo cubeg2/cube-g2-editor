@@ -170,6 +170,14 @@ extension PatchCanvasView {
     /// każda ruszona w ostatnich `deviceTouchHold` sekundach.
     func applyDeviceTouch(_ touch: PatchState.DeviceParameterTouch?) {
         guard let touch, !isPreviewMode else { return }
+        // Steps of a sequencer change by themselves (Rec writes them on the fly): no frame, and the
+        // keyboard focus stays where the user left it.
+        if let module = modules.first(where: { $0.id == touch.moduleID }),
+           let layout = SequencerLayout(typeID: module.typeID),
+           (0 ... 1).contains(where: { layout.indices(ofRow: $0).contains(touch.paramIndex) })
+        {
+            return
+        }
         let focus = ParameterFocus(moduleID: touch.moduleID, paramIndex: touch.paramIndex)
         let now = Date()
         deviceTouchedAt = deviceTouchedAt.filter { now.timeIntervalSince($0.value) < Self.deviceTouchHold }

@@ -74,6 +74,30 @@ final class LegacyModuleTests: XCTestCase {
         XCTAssertEqual(patch.voiceCables, [cable(from: 14, 1, to: 13, 0)])
     }
 
+    /// Gdy ClkDivFix ma kabel na wejściu Clk (konektor 0) i kabel na wyjściu, bypass musi
+    /// przepiąć sygnał z wejścia bezpośrednio do celu wyjścia (bez podziału ClkDivFix).
+    func testClkDivFixBypassPreservesSignalChain() {
+        var patch = G2Patch()
+        // ID 3 = "LfoA-like" (typeID 98 = FreqShift, ma wyjścia), ID 11 = ClkDivFix (77), ID 17 = ClkDiv (69)
+        patch.voiceModules = [
+            module(typeID: 98, id: 3, values: 4),
+            module(typeID: 77, id: 11, values: 0),
+            module(typeID: 69, id: 17, values: 1, modes: 1),
+        ]
+        patch.voiceCables = [
+            cable(from: 3, 0, to: 11, 0), // LfoA-like → ClkDivFix.Clk (konektor 0)
+            cable(from: 11, 0, to: 17, 0), // ClkDivFix.Out → ClkDiv.Clk
+        ]
+
+        patch.upgradeLegacyModules()
+
+        XCTAssertFalse(patch.voiceModules.map(\.typeID).contains(77), "ClkDivFix nie może zostać")
+        XCTAssertTrue(
+            patch.voiceCables.contains(cable(from: 3, 0, to: 17, 0)),
+            "Bypass kabel LfoA→ClkDiv musi istnieć; kable: \(patch.voiceCables)"
+        )
+    }
+
     func testCurrentPatchIsLeftAlone() {
         var patch = G2Patch()
         patch.voiceModules = [module(typeID: 98, id: 1, values: 4), module(typeID: 69, id: 2, values: 1, modes: 1)]

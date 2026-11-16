@@ -22,14 +22,30 @@ struct DSPLoadPanel: View {
     /// Wysokość całej treści — górna granica okna (uwaga użytkownika 2026-10-30: po
     /// rozciągnięciu pod paskami slotu D zostawał pusty pas większy niż cała treść).
     @State private var contentHeight: CGFloat = 0
+    /// Czy sekcja szczegółów slotów jest rozwinięta.
+    @State private var showsSlots = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 VoiceAllocationSection(device: device, state: state)
-                Divider()
-                ForEach(slots, id: \.self) { slot in
-                    slotSection(slot)
+                Button { showsSlots.toggle() } label: {
+                    HStack(spacing: 4) {
+                        Text("Slot Details")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Image(systemName: showsSlots ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if showsSlots {
+                    ForEach(slots, id: \.self) { slot in
+                        slotSection(slot)
+                    }
                 }
             }
             .padding(10)
@@ -44,7 +60,7 @@ struct DSPLoadPanel: View {
 
     /// Wszystkie cztery sloty, bo limit DSP dzielą między siebie.
     private var slots: [Int] {
-        Array(state.slots.indices)
+        Array(0 ..< state.slotCount)
     }
 
     private func slotSection(_ slot: Int) -> some View {
@@ -75,9 +91,9 @@ struct DSPLoadPanel: View {
     /// Odczyt ze sprzętu, a gdy go nie ma — policzony z patcha.
     private func load(slot: Int, area: PatchArea) -> G2PatchLoad? {
         if let reported = device.patchLoad(slot: slot, area: area) { return reported }
-        guard state.slots.indices.contains(slot) else { return nil }
-        return .estimate(area: area, modules: state.slots[slot].modules(in: area),
-                         cables: state.slots[slot].cables(in: area))
+        guard slot < state.slotCount else { return nil }
+        let patch = state.patch(inSlot: slot)
+        return .estimate(area: area, modules: patch.modules(in: area), cables: patch.cables(in: area))
     }
 
     /// Dopisek dla slotu, którego liczby pochodzą z tabeli kosztów, a nie z Norda. Slot, który
@@ -194,19 +210,21 @@ private struct WindowMaxHeight: NSViewRepresentable {
 
         func clamp() {
             guard limit > 0, let window else { return }
-            let limit = max(limit, window.contentMinSize.height)
+            let target = max(limit, window.contentMinSize.height)
             // Szerokość: tyle co najszerszy panel — zielony przycisk rozciągał okno na
             // całą szerokość ekranu (uwaga użytkownika 2026-10-30).
             let widest = PanelController.maxPanelWidth
-            window.contentMaxSize = NSSize(width: widest, height: limit)
+            window.contentMaxSize = NSSize(width: widest, height: target)
             let content = window.contentRect(forFrameRect: window.frame)
-            guard content.height > limit + 0.5 || content.width > widest + 0.5 else { return }
+            // Rozszerzamy też w górę gdy treść urośnie (np. przycisk „Slot Details").
+            guard abs(content.height - target) > 0.5 || content.width > widest + 0.5 else { return }
+            let animate = abs(content.height - target) > 40
             var frame = window.frameRect(forContentRect: NSRect(
                 origin: content.origin,
-                size: NSSize(width: min(content.width, widest), height: min(content.height, limit))
+                size: NSSize(width: min(content.width, widest), height: target)
             ))
             frame.origin.y = window.frame.maxY - frame.height
-            window.setFrame(frame, display: true)
+            window.setFrame(frame, display: true, animate: animate)
         }
     }
 

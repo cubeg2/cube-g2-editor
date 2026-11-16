@@ -368,20 +368,9 @@ extension PatchCanvasView {
                 let w = max(btn.widthPt, 6)
                 let h = buttonTextHeight(module: module, button: btn)
                 guard CGRect(x: x, y: y, width: w, height: h).contains(point) else { continue }
-                if btn.text == "Clr" {
-                    // Reset wszystkich faderów na dół (bipolar -64 = MIDI 0)
+                if btn.text == "Clr" || btn.text == "Rnd" {
                     startMomentaryFlash(moduleID: module.id, codeRef: btn.codeRef)
-                    for knob in ui.knobs where knob.type == .slider || knob.type == .seqSlider {
-                        onParameterChange?(module.id, knob.codeRef, 0)
-                    }
-                    return
-                }
-                if btn.text == "Rnd" {
-                    // Randomizuj pozycje wszystkich faderów
-                    startMomentaryFlash(moduleID: module.id, codeRef: btn.codeRef)
-                    for knob in ui.knobs where knob.type == .slider || knob.type == .seqSlider {
-                        onParameterChange?(module.id, knob.codeRef, Int.random(in: 0 ... 127))
-                    }
+                    sequencerClearOrRandom(module: module, random: btn.text == "Rnd")
                     return
                 }
                 // Push obsługuje pushPressGesture (1 na czas trzymania myszy) —
@@ -800,6 +789,36 @@ extension PatchCanvasView {
         case "Clr": "Clear"
         default: s
         }
+    }
+
+    /// Clr / Rnd on a step sequencer, the way the original editor does it: the editor
+    /// computes all 16 steps itself — Clr puts them in the middle on SeqNote and bipolar
+    /// modules and at the bottom on unipolar ones, Rnd on SeqNote stays inside the octaves
+    /// visible on the module — and the whole press is one ⌘Z.
+    func sequencerClearOrRandom(module: G2Module, random: Bool) {
+        guard let layout = SequencerLayout(typeID: module.typeID) else { return }
+        let parameters = module.parameters
+        let values: [Int]
+        if random {
+            var range = 0 ... 127
+            if layout.kind == .note {
+                let view = noteViewRange(params: layout.row(0, in: parameters),
+                                         zoomLevel: seqNoteZoomLevel[module.id] ?? 1,
+                                         loNoteOverride: seqNoteScrollOffset[module.id])
+                range = view.lo ... max(view.lo, view.hi)
+            }
+            var generator = SystemRandomNumberGenerator()
+            values = SequencePattern.randomValues(in: range, using: &generator)
+        } else {
+            let cleared = SequencePattern.clearedValue(kind: layout.kind,
+                                                       bipolar: layout.isBipolar(in: parameters))
+            values = Array(repeating: cleared, count: SequencerLayout.steps)
+        }
+        onParameterGestureBegan?()
+        for (index, value) in zip(layout.indices(ofRow: 0), values) {
+            onParameterChange?(module.id, index, value)
+        }
+        onParameterGestureEnded?()
     }
 
     private func startMomentaryFlash(moduleID: Int, codeRef: Int) {

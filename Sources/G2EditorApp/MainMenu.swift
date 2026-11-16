@@ -87,6 +87,11 @@ extension FocusedValues {
     }
 }
 
+/// Preferencja zachowania Cmd+S gdy otwarta jest performance.
+enum CmdSavePreference {
+    static let storageKey = "g2_cmd_saves_performance"
+}
+
 // MARK: - Main menu (Commands)
 
 //
@@ -224,6 +229,11 @@ struct MainMenuCommands: Commands {
             Divider()
 
             DeleteUnusedModulesButton(state: state, canvas: canvas)
+
+            Divider()
+
+            // ⌘⌥E — the window then follows the sequencer clicked on the canvas.
+            SidePanelMenu(panels: panels, shown: [.sequenceEditor])
 
             Divider()
 
@@ -450,14 +460,24 @@ private struct FileMenuOpenButton: View {
 }
 
 /// Save — patch slotu z focusem do jego `.pch2`; slot bez pliku pyta najpierw o miejsce,
-/// jak `CPatch::SavePatch` u Clavii.
+/// jak `CPatch::SavePatch` u Clavii. Gdy otwarta jest performance i użytkownik wybrał
+/// opcję `g2_cmd_saves_performance`, Cmd+S zapisuje cały `.prf2` zamiast aktywnego slotu.
 private struct FileMenuSaveButton: View {
     let state: PatchState?
+    @AppStorage(CmdSavePreference.storageKey) private var cmdSavesPerformance = false
+
+    private var savesPerformanceNow: Bool {
+        cmdSavesPerformance && state?.hasPerformanceSettings == true
+    }
 
     var body: some View {
-        Button("Save") {
+        Button(savesPerformanceNow ? "Save Performance" : "Save") {
             guard let state else { return }
-            SaveActions.save(state)
+            if savesPerformanceNow {
+                SaveActions.savePerformance(state)
+            } else {
+                SaveActions.save(state)
+            }
         }
         .keyboardShortcut("s", modifiers: [.command])
         .disabled(state?.isLoaded != true)

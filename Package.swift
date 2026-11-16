@@ -10,14 +10,6 @@ import PackageDescription
 /// przetrwać update libusb.
 let clibUsbHeaderFix: [SwiftSetting] = [.unsafeFlags(["-Xcc", "-I/opt/homebrew/include"])]
 
-/// Flagi kompilacji prywatnego drzewa roboczego. W wersji publicznej lista jest pusta,
-/// bo eksport wycina jej zawartość razem ze znacznikami — a wtedy kod, który tych flag
-/// wymaga, nie ma prawa się skompilować nawet przez pomyłkę.
-/// Paczka dla testerów (`Tools/build_app.sh`, `G2_PUBLIC_BUILD=1`) buduje się jak wersja
-/// publiczna — bez prywatnych flag.
-let privateSettings: [SwiftSetting] = ProcessInfo.processInfo.environment["G2_PUBLIC_BUILD"] != nil ? [] : [
-]
-
 let package = Package(
     name: "G2Editor",
     platforms: [.macOS(.v14)],
@@ -52,7 +44,7 @@ let package = Package(
             name: "G2EditorCore",
             dependencies: ["G2Core"],
             path: "Sources/G2EditorCore",
-            swiftSettings: clibUsbHeaderFix + privateSettings
+            swiftSettings: clibUsbHeaderFix
         ),
         // SwiftUI macOS app
         .executableTarget(
@@ -60,7 +52,7 @@ let package = Package(
             dependencies: ["G2Core", "G2EditorCore"],
             path: "Sources/G2EditorApp",
             resources: [.process("Resources")],
-            swiftSettings: clibUsbHeaderFix + privateSettings
+            swiftSettings: clibUsbHeaderFix
         ),
         // Silnik poziomu Rozszerzonego Patch Mutatora — wyłącznie Foundation: zero SwiftUI,
         // zero USB, zero G2 → Docs/mutator/plan-architecture §3

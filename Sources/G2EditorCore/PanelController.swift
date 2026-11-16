@@ -49,6 +49,10 @@ public final class PanelController {
         /// Drzewo ewolucji Mutatora w osobnym oknie — otwierane przyciskiem „Window" w panelu
         /// Mutation settings, nie z belki ani z menu (to okno pomocnicze Mutatora).
         case mutatorTree
+        /// Sequence Editor — a second view of the steps of one Seq module. Opened from the
+        /// module's context menu or Patch ▸ Sequence Editor; follows the clicked sequencer
+        /// unless pinned → [[Docs/roadmap]] "Sequence Editor".
+        case sequenceEditor
 
         /// Szerokość pasa szuflad. **Obie szuflady zajmują ten sam pas ekranu**, więc mają
         /// tę samą szerokość — a bierze się ona z biblioteki modułów z podglądami, bo tam
@@ -84,6 +88,7 @@ public final class PanelController {
             case .spectrogram: "Spectrum"
             case .xyPlot: "X-Y Plot"
             case .mutatorTree: "Evolution Tree"
+            case .sequenceEditor: "Sequence Editor"
             }
         }
 
@@ -109,6 +114,8 @@ public final class PanelController {
             // Celownik — osie X i Y przez środek, jak na samym wykresie. Od macOS 11.
             case .xyPlot: "scope"
             case .mutatorTree: "arrow.triangle.branch"
+            // Vertical sliders, like the step faders — available since macOS 11.
+            case .sequenceEditor: "slider.vertical.3"
             }
         }
 
@@ -129,6 +136,8 @@ public final class PanelController {
             // Bez skrótu i bez pozycji w menu — okno otwiera panel Mutatora. Ta sama
             // litera co spektrogram nie szkodzi: skrótu nabiera dopiero panel z menu.
             case .mutatorTree: "0"
+            // ⌘⌥E — in the Patch menu and on the top bar (after the keyboard).
+            case .sequenceEditor: "e"
             }
         }
 
@@ -149,6 +158,7 @@ public final class PanelController {
             case .spectrogram: 640
             case .xyPlot: 300
             case .mutatorTree: 420
+            case .sequenceEditor: 760
             }
         }
 
@@ -209,7 +219,12 @@ public final class PanelController {
         /// kolumnami pastylek — w oknie 200 pt nazwy patchy i przełącznik 4/8 DSP się
         /// ucinały (uwaga użytkownika 2026-10-30). Wysokość mieści całą sekcję Voices.
         public var minWindowSize: CGSize? {
-            self == .dsp ? CGSize(width: 300, height: 330) : nil
+            switch self {
+            case .dsp: CGSize(width: 300, height: 330)
+            // Toolbar row of the Sequence Editor fits from this width on.
+            case .sequenceEditor: CGSize(width: 720, height: 490)
+            default: nil
+            }
         }
 
         /// Okno, którego opcje zawijają się do kolejnych rzędów (Spectrum): najwęższa
@@ -228,6 +243,19 @@ public final class PanelController {
             case .parameterPages, .mutator, .parameterOverview, .patchAdjuster: true
             default: false
             }
+        }
+    }
+
+    /// One step sequencer in one slot and area — what the Sequence Editor shows.
+    public struct SequenceEditorTarget: Equatable, Hashable, Sendable {
+        public let slot: Int
+        public let area: PatchArea
+        public let moduleID: Int
+
+        public init(slot: Int, area: PatchArea, moduleID: Int) {
+            self.slot = slot
+            self.area = area
+            self.moduleID = moduleID
         }
     }
 
@@ -385,6 +413,33 @@ public final class PanelController {
             widths[panel] = stored > 0 ? CGFloat(stored) : panel.defaultWidth
         }
         self.widths = widths
+    }
+
+    // MARK: - Sequence Editor target
+
+    /// The sequencer the Sequence Editor shows. Not saved — after a restart the window
+    /// waits for a click on a Seq module.
+    public var sequenceTarget: SequenceEditorTarget?
+    /// Pinned: the window stays on `sequenceTarget` instead of following clicks.
+    public var sequencePinned = false
+    /// Set by the editor window: select this module on the canvas and show its area. The Sequence
+    /// Editor uses it for the jack chips (click Clk → the clock that feeds it is selected).
+    @ObservationIgnored public var onSelectModule: ((_ area: PatchArea, _ moduleID: Int) -> Void)?
+    /// Opened from the top-bar button: the window starts on its All tab (set by the button, read once).
+    public var sequenceOpensOnAll = false
+
+    /// Context menu / Patch menu: show this sequencer and open the window.
+    public func showSequenceEditor(_ target: SequenceEditorTarget) {
+        sequenceTarget = target
+        sequencePinned = false
+        sequenceOpensOnAll = false
+        windows.insert(.sequenceEditor)
+    }
+
+    /// A module was clicked on the canvas — the open, unpinned window follows it.
+    public func sequencerClicked(_ target: SequenceEditorTarget) {
+        guard windows.contains(.sequenceEditor), !sequencePinned else { return }
+        sequenceTarget = target
     }
 
     // MARK: - Otwieranie i zamykanie

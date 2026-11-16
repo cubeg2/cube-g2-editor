@@ -13,9 +13,24 @@ public final class PatchState {
     /// dokumentu (decyzja użytkownika 2026-09-25).
     public static let slotTotal = G2UsbProtocol.maxSlots
 
-    /// Cztery sloty A–D. Każdy ma własny plik `.pch2` (`slotFileURLs`), performance — swój `.prf2`.
+    /// Cztery sloty A–D jako osobne stored properties: pod `@Observable` zmiana w slocie N
+    /// budzi obserwatorów tylko tej jednej właściwości — kanwa slotu M nie przerysowuje się
+    /// przy ruchu gałki w N. Każdy slot ma własny plik `.pch2` (`slotFileURLs`).
+    public var slot0: G2Patch = .init()
+    public var slot1: G2Patch = .init()
+    public var slot2: G2Patch = .init()
+    public var slot3: G2Patch = .init()
+
+    /// Tablica-fasada: wewnętrzny kod i zewnętrzny legacy mogą nadal pisać `slots[n]`.
+    /// `didSet` synchronizuje per-slot stored properties — tylko zmieniony slot budzi obserwatorów.
     public var slots: [G2Patch] = Array(repeating: G2Patch(), count: PatchState.slotTotal) {
-        didSet { refreshSlotSummaries() }
+        didSet {
+            if slots.indices.contains(0), slots[0] != slot0 { slot0 = slots[0] }
+            if slots.indices.contains(1), slots[1] != slot1 { slot1 = slots[1] }
+            if slots.indices.contains(2), slots[2] != slot2 { slot2 = slots[2] }
+            if slots.indices.contains(3), slots[3] != slot3 { slot3 = slots[3] }
+            refreshSlotSummaries()
+        }
     }
 
     /// Liczba slotów i nagłówki pasów jako OSOBNE właściwości: kto potrzebuje tylko
@@ -553,6 +568,19 @@ public final class PatchState {
     public func setParameter(slot: Int, moduleID: Int, paramIndex: Int, value: Int, area: PatchArea) {
         applyParameter(slot: slot, moduleID: moduleID, index: paramIndex,
                        value: value, area: area, isMode: false, undoable: true)
+    }
+
+    /// Several parameters of one module in one go — a whole-pattern operation of the
+    /// Sequence Editor (shift, Euclid, Clear…). Undone with a single ⌘Z, like one gesture.
+    /// `values` maps parameter index → new value.
+    public func setParameters(slot: Int? = nil, moduleID: Int, values: [Int: Int], area: PatchArea) {
+        let alreadyInGesture = gestureActive
+        if !alreadyInGesture { beginParameterGesture() }
+        for (index, value) in values.sorted(by: { $0.key < $1.key }) {
+            setParameter(slot: slot ?? selectedSlot, moduleID: moduleID, paramIndex: index,
+                         value: value, area: area)
+        }
+        if !alreadyInGesture { endParameterGesture() }
     }
 
     /// Zmiana chwilowa (przycisk Push Clavii: 1 na czas kliknięcia, zaraz potem z powrotem 0).
@@ -3640,7 +3668,49 @@ public final class PatchState {
         }
     }
 
-    public private(set) var deviceParameterTouch: DeviceParameterTouch?
+    /// Każdy slot ma własną property — zmiana w slocie N nie wyzwala re-renderu kanwy
+    /// innych slotów (@Observable śledzi na poziomie property, nie indeksu tablicy).
+    public private(set) var deviceParameterTouch0: DeviceParameterTouch?
+    public private(set) var deviceParameterTouch1: DeviceParameterTouch?
+    public private(set) var deviceParameterTouch2: DeviceParameterTouch?
+    public private(set) var deviceParameterTouch3: DeviceParameterTouch?
+
+    /// Gdy true, `applyDeviceParameter` pomija aktualizację touch —
+    /// wywoływacz ustawi ją raz na końcu batcha. Nie obserwowane → nie wyzwala @Observable.
+    @ObservationIgnored private var _suppressingAllTouches = false
+
+    private func touchSerial(slot: Int) -> Int {
+        switch slot {
+        case 0: deviceParameterTouch0?.serial ?? 0
+        case 1: deviceParameterTouch1?.serial ?? 0
+        case 2: deviceParameterTouch2?.serial ?? 0
+        default: deviceParameterTouch3?.serial ?? 0
+        }
+    }
+
+    private func setTouch(_ touch: DeviceParameterTouch) {
+        switch touch.slot {
+        case 0: deviceParameterTouch0 = touch
+        case 1: deviceParameterTouch1 = touch
+        case 2: deviceParameterTouch2 = touch
+        default: if touch.slot == 3 { deviceParameterTouch3 = touch }
+        }
+    }
+
+    /// Zacznij batch: kolejne `applyDeviceParameter` nie aktualizują touch.
+    public func beginDeviceParameterBatch() {
+        _suppressingAllTouches = true
+    }
+
+    /// Zakończ batch: odblokuj touch i ustaw go raz dla ostatniego parametru.
+    public func endDeviceParameterBatch(slot: Int, area: PatchArea, moduleID: Int,
+                                        paramIndex: Int, batchCount: Int)
+    {
+        _suppressingAllTouches = false
+        setTouch(DeviceParameterTouch(slot: slot, area: area, moduleID: moduleID,
+                                      paramIndex: paramIndex,
+                                      serial: touchSerial(slot: slot) + batchCount))
+    }
 
     /// Parametr zmieniony NA FRONCIE Norda. Zapisujemy do modelu, ale **nie** odsyłamy
     /// z powrotem (`onLiveParameterChange` pominięty) — inaczej powstałaby pętla echa —
@@ -3650,9 +3720,11 @@ public final class PatchState {
                                      paramIndex: Int, value: Int, variation: Int)
     {
         guard slots.indices.contains(slot) else { return }
-        deviceParameterTouch = DeviceParameterTouch(slot: slot, area: area, moduleID: moduleID,
-                                                    paramIndex: paramIndex,
-                                                    serial: (deviceParameterTouch?.serial ?? 0) + 1)
+        if !_suppressingAllTouches {
+            setTouch(DeviceParameterTouch(slot: slot, area: area, moduleID: moduleID,
+                                          paramIndex: paramIndex,
+                                          serial: touchSerial(slot: slot) + 1))
+        }
         followingDevice(slot: slot) {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: paramIndex,
                                      value: value, in: area, variation: variation)

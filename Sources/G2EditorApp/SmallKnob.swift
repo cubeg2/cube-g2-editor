@@ -39,6 +39,8 @@ struct SmallKnob: View {
     var onEnd: () -> Void = {}
 
     @State private var dragStart: Int?
+    /// Shift held when the drag began: ten times slower (`FineAdjust`).
+    @State private var fine = false
     @AppStorage(KnobStyle.storageKey) private var knobStyle = KnobStyle.light.rawValue
     @AppStorage(KnobRangeSegments.storageKey) private var rangeSegments = KnobRangeSegments.line.rawValue
     @AppStorage(KnobRangeColor.storageKey) private var rangeColor = KnobRangeColor.green.rawValue
@@ -55,9 +57,11 @@ struct SmallKnob: View {
                         guard enabled else { return }
                         if dragStart == nil {
                             dragStart = value
+                            fine = FineAdjust.isHeld
                             onBegin()
                         }
-                        let delta = Int((-gesture.translation.height * stepsPerPoint).rounded())
+                        let perPoint = fine ? stepsPerPoint * FineAdjust.slowdown : stepsPerPoint
+                        let delta = Int((-gesture.translation.height * perPoint).rounded())
                         let raw = (dragStart ?? value) + delta
                         onChange(max(range.lowerBound, min(range.upperBound, raw)))
                     }

@@ -232,7 +232,7 @@ struct ParameterPagesPanel: View {
     private func focusFirstVisiblePage() {
         let first: Int? = if state.showsGlobalParameterPages {
             state.performance.globalKnobAssignments.firstIndex { $0 != nil }
-        } else if state.slots.indices.contains(state.selectedSlot) {
+        } else if state.selectedSlot < state.slotCount {
             state.patch.knobAssignments.firstIndex { $0 != nil }
         } else {
             nil
@@ -383,11 +383,11 @@ enum ParameterPagePresentationResolver {
     static func presentation(for assignment: ParameterPageAssignment?,
                              state: PatchState) -> ParameterPagePresentation
     {
-        guard let assignment, state.slots.indices.contains(assignment.slot) else { return .empty }
+        guard let assignment, assignment.slot < state.slotCount else { return .empty }
         guard let area = assignment.area else {
             return settingsPresentation(for: assignment, state: state)
         }
-        let patch = state.slots[assignment.slot]
+        let patch = state.patch(inSlot: assignment.slot)
         guard let module = patch.modules(in: area).first(where: { $0.id == assignment.moduleID }) else {
             return ParameterPagePresentation(moduleName: "Module \(assignment.moduleID)",
                                              parameterName: "Param \(assignment.paramIndex)")
@@ -446,7 +446,7 @@ enum ParameterPagePresentationResolver {
     private static func settingsPresentation(for assignment: ParameterPageAssignment,
                                              state: PatchState) -> ParameterPagePresentation
     {
-        let patch = state.slots[assignment.slot]
+        let patch = state.patch(inSlot: assignment.slot)
         let variation = patch.activeVariation
         let ref = ParameterPageModuleRef(slot: assignment.slot, location: assignment.location,
                                          moduleID: assignment.moduleID)
@@ -542,8 +542,8 @@ enum ParameterPagePresentationResolver {
                           state: PatchState) -> MorphIndicator.Tint?
     {
         guard let ref = item.moduleRef, let paramIndex = item.knobParamIndex,
-              state.slots.indices.contains(ref.slot) else { return nil }
-        let patch = state.slots[ref.slot]
+              ref.slot < state.slotCount else { return nil }
+        let patch = state.patch(inSlot: ref.slot)
         let assignments = patch.morphs(variation: patch.activeVariation,
                                        location: ref.location,
                                        moduleID: ref.moduleID, paramIndex: paramIndex)

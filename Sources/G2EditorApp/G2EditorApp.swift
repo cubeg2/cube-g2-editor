@@ -223,32 +223,57 @@ final class UnsavedChangesGuard {
 
     private func confirmDiscard(slots: [Int], performance: Bool) -> Bool {
         guard let state else { return true }
+        // prf2 z banku Norda (brak pliku na dysku): sloty bez własnego URL są częścią
+        // performance'u — pytamy raz o cały performance zamiast o każdy slot osobno.
+        let bundleAsPerformance = performance
+            && state.performanceFileURL == nil
+            && state.slotCount > 1
+            && slots.contains { state.slotHasUnsavedChanges($0) && !state.canSave(slot: $0) }
+        if bundleAsPerformance {
+            let subject = "the performance \u{201C}\(state.performanceName)\u{201D}"
+            guard ask(about: subject,
+                      save: { self.savePerformance(of: state) }) else { return false }
+        }
         for slot in state.unsavedSlots(among: slots) {
+            if bundleAsPerformance && !state.canSave(slot: slot) { continue }
             let name = state.slots[slot].name.isEmpty ? "No name" : state.slots[slot].name
             let subject = "\u{201C}\(name)\u{201D} in slot \(Self.letters[slot])"
-            guard ask(about: subject, save: { saveSlot(slot, of: state) }) else { return false }
+            guard ask(about: subject,
+                      save: { self.saveSlot(slot, of: state) },
+                      saveAs: { self.saveSlotAs(slot, of: state) }) else { return false }
         }
         if performance, state.performanceHasUnsavedChanges {
             let subject = "the performance \u{201C}\(state.performanceName)\u{201D}"
-            guard ask(about: subject, save: { savePerformance(of: state) }) else { return false }
+            guard ask(about: subject,
+                      save: { self.savePerformance(of: state) },
+                      saveAs: { self.savePerformanceAs(of: state) }) else { return false }
         }
         return true
     }
 
-    private func ask(about subject: String, save: () -> Bool) -> Bool {
+    /// `saveAs` dodaje przycisk „Save As…" między Save a Cancel — przydatne gdy plik
+    /// już istnieje, ale użytkownik chce zapisać pod nową nazwą zamiast nadpisywać.
+    /// Układ z saveAs: Save | Save As… | Cancel | Don't Save
+    /// Układ bez:      Save | Cancel   | Don't Save
+    private func ask(about subject: String,
+                     save: () -> Bool,
+                     saveAs: (() -> Bool)? = nil) -> Bool
+    {
         let alert = NSAlert()
         alert.messageText = "Do you want to save the changes made to \(subject)?"
         alert.informativeText = "Your changes will be lost if you don\u{2019}t save them."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Save")
+        if saveAs != nil { alert.addButton(withTitle: "Save As\u{2026}") }
         alert.addButton(withTitle: "Cancel")
         let dontSave = alert.addButton(withTitle: "Don\u{2019}t Save")
         dontSave.keyEquivalent = "d"
         dontSave.keyEquivalentModifierMask = [.command]
         switch alert.runModal() {
         case .alertFirstButtonReturn: return save()
-        case .alertThirdButtonReturn: return true
-        default: return false
+        case .alertSecondButtonReturn: return saveAs?() ?? false
+        case .alertThirdButtonReturn: return saveAs == nil
+        default: return true
         }
     }
 
@@ -259,8 +284,18 @@ final class UnsavedChangesGuard {
         return state.errorMessage == nil && !state.slotHasUnsavedChanges(slot)
     }
 
+    private func saveSlotAs(_ slot: Int, of state: PatchState) -> Bool {
+        guard SaveActions.saveAs(state, slot: slot) else { return false }
+        return state.errorMessage == nil && !state.slotHasUnsavedChanges(slot)
+    }
+
     private func savePerformance(of state: PatchState) -> Bool {
         guard SaveActions.savePerformance(state) else { return false }
+        return state.errorMessage == nil && !state.performanceHasUnsavedChanges
+    }
+
+    private func savePerformanceAs(of state: PatchState) -> Bool {
+        guard SaveActions.savePerformanceAs(state) else { return false }
         return state.errorMessage == nil && !state.performanceHasUnsavedChanges
     }
 }

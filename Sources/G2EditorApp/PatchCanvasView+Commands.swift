@@ -42,6 +42,15 @@ extension PatchCanvasView {
 
     private func moduleMenuItems(for id: Int) -> some View {
         Group {
+            // Sequencers: their own editor first, above Cut / Copy (user's wish 2026-11-17).
+            if let open = commands.openSequenceEditor,
+               let module = modules.first(where: { $0.id == id }),
+               SequencerLayout.isSequencer(typeID: module.typeID)
+            {
+                Button("Sequence Editor…") { open(id) }
+                Divider()
+            }
+
             moduleClipboardMenuItems(for: id)
 
             Divider()

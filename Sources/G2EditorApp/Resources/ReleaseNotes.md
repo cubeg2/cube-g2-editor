@@ -1,3 +1,24 @@
+## 0.1.11 — November 16, 2026
+This release adds the **Sequence Editor**, a new window for all the step sequencers in a patch, plus a handful of fixes.
+
+**New: Sequence Editor** (right-click a sequencer ▸ Sequence Editor…, or Patch ▸ Sequence Editor, ⌘⌥E, or the button in the top bar)
+- **Edit** draws steps (piano roll for SeqNote, bars for SeqVal / SeqLev / SeqCtr, two rows for SeqEvent) with shift, reverse, invert, double, transpose, copy / paste, clear, step locks, scales with snapping, Length and Loop. A **Presets** menu fills the pattern with curves, note figures or drum rhythms.
+- **All** shows every sequencer that shares a clock, with Mute / Solo, step probability (Prob %) and edits on several lanes at once. **Lanes** shows each lane with a colour dot for its role.
+- **Euclid** shows rings for every sequencer on the clock: layers (the sum of up to four generators), Fill notes, Accent, a Group Euclid (same rhythm, canon or spread over several sequencers) and Lengths (coprime, ratio, phasing, halves or "repeat after N steps") with a counter of when the whole pattern comes round.
+- **Random** with Density, **Random steps**, **Mutate**, and **↺ Undo random**.
+- **Add lane ▸ Chance** gives a lane a probability per step, played by the G2 itself; **Add lane ▸ Accent** adds a lane for step strength. Both are ordinary modules and cables, so the patch opens in any editor. One ⌘Z removes them. Chance refuses when it would push the area past 100 % DSP.
+- The window follows the sequencer you click and the slot you are in, and loads the sequencers when you open a patch. Window settings (locks, scale, Euclid layers, Accent links) are not saved in the patch yet — they are forgotten when you quit.
+- Sequencer steps changed by recording on the G2 no longer draw the blue "touched on the G2" frame.
+
+**Fixes and small changes:**
+- **Arrow buttons keep working.** The ▲ arrow of every stepper (Master Clock, Voices, Length…) stopped reacting after reaching its top value. Fixed, and holding an arrow now repeats the change.
+- **Shift fine-tunes everywhere.** Holding Shift while dragging a knob or a bar gives exact steps in the whole app.
+- **No busy cursor over module search.** The spinning cursor over the module list in visual mode is gone (reported on Discord).
+- **Cmd+S can save the whole performance.** Optional: General Settings ▸ Saving ▸ "⌘S saves whole performance when open" (off by default, which keeps the original editor's behaviour).
+- **Shake Cables** moves the cables further, so the effect is clearly visible.
+
+---
+
 ## 0.1.10 — November 14, 2026
 This release fixes several bugs found during testing on a real G2, and adds morph limit feedback in the context menu.
 

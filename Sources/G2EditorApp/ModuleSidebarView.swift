@@ -257,16 +257,19 @@ struct ModuleSidebarView: View {
                     .onPreferenceChange(HeaderFramesKey.self) { headerFrames.frames = $0 }
                 }
             }
+            // Kółko na kursorze tylko nad listą modułów w widoku visual (tam, gdzie brakuje
+            // podglądów) i tylko dopóki się rysują — nie nad polem szukania ani stopką
+            // (zgłoszenie testera, Discord 2026-11-17: kursor „zajęty” nad Search modules).
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    if viewMode == .visual { LoadingCursor.shared.show() } else { LoadingCursor.shared.hide() }
+                case .ended: LoadingCursor.shared.hide()
+                }
+            }
         }
         .frame(width: viewMode == .visual ? PanelController.Panel.drawerWidth : 190)
         .background(Color(nsColor: .windowBackgroundColor))
-        // Kółko na kursorze tylko nad biblioteką i tylko dopóki podglądy się rysują.
-        .onContinuousHover { phase in
-            switch phase {
-            case .active: LoadingCursor.shared.show()
-            case .ended: LoadingCursor.shared.hide()
-            }
-        }
         .onChange(of: expandedCategories) { _, expanded in
             UserDefaults.standard.set(expanded.sorted().joined(separator: "|"), forKey: Self.expandedKey)
         }

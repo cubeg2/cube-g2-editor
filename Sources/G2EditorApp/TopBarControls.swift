@@ -95,6 +95,8 @@ struct TopBarButton: View {
     /// Wymuszona szerokość — dla przycisków, które zmieniają napis („Hide" ⇄ „Show").
     /// Bez niej pasek przeskakiwał w bok przy każdym kliknięciu.
     var fixedWidth: CGFloat?
+    /// Stały kolorowy obrys przycisku nieświecącego (np. czerwony „Clear"); `nil` = zwykła ramka.
+    var outline: Color?
     let action: () -> Void
 
     var body: some View {
@@ -137,7 +139,7 @@ struct TopBarButton: View {
 
     private var borderColor: Color {
         guard isEnabled else { return Color.primary.opacity(0.22) }
-        return isOn ? tint : Color.primary.opacity(0.25)
+        return isOn ? tint : (outline ?? Color.primary.opacity(0.25))
     }
 
     @ViewBuilder
@@ -233,6 +235,8 @@ private struct TopBarDragAdjust: ViewModifier {
 
     @State private var startValue: Int?
     @State private var lastValue: Int?
+    /// Shift held when the drag began: ten times slower (`FineAdjust`).
+    @State private var fine = false
 
     func body(content: Content) -> some View {
         content
@@ -241,8 +245,10 @@ private struct TopBarDragAdjust: ViewModifier {
                 DragGesture(minimumDistance: 2)
                     .onChanged { drag in
                         guard isEnabled, let start = startValue ?? value else { return }
+                        if startValue == nil { fine = FineAdjust.isHeld }
                         startValue = start
-                        let steps = Int((-drag.translation.height / pointsPerStep).rounded(.towardZero))
+                        let points = fine ? pointsPerStep / FineAdjust.slowdown : pointsPerStep
+                        let steps = Int((-drag.translation.height / points).rounded(.towardZero))
                         let next = min(max(start + steps, range.lowerBound), range.upperBound)
                         guard next != lastValue else { return }
                         lastValue = next
@@ -268,6 +274,54 @@ extension View {
     }
 }
 
+/// Przycisk z auto-powtarzaniem przy przytrzymaniu myszki.
+/// Pierwsze kliknięcie odpala akcję natychmiast; po 400 ms zaczyna powtarzać
+/// co 80 ms aż do zwolnienia przycisku myszy.
+private struct RepeatPressButton<Label: View>: View {
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    /// Always the action of the latest render: the timer used to call the copy captured at
+    /// mouse-down (`set(value + 1)` with the old value), so a held arrow repeated one value
+    /// (user's note 2026-11-16).
+    private final class LatestAction {
+        var run: () -> Void = {}
+    }
+
+    @State private var pressing = false
+    @State private var timer: Timer?
+    @State private var latest = LatestAction()
+
+    var body: some View {
+        latest.run = action
+        return label()
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !pressing else { return }
+                        pressing = true
+                        action()
+                        scheduleRepeat(after: 0.4)
+                    }
+                    .onEnded { _ in
+                        pressing = false
+                        timer?.invalidate()
+                        timer = nil
+                    }
+            )
+    }
+
+    private func scheduleRepeat(after delay: TimeInterval) {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
+            guard pressing else { return }
+            latest.run()
+            scheduleRepeat(after: 0.08)
+        }
+    }
+}
+
 /// Para strzałek ▲▼ — wszędzie w belce ta sama: przy tempie i przy skali.
 /// Systemowy `Stepper` odpada, bo jego rozmiaru nie da się zmienić.
 struct TopBarStepper: View {
@@ -284,15 +338,16 @@ struct TopBarStepper: View {
     }
 
     private func half(symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        // Not `.disabled`: reaching the limit with this very click disabled the button mid-press,
+        // its gesture never got "mouse up" and the arrow stayed stuck (Length 16 in the Sequence
+        // Editor, user's note 2026-11-16). The action is skipped instead.
+        let guarded = { if enabled { action() } }
+        return RepeatPressButton(action: guarded) {
             Image(systemName: symbol)
                 .font(.system(size: 9, weight: .bold))
                 .frame(width: TopBarMetrics.stepperWidth, height: TopBarMetrics.stepperHalfHeight)
                 .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.12)))
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
         .opacity(enabled ? 1 : 0.35)
     }
 }

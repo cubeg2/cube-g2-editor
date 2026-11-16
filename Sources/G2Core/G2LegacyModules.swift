@@ -14,8 +14,26 @@ public extension G2Patch {
     mutating func upgradeLegacyModules() {
         convertLegacyValues()
         for area in [PatchArea.voice, .fx] {
-            let retired = modules(in: area).filter { Self.retiredModuleTypes.contains($0.typeID) }.map(\.id)
-            deleteModules(moduleIDs: Set(retired), in: area)
+            let retired = modules(in: area).filter { Self.retiredModuleTypes.contains($0.typeID) }
+            // Bypass: przed usunięciem starego modułu podłącz źródło jego wejścia Clk (konektor 0)
+            // bezpośrednio do celów jego wyjść, żeby łańcuch sygnału przeżył usunięcie.
+            // Dotyczy ClkDivFix (77): miał wejście Clk i 1–3 wyjścia; usunięcie urywało kable
+            // po obu stronach i zostawiało LfoA bez wyjścia, a ClkDiv bez wejścia → cisza (#C6).
+            let cables = area == .voice ? voiceCables : fxCables
+            for module in retired {
+                let clkSources = cables.filter { $0.toModule == module.id && $0.toConnector == 0 }
+                let outputTargets = cables.filter { $0.fromModule == module.id }
+                for src in clkSources {
+                    for dst in outputTargets {
+                        let bypass = G2Cable(fromModule: src.fromModule, fromConnector: src.fromConnector,
+                                             toModule: dst.toModule, toConnector: dst.toConnector,
+                                             color: dst.color, area: area,
+                                             sourceIsOutput: src.sourceIsOutput)
+                        if area == .voice { voiceCables.append(bypass) } else { fxCables.append(bypass) }
+                    }
+                }
+            }
+            deleteModules(moduleIDs: Set(retired.map(\.id)), in: area)
         }
         self = trimmedToModuleDefinitions()
         voiceModules = voiceModules.map(Self.withMissingModes)

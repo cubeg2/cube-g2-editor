@@ -26,6 +26,9 @@ struct VariationFaderView: View {
     static let width = pitch * 8 - buttonSpacing
 
     @State private var dragging = false
+    /// Shift held when the drag began: the fader then moves ten times slower from where it stood
+    /// (`FineAdjust`) instead of jumping to the pointer.
+    @State private var fine: (x: CGFloat, position: Double)?
     @Environment(\.colorScheme) private var colorScheme
 
     /// Przystanki rozłożone równo na całej długości ośmiu przycisków (prośba Kuby
@@ -73,12 +76,20 @@ struct VariationFaderView: View {
                     if !dragging {
                         dragging = true
                         state.focusSlot(slot)
+                        fine = FineAdjust.isHeld ? (drag.location.x, position ?? 0) : nil
                     }
-                    state.moveVariationFader(to: Self.position(at: drag.location.x, xs), slot: slot)
+                    if let fine, let first = xs.first, let last = xs.last, last > first {
+                        let span = Double(xs.count - 1)
+                        let moved = Double((drag.location.x - fine.x) / (last - first)) * span * FineAdjust.slowdown
+                        state.moveVariationFader(to: min(span, max(0, fine.position + moved)), slot: slot)
+                    } else {
+                        state.moveVariationFader(to: Self.position(at: drag.location.x, xs), slot: slot)
+                    }
                 }
                 .onEnded { _ in
                     guard dragging else { return }
                     dragging = false
+                    fine = nil
                     state.endVariationFaderGesture(slot: slot)
                 }
         )

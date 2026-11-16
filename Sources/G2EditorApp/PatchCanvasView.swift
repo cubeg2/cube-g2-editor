@@ -700,6 +700,10 @@ struct PatchCanvasView: View {
     /// go czyta, więc każde podbicie ją odświeża.
     @State var rasterGeneration = 0
     @State private var rasterZoomCommit: Task<Void, Never>?
+    /// Cache kabli jako CGImage wyrenderowany w `cableRasterZoom` — wklejany bitmapowo
+    /// podczas gestu pinch zamiast przerysowywania wszystkich ścieżek béziera.
+    @State private var cableRasterImage: CGImage?
+    @State private var cableRasterZoom: CGFloat = 0
     /// Przeciągany Building Block nad kanwą — `BlockDropGhost`.
     @State private var blockHover: BlockDropHover?
 
@@ -739,7 +743,11 @@ struct PatchCanvasView: View {
     /// Aktywny moduł (ostatnio kliknięty) — dolna i prawa krawędź w kolorze canvasu.
     var activeModuleID: Int? {
         get { selection.activeID }
-        nonmutating set { selection.activeID = newValue }
+        nonmutating set {
+            selection.activeID = newValue
+            // The open Sequence Editor follows the clicked sequencer.
+            if let newValue { commands.moduleClicked?(newValue) }
+        }
     }
 
     /// Kontrolka, której dotyczą strzałki — patrz `PatchCanvasView+KeyNavigation.swift`.
@@ -868,8 +876,27 @@ struct PatchCanvasView: View {
             rasters.setRasterZoom(target) { key, def in
                 ModuleRasterView.render(owner: owner, key: key, def: def)
             }
+            owner.cableRasterImage = owner.renderCableRaster(at: target)
+            owner.cableRasterZoom = target
             rasterGeneration += 1
         }
+    }
+
+    /// Renderuje kable do CGImage w podanym powiększeniu — używane przez
+    /// `scheduleRasterZoomCommit` do zbudowania cache przed następnym gestem.
+    func renderCableRaster(at targetZoom: CGFloat) -> CGImage? {
+        let base = PatchLayout.canvasSize(modules: modules, defs: def, rowOffset: rowOffset)
+        guard base.width > 0, base.height > 0 else { return nil }
+        let size = CGSize(width: base.width * targetZoom, height: base.height * targetZoom)
+        let owner = self
+        let view = Canvas { ctx, _ in
+            ctx.scaleBy(x: targetZoom, y: targetZoom)
+            owner.drawCables(ctx)
+        }
+        .frame(width: size.width, height: size.height)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = ModuleRasterCache.backingScale
+        return renderer.cgImage
     }
 
     // MARK: - Interactive body
@@ -1021,9 +1048,21 @@ struct PatchCanvasView: View {
                 .frame(width: canvasSize.width, height: canvasSize.height)
 
             Canvas { ctx, _ in
-                ctx.scaleBy(x: zoom, y: zoom)
-                drawCables(ctx)
-                drawRubberBand(ctx)
+                let isGesturing = rasters.rasterZoom > 0 && zoom != rasters.rasterZoom
+                if isGesturing, let img = cableRasterImage, cableRasterZoom > 0 {
+                    let bs = ModuleRasterCache.backingScale
+                    let scale = zoom / cableRasterZoom
+                    let destW = CGFloat(img.width) / bs * scale
+                    let destH = CGFloat(img.height) / bs * scale
+                    ctx.draw(
+                        Image(decorative: img, scale: 1).interpolation(.medium),
+                        in: CGRect(x: 0, y: 0, width: destW, height: destH)
+                    )
+                } else {
+                    ctx.scaleBy(x: zoom, y: zoom)
+                    drawCables(ctx)
+                    drawRubberBand(ctx)
+                }
             }
             .frame(width: canvasSize.width, height: canvasSize.height)
             .allowsHitTesting(false)

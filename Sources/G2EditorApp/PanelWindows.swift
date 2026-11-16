@@ -57,7 +57,11 @@ final class PanelWindows {
                                      ?? panel.wrappingMinWidth
                                      ?? (panel.squareWindowFooter == nil
                                          ? PanelController.minPanelWidth : Self.squareMinSide),
-                                     height: fixed?.height ?? panel.minWindowSize?.height ?? 200),
+                                     // Sequence Editor: zakładka All zmniejsza okno do liczby
+                                     // sekwencerów (`WindowHeightFitter`), więc SwiftUI nie może
+                                     // trzymać minimum 460 — pilnuje go tam samo okno.
+                                     height: fixed?.height ?? (panel == .sequenceEditor
+                                         ? 160 : panel.minWindowSize?.height ?? 200)),
                                  resizable: resizable,
                                  onBaseChange: { [weak self] base in
                                      if let window = self?.windows[panel] { Self.fit(window, to: base) }
@@ -284,6 +288,11 @@ final class PanelWindows {
         /// = szerokość + pas wychodziła daleko pod dolną krawędź (uwaga 2026-09-27).
         func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
             let chrome = sender.frame.height - sender.contentRect(forFrameRect: sender.frame).height
+            // Okno z treścią o znanej minimalnej wysokości (Sequence Editor) — SwiftUI nie
+            // przenosi jej na okno, więc pilnujemy tu, żeby nic się nie ucięło.
+            if let least = (sender as? FloatingPanel)?.minimumContentHeight {
+                return NSSize(width: frameSize.width, height: max(frameSize.height, least + chrome))
+            }
             // Zwężenie okna przenosi opcje do kolejnych rzędów — okno rośnie w dół razem z nimi,
             // zamiast je przycinać.
             if let fitContent {
@@ -382,6 +391,10 @@ private struct ScalablePanel<Content: View>: View {
 /// Pływający panel edytora. `canBecomeKey` jest nadpisane, bo `NSPanel` z tytułem
 /// bywa niepodatny na focus klawiatury — a mutator ma własne skróty (`E`, `U`, `N`…).
 final class FloatingPanel: NSPanel {
+    /// Najmniejsza wysokość treści, jaką okno może mieć przy ręcznym zmniejszaniu
+    /// (`WindowDelegate.windowWillResize`). `nil` = bez własnego minimum.
+    var minimumContentHeight: CGFloat?
+
     override var canBecomeKey: Bool {
         true
     }

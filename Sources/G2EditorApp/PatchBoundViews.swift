@@ -20,7 +20,13 @@ import SwiftUI
 /// pokazywać B także wtedy, gdy edytowany jest A.
 extension PatchState {
     func patch(inSlot slot: Int) -> G2Patch {
-        slots.indices.contains(slot) ? slots[slot] : G2Patch()
+        switch slot {
+        case 0: slot0
+        case 1: slot1
+        case 2: slot2
+        case 3: slot3
+        default: G2Patch()
+        }
     }
 }
 
@@ -66,7 +72,11 @@ struct CanvasPane: View {
             bufferName: state.activeVariationFader(slot: slot) != nil ? "Fader" : "Mutator",
             onCanvasPress: { state.hideVariationFaderChanges(slot: slot) },
             selection: selections.selection(for: area),
-            deviceTouch: state.deviceParameterTouch.flatMap { $0.slot == slot && $0.area == area ? $0 : nil },
+            deviceTouch: (slot == 0 ? state.deviceParameterTouch0 :
+                slot == 1 ? state.deviceParameterTouch1 :
+                slot == 2 ? state.deviceParameterTouch2 :
+                state.deviceParameterTouch3)
+                .flatMap { $0.area == area ? $0 : nil },
             minSize: minSize,
             onParameterChange: { moduleID, paramIndex, value in
                 state.setParameter(moduleID: moduleID,
@@ -237,7 +247,15 @@ struct CanvasPane: View {
             saveModulesAsBlock: { BuildingBlockSave.save(from: state, area: area, moduleIDs: $0) },
             blockFromModules: { state.patch.block(from: area, moduleIDs: $0) },
             deleteUnusedModules: { state.deleteUnusedModules(area: area) },
-            unusedModuleCount: { state.unusedModuleIDs(area: area).count }
+            unusedModuleCount: { state.unusedModuleIDs(area: area).count },
+            openSequenceEditor: { moduleID in
+                panels.showSequenceEditor(.init(slot: slot, area: area, moduleID: moduleID))
+            },
+            moduleClicked: { moduleID in
+                guard let module = state.patch(inSlot: slot).modules(in: area).first(where: { $0.id == moduleID }),
+                      SequencerLayout.isSequencer(typeID: module.typeID) else { return }
+                panels.sequencerClicked(.init(slot: slot, area: area, moduleID: moduleID))
+            }
         )
     }
 }
@@ -266,9 +284,9 @@ struct ToolbarPatchLoad: View {
 
     private func load(area: PatchArea) -> G2PatchLoad? {
         if let reported = device.patchLoad(slot: slot, area: area) { return reported }
-        guard state.slots.indices.contains(slot) else { return nil }
-        return .estimate(area: area, modules: state.slots[slot].modules(in: area),
-                         cables: state.slots[slot].cables(in: area))
+        guard slot < state.slotCount else { return nil }
+        let patch = state.patch(inSlot: slot)
+        return .estimate(area: area, modules: patch.modules(in: area), cables: patch.cables(in: area))
     }
 }
 
@@ -296,7 +314,7 @@ struct SlotBarRows: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(state.slots.indices, id: \.self) { row in
+            ForEach(0 ..< state.slotCount, id: \.self) { row in
                 if row > 0 { Divider() }
                 SlotBarView(state: state, device: device, slot: row, layout: .fourRows)
             }
