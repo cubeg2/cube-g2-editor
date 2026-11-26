@@ -60,6 +60,10 @@ enum TopBarMetrics {
     static let slotButtonHeight: CGFloat = controlSide
     /// Czerwona kreska „ten slot słucha klawiatury" — 2 pt ginęły na ekranie Retina.
     static let slotKeyboardBarHeight: CGFloat = 3
+    /// Miernik wyjścia pod przyciskiem slotu.
+    static let slotLevelBarHeight: CGFloat = 8
+    /// Delikatne rogi miernika, jak przy przyciskach — mniejsze, bo pasek jest niski.
+    static let slotLevelBarCornerRadius: CGFloat = 3
     /// Gałki morfów w pasie — jeden rozmiar (Vol niżej). Ramka jest większa od tarczy,
     /// bo mieści jeszcze kreseczki min/max sterczące poza nią — dokładnie jak przy
     /// gałkach w modułach. Stan morfu pokazuje ramka całej kolumny (`MorphBarView`).
@@ -86,6 +90,8 @@ struct TopBarButton: View {
     enum Content {
         case icon(String)
         case text(String)
+        /// Symbol and name side by side (Sequence Editor toolbar with Labels on).
+        case iconText(String, String)
     }
 
     let content: Content
@@ -97,6 +103,8 @@ struct TopBarButton: View {
     var fixedWidth: CGFloat?
     /// Stały kolorowy obrys przycisku nieświecącego (np. czerwony „Clear"); `nil` = zwykła ramka.
     var outline: Color?
+    /// Colour of the symbol alone while the button is off (orange for the random tools, red for Clear).
+    var iconTint: Color?
     let action: () -> Void
 
     var body: some View {
@@ -132,6 +140,11 @@ struct TopBarButton: View {
         return isOn ? tint : .primary
     }
 
+    private var symbolColor: Color {
+        guard isEnabled, !isOn, let iconTint else { return labelColor }
+        return iconTint
+    }
+
     private var fillColor: Color {
         guard isEnabled else { return Color.primary.opacity(0.03) }
         return isOn ? tint.opacity(0.18) : Color.primary.opacity(0.06)
@@ -148,7 +161,20 @@ struct TopBarButton: View {
         case let .icon(name):
             Image(systemName: name)
                 .font(.system(size: TopBarMetrics.iconSize))
+                .foregroundStyle(symbolColor)
                 .frame(width: TopBarMetrics.controlSide, height: TopBarMetrics.controlSide)
+        case let .iconText(name, title):
+            HStack(spacing: 4) {
+                Image(systemName: name)
+                    .font(.system(size: TopBarMetrics.iconSize))
+                    .foregroundStyle(symbolColor)
+                Text(title)
+                    .font(.system(size: TopBarMetrics.labelSize, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .padding(.horizontal, TopBarMetrics.labelPadding)
+            .frame(minWidth: TopBarMetrics.controlSide, minHeight: TopBarMetrics.controlSide)
         case let .text(title):
             // `fixedSize` na napisie jest konieczne: bez niego krótkie etykiety („Init")
             // dostawały propozycję szerokości równą `controlSide` i skracały się do „…".

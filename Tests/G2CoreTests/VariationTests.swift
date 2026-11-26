@@ -155,7 +155,7 @@ final class VariationTests: XCTestCase {
         let state = makeState(makePatch())
         let before = state.patch
         var restored: [Int] = []
-        state.onSlotRestore = { restored.append($0) }
+        state.onSlotRestore = { slot, _ in restored.append(slot) }
 
         undoStep(on: state) { state.copyVariation(from: 8, to: 0) }
         XCTAssertEqual(state.undoManager.undoActionName, "Init Variation")

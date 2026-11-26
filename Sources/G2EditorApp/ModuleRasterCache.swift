@@ -78,6 +78,13 @@ final class ModuleRasterCache {
     /// rysowania, renderowane zaraz po nim (`flushPending`).
     private var pending: [Int: PendingRender] = [:]
     private var flushScheduled = false
+    /// Moduły, które właśnie się zmieniają (kręcona gałka, wartość z G2) — rysowane
+    /// wektorowo, obrazek dopiero po `settleDelay` bez zmian → `requestWhenSettled`.
+    private var settling: [Int: (job: PendingRender, due: Date)] = [:]
+    private var settleScheduledFor: Date?
+    /// Ile modułu nikt nie rusza, zanim dostanie nowy obrazek. Tyle samo, co przystanek
+    /// po zoomie (`scheduleRasterZoomCommit`).
+    static let settleDelay: TimeInterval = 0.15
     /// Moduły wklejone w ostatnim przebiegu — tylko one dostają nowe obrazki po zmianie
     /// zoomu; reszta (poza ekranem) czeka, aż będzie potrzebna.
     private(set) var recentlyDrawn: Set<Int> = []
@@ -139,6 +146,45 @@ final class ModuleRasterCache {
         if rendered { onRendered?() }
     }
 
+    /// Obrazek modułu, który się właśnie zmienia — powstaje dopiero, gdy moduł przez
+    /// `settleDelay` stoi w miejscu. Do tego czasu kanwa rysuje go wektorowo, świeżego.
+    ///
+    /// Do 2026-11-25 każdy tick gałki zamawiał obrazek od razu: kanwa wklejała jeszcze
+    /// STARY (gałka o krok w tyle), `ImageRenderer` robił nowy, a gotowy obrazek budził
+    /// całą kanwę drugi raz. Przy dużym patchu te dwa przebiegi na ruch myszy były
+    /// widać jako gałka „dokręcająca się” po puszczeniu → [[Docs/ui/canvas-performance]].
+    func requestWhenSettled(moduleID: Int, key: ModuleRasterKey, def: ModuleDef?,
+                            render: @escaping (ModuleRasterKey, ModuleDef?) -> CGImage?)
+    {
+        if settling[moduleID]?.job.key == key { return }
+        settling[moduleID] = (PendingRender(key: key, def: def, render: render),
+                              Date().addingTimeInterval(Self.settleDelay))
+        scheduleSettle()
+    }
+
+    private func scheduleSettle() {
+        guard let due = settling.values.map(\.due).min() else { return }
+        if let scheduled = settleScheduledFor, scheduled <= due { return }
+        settleScheduledFor = due
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, due.timeIntervalSinceNow)) { [weak self] in
+            self?.flushSettled()
+        }
+    }
+
+    private func flushSettled() {
+        settleScheduledFor = nil
+        let now = Date()
+        var rendered = false
+        for (moduleID, item) in settling where item.due <= now {
+            settling.removeValue(forKey: moduleID)
+            guard let image = item.job.render(item.job.key, item.job.def) else { continue }
+            entries[moduleID] = Entry(key: item.job.key, image: image)
+            rendered = true
+        }
+        scheduleSettle()
+        if rendered { onRendered?() }
+    }
+
     /// Nowe powiększenie: obrazki ostatnio wklejonych modułów powstają od razu (jeden
     /// przystanek po geście, zamiast rysowania przy każdym jego kroku), pozostałe
     /// wypadają — zrobią się, gdy wjadą na ekran.
@@ -146,6 +192,7 @@ final class ModuleRasterCache {
         guard zoom != rasterZoom else { return }
         rasterZoom = zoom
         pending.removeAll()
+        settling.removeAll()
         for moduleID in Array(entries.keys) where !recentlyDrawn.contains(moduleID) {
             entries.removeValue(forKey: moduleID)
         }

@@ -85,11 +85,38 @@ enum PatchLayout {
         let maxH = moduleHeight(typeID: module.typeID, def: def)
         // Najbliższy moduł poniżej w tej samej kolumnie. Jedno przejście bez tablic
         // pośrednich — wołane dla każdego modułu przy każdym rysowaniu i trafianiu.
+        // Przez wskaźnik, nie `for other in allModules`: pętla po tablicy kopiowała
+        // cały `G2Module` (parametry, wariacje…) dla każdej pary — 125 × 125 kopii na
+        // jedno przerysowanie i ~14 % głównego wątku przy kręceniu gałką (2026-11-21,
+        // [[Docs/ui/canvas-performance]]). Odczyt pola przez bufor niczego nie kopiuje.
+        let column = module.column, row = module.row
         var nextRow = Int.max
-        for other in allModules where other.column == module.column && other.row > module.row {
-            nextRow = min(nextRow, other.row)
+        allModules.withUnsafeBufferPointer { others in
+            for index in others.indices where others[index].column == column {
+                let otherRow = others[index].row
+                if otherRow > row { nextRow = min(nextRow, otherRow) }
+            }
         }
         return nextRow == Int.max ? maxH : min(nextRow - module.row, maxH)
+    }
+
+    /// `effectiveHeight` dla wszystkich modułów naraz, w kolejności `modules` — ta sama
+    /// reguła, ale jedno przejście zamiast osobnego przeszukania na każdy moduł. Dla
+    /// rysowania całej kanwy, które potrzebuje wysokości każdego modułu.
+    static func effectiveHeights(_ modules: [G2Module], def: (Int) -> ModuleDef?) -> [Int] {
+        var rowsByColumn: [Int: [Int]] = [:]
+        for module in modules {
+            rowsByColumn[module.column, default: []].append(module.row)
+        }
+        for column in rowsByColumn.keys {
+            rowsByColumn[column]?.sort()
+        }
+        return modules.map { module in
+            let maxH = moduleHeight(typeID: module.typeID, def: def(module.typeID))
+            guard let nextRow = rowsByColumn[module.column]?.first(where: { $0 > module.row })
+            else { return maxH }
+            return min(nextRow - module.row, maxH)
+        }
     }
 
     // MARK: - Row offset (removes blank space above first module)
@@ -113,13 +140,18 @@ enum PatchLayout {
                            allModules: [G2Module] = []) -> CGRect
     {
         let h = allModules.isEmpty
-            ? CGFloat(moduleHeight(typeID: module.typeID, def: def))
-            : CGFloat(effectiveHeight(module: module, def: def, allModules: allModules))
-        return CGRect(
+            ? moduleHeight(typeID: module.typeID, def: def)
+            : effectiveHeight(module: module, def: def, allModules: allModules)
+        return moduleRect(module, height: h, rowOffset: rowOffset)
+    }
+
+    /// Rect modułu o znanej już wysokości w wierszach (np. z `effectiveHeights`).
+    static func moduleRect(_ module: G2Module, height: Int, rowOffset: Int = 0) -> CGRect {
+        CGRect(
             x: padding + CGFloat(module.column) * xSpan,
             y: padding + CGFloat(module.row - rowOffset) * ySpan,
             width: moduleWidth,
-            height: h * ySpan
+            height: CGFloat(height) * ySpan
         )
     }
 

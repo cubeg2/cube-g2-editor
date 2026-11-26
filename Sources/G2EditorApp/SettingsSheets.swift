@@ -316,6 +316,11 @@ struct GeneralSettingsTab: View {
     @AppStorage(CmdSavePreference.storageKey) private var cmdSavesPerformance = false
     @AppStorage(ExpansionBoard.storageKey) private var hasExpansion = false
 
+    /// The user's shortcut for Save, as the texts of the Saving card name it.
+    private var saveKey: String {
+        ShortcutStore.shared.stroke(for: .save)?.display ?? "Save"
+    }
+
     var body: some View {
         SettingsPage {
             CardsWithSupport(compactSupport: true) {
@@ -347,14 +352,14 @@ struct GeneralSettingsTab: View {
                                          options: SilentSlotClick.allCases.map { ($0.rawValue, $0.title) })
                         }
                         SettingsCard(title: "Saving",
-                                     caption: "What ⌘S does depends on what is open. "
+                                     caption: "What \(saveKey) does depends on what is open. "
                                          + "\"Ask to save\" prompts only when replacing an edited patch.",
                                      width: cardWidth(3))
                         {
                             Toggle("Ask to save before opening another patch", isOn: $askOnReplace)
                             Toggle("Ask to save before Init 1 / Init 2", isOn: $askOnInitPatch)
                             Divider().padding(.vertical, 2)
-                            Toggle("⌘S saves whole performance when open", isOn: $cmdSavesPerformance)
+                            Toggle("\(saveKey) saves whole performance when open", isOn: $cmdSavesPerformance)
                         }
                     }
                     GridRow {
@@ -589,6 +594,7 @@ struct DisplaySettingsTab: View {
     @AppStorage(KnobPointerColor.storageKey) private var pointerColor = KnobPointerColor.white.rawValue
     @AppStorage(KnobMorphRange.storageKey) private var morphRange = KnobMorphRange.full.rawValue
     @AppStorage(PanelShading.storageKey) private var panelShading = true
+    @AppStorage(OctaveShiftControl.storageKey) private var showOctaveShift = false
 
     private static let widths: [CGFloat] = [250, 250, pageInnerWidth - 500 - 2 * cardSpacing]
 
@@ -603,6 +609,10 @@ struct DisplaySettingsTab: View {
                         {
                             choice($appearance, AppAppearance.allCases.map { ($0.rawValue, $0.title) })
                                 .onChange(of: appearance) { SettingsWindow.applyAppearance(appearance) }
+                            Toggle("Octave buttons (Oct) in the top bar", isOn: $showOctaveShift)
+                                .help("The patch's Octave Shift with − and +, between Variations and Morph Groups. "
+                                    + "Useful on the G2 Engine, which has no Octave Shift buttons.")
+                                .padding(.top, 4)
                         }
                         SettingsCard(title: "Patch",
                                      caption: "Changes show on the patch right away.",
@@ -746,128 +756,6 @@ struct ConnectionSettingsTab: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - Shortcuts
-
-/// Skróty czytane z PRAWDZIWEGO paska menu w chwili otwarcia zakładki — lista nie może
-/// rozjechać się z menu. Skróty jednoklawiszowe kanwy (`EditorKeyboardShortcuts`)
-/// nie mają pozycji w menu, więc stoją tu na sztywno.
-struct ShortcutsSettingsTab: View {
-    struct Entry: Hashable {
-        let title: String
-        let keys: String
-    }
-
-    @State private var group = "File"
-    @State private var search = ""
-    @State private var groups: [(name: String, entries: [Entry])] = []
-
-    /// Pole listy i ile wierszy mieści jedna kolumna (wiersz ≈ 22 pt).
-    private static let listHeight: CGFloat = 270
-    private static let rowsPerColumn = 12
-
-    private static let canvasGroup: [Entry] = [
-        Entry(title: "Select Variation 1–8", keys: "1 – 8"),
-        Entry(title: "Select Slot A–D", keys: "A – D"),
-        Entry(title: "View Voice Area", keys: "V"),
-        Entry(title: "View FX Area", keys: "F"),
-        Entry(title: "Start / Stop Master Clock", keys: "R"),
-        Entry(title: "Shake Cables", keys: "S"),
-        Entry(title: "Show Values, Morphs, Knobs, MIDI CC", keys: "F5 – F8"),
-        Entry(title: "Move the view", keys: "Space + drag"),
-        Entry(title: "Play notes from the computer keyboard", keys: "Caps Lock"),
-        Entry(title: "Close the side drawer", keys: "Esc"),
-    ]
-
-    private var shownEntries: [Entry] {
-        let query = search.trimmingCharacters(in: .whitespaces)
-        if query.isEmpty {
-            return (groups.first { $0.name == group } ?? groups.first)?.entries ?? []
-        }
-        return groups.flatMap(\.entries).filter { $0.title.localizedCaseInsensitiveContains(query) }
-    }
-
-    var body: some View {
-        SettingsPage {
-            SettingsCard(title: "Keyboard Shortcuts",
-                         caption: "Single keys work on the patch only, never while you type a name.")
-            {
-                HStack {
-                    BarChoice(selection: $group, options: groups.map { ($0.name, $0.name) })
-                        .disabled(!search.isEmpty)
-                    Spacer()
-                    TextField("Search", text: $search)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 180)
-                }
-                .padding(.bottom, 6)
-                // Jedna kolumna; druga dopiero wtedy, gdy skróty się w niej nie mieszczą
-                // (uwaga użytkownika 2026-10-15: File z ośmioma skrótami nie potrzebuje dwóch).
-                let entries = shownEntries
-                let split = entries.count > Self.rowsPerColumn
-                let half = split ? (entries.count + 1) / 2 : entries.count
-                // Stałe pole listy: wyniki szukania potrafią być długie, a okno ma
-                // jedną wysokość — przewija się tylko lista, nigdy całe okno.
-                ScrollView {
-                    HStack(alignment: .top, spacing: 40) {
-                        column(Array(entries.prefix(half)))
-                        if split { column(Array(entries.dropFirst(half))) }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-                .frame(height: Self.listHeight)
-            }
-        }
-        .onAppear {
-            groups = Self.readMenu() + [("Canvas", Self.canvasGroup)]
-            if !groups.contains(where: { $0.name == group }), let first = groups.first { group = first.name }
-        }
-    }
-
-    private func column(_ entries: [Entry]) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
-            ForEach(entries, id: \.self) { entry in
-                GridRow {
-                    Text(entry.title)
-                    Text(entry.keys)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .gridColumnAlignment(.trailing)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private static func readMenu() -> [(name: String, entries: [Entry])] {
-        guard let menu = NSApp.mainMenu else { return [] }
-        return menu.items.dropFirst().compactMap { top in
-            guard let submenu = top.submenu else { return nil }
-            let entries = collect(submenu)
-            return entries.isEmpty ? nil : (top.title, entries)
-        }
-    }
-
-    private static func collect(_ menu: NSMenu) -> [Entry] {
-        menu.items.flatMap { item -> [Entry] in
-            if let submenu = item.submenu { return collect(submenu) }
-            guard !item.keyEquivalent.isEmpty, !item.isHidden else { return [] }
-            return [Entry(title: item.title, keys: keys(of: item))]
-        }
-    }
-
-    private static func keys(of item: NSMenuItem) -> String {
-        let flags = item.keyEquivalentModifierMask
-        var text = ""
-        if flags.contains(.control) { text += "⌃" }
-        if flags.contains(.option) { text += "⌥" }
-        // Wielka litera w `keyEquivalent` sama oznacza Shift.
-        let key = item.keyEquivalent
-        if flags.contains(.shift) || key != key.lowercased() { text += "⇧" }
-        if flags.contains(.command) { text += "⌘" }
-        return text + key.uppercased()
     }
 }
 

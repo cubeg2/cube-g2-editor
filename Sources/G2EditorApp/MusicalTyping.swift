@@ -92,7 +92,9 @@ final class MusicalTyping {
         // i litery milczały mimo świecącej diody.
         if event.type == .keyDown { syncCapsLock(event.modifierFlags.contains(.capsLock)) }
         // ⌘S ma dalej zapisywać, a litera wpisywana w pole nazwy ma się wpisać.
-        guard isOn, event.modifierFlags.isDisjoint(with: [.command, .option, .control]),
+        // A key being recorded in Settings ▸ Shortcuts belongs to that page.
+        guard isOn, !ShortcutRecorder.isCapturing,
+              event.modifierFlags.isDisjoint(with: [.command, .option, .control]),
               !isEditingText(event.window ?? NSApp.keyWindow)
         else { return event }
 

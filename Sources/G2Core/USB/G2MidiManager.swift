@@ -567,6 +567,7 @@ public actor G2MidiManager {
                                                     patchName: name, sectionBytes: sectionBytes)
         guard let response = try await performWrite(payload, label: label, timeout: 10.0,
                                                     expecting: G2UsbProtocol.subPatchVersionResponse,
+                                                    acceptsOK: false,
                                                     rejection: .rejected("the patch upload to slot \(slot)"))
         else {
             throw G2UsbError.badResponse("the device did not acknowledge the patch upload to slot \(slot)")
@@ -1248,7 +1249,7 @@ public actor G2MidiManager {
             try await withStreamStopped {
                 guard let response = try await performWrite(
                     payload, label: label, timeout: 10.0,
-                    expecting: G2UsbProtocol.subPatchVersionResponse
+                    expecting: G2UsbProtocol.subPatchVersionResponse, acceptsOK: false
                 ), response.subCommand == G2UsbProtocol.subPatchVersionResponse else {
                     // Odrzucony zrzut i tak podbija numery sesji wszystkich slotów (po odmowie
                     // `0x7E` przychodzi `0x1F` z nowymi). Wysyłka slot po slocie, która rusza
@@ -2080,14 +2081,21 @@ public actor G2MidiManager {
     /// Zwraca `nil`, gdy urządzenie nie odpowiedziało albo odrzuciło komendę (0x7E).
     /// Z `rejection` odmowa rzuca tym błędem — wołający odróżni ją wtedy od milczenia,
     /// które przy wgrywaniu patcha bywa zawieszonym Nordem (#157).
+    ///
+    /// `acceptsOK: false` — gdy odpowiedzią są WYŁĄCZNIE dane (0x37 → 0x36). `OK` nie niesie
+    /// numeru komendy, więc przy takiej komendzie to zawsze cudze potwierdzenie (spóźnione
+    /// `OK` wcześniejszej komendy bez odpowiedzi, np. nuty z klawiatury). Wzięte za odpowiedź
+    /// kończyło czekanie, zanim przyszedł numer sesji slotu → #191.
     private func performWrite(_ payload: [UInt8], label: String, timeout: TimeInterval,
                               expecting: UInt8?,
+                              acceptsOK: Bool = true,
                               rejection: G2UsbError? = nil) async throws -> G2UsbProtocol.DecodedResponse?
     {
         try sendFrame(payload)
         // Odpowiedzią zapisu jest `OK` albo `ERROR` — i nic innego. `expecting` dokłada
         // do tego podkomendę dla komend, których odpowiedzią są DANE (0x37 → 0x36).
-        var accepting: Set<UInt8> = [G2UsbProtocol.subResponseOK, G2UsbProtocol.subResponseError]
+        var accepting: Set<UInt8> = [G2UsbProtocol.subResponseError]
+        if acceptsOK || expecting == nil { accepting.insert(G2UsbProtocol.subResponseOK) }
         if let expecting { accepting.insert(expecting) }
         // 3s, nie 1s: potwierdzenie przychodzi zwykle w ~2ms, ale gdy urządzenie akurat
         // nadaje strumień powiadomień (`RESOURCES_USED` 0x72 to 63B na 0x82), pojedynczy

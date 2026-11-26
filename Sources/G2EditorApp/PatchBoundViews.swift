@@ -170,6 +170,9 @@ struct CanvasPane: View {
             onInsertBlock: { url, column, row in
                 BuildingBlockInsert.insert(url, into: state, area: area, column: column, row: row)
             },
+            onDropPatch: { drag in
+                SlotPatchDrop.load(drag, slot: slot, state: state, device: device)
+            },
             commands: commands,
             zoomPanController: controller,
             onZoomChange: { viewState.zoom = $0 }
@@ -278,7 +281,7 @@ struct ToolbarPatchLoad: View {
             PatchLoadReadout(voice: voice, fx: fx, layout: .toolbar,
                              scale: TopBarMetrics.readoutScale,
                              labelColor: .secondary)
-                .help("Patch load — Voice and FX areas, cycles and memory (⌘⌥3 for the full picture)")
+                .help("Patch load — Voice and FX areas, cycles and memory" + PatchLoadReadout.dspHint)
         }
     }
 
@@ -298,10 +301,11 @@ struct ToolbarPatchStats: View {
     let area: PatchArea
 
     var body: some View {
-        let patch = state.patch(inSlot: slot)
+        // Nagłówek, nie patch — liczby nie zmieniają się od ruchu gałki.
+        let header = state.header(slot: slot)
         TopBarCaption(
-            text: "\(patch.modules(in: area).count) modules",
-            secondLine: "\(patch.cables(in: area).count) cables"
+            text: "\(header.moduleCount(in: area)) modules",
+            secondLine: "\(header.cableCount(in: area)) cables"
         )
     }
 }
@@ -323,7 +327,8 @@ struct SlotBarRows: View {
 }
 
 /// Tytuł i podtytuł okna. Siedzą w osobnym, pustym widoku, bo podtytuł liczy moduły
-/// patcha — gdyby liczył je `ContentView`, każdy tick gałki budziłby całe okno.
+/// patcha — gdyby liczył je `ContentView`, każdy tick gałki budziłby całe okno. Liczby
+/// biorą z nagłówka slotu, więc gałka nie budzi nawet tego widoku.
 /// Tytuł przy slotach w oknach to zakładka: litera slotu i nazwa patcha, jak w oknach
 /// slotów B–D (`SlotWindows.title`); poza tym nazwa pliku.
 struct DocumentTitles: View {
@@ -347,9 +352,9 @@ struct DocumentTitles: View {
     }
 
     private var subtitle: String {
-        let patch = state.patch(inSlot: slot)
+        let header = state.header(slot: slot)
         let slotPart = Self.slotLabels.indices.contains(slot)
             ? " · Slot \(Self.slotLabels[slot])" : ""
-        return "\(patch.voiceModules.count) voice · \(patch.fxModules.count) FX modules\(slotPart)"
+        return "\(header.voiceModuleCount) voice · \(header.fxModuleCount) FX modules\(slotPart)"
     }
 }

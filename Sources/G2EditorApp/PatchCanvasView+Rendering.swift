@@ -24,9 +24,10 @@ extension PatchCanvasView {
         }
         // Przeciągane moduły rysujemy na końcu — zawsze na wierzchu innych modułów
         var deferred: [(module: G2Module, def: ModuleDef?, rect: CGRect)] = []
-        for module in mods {
+        let heights = PatchLayout.effectiveHeights(mods, def: moduleDefinition)
+        for (index, module) in mods.enumerated() {
             let d = moduleDefinition(module.typeID)
-            var rect = PatchLayout.moduleRect(module, def: d, rowOffset: ro, allModules: mods)
+            var rect = PatchLayout.moduleRect(module, height: heights[index], rowOffset: ro)
             let dragged = moduleDrag.map {
                 $0.moduleID == module.id || $0.extraModules.contains(where: { $0.id == module.id })
             } ?? false
@@ -76,9 +77,10 @@ extension PatchCanvasView {
     }
 
     /// Wkleja obrazek modułu; gdy obrazka brak, rysuje moduł wektorowo i zamawia go.
-    /// Nieświeży obrazek (np. sprzed ruchu gałki) idzie na jedną klatkę — świeży
-    /// dociera z `onRendered` zaraz po tym przebiegu. Obrazek w powiększeniu innym niż
-    /// bieżące (trwa gest zoomu) jest skalowany; w tym samym — wklejany piksel w piksel.
+    /// Moduł, który się zmienił (gałka, przycisk, wartość z G2), rysuje się wektorowo —
+    /// od razu w nowym stanie — a obrazek dostaje dopiero, gdy przestanie się zmieniać
+    /// (`requestWhenSettled`). Obrazek w powiększeniu innym niż bieżące (trwa gest zoomu)
+    /// jest skalowany; w tym samym — wklejany piksel w piksel.
     private func paintModule(_ ctx: GraphicsContext, module: G2Module, def: ModuleDef?,
                              rect: CGRect, useRasters: Bool, backingScale: CGFloat)
     {
@@ -96,7 +98,16 @@ extension PatchCanvasView {
             rasters.request(moduleID: module.id, key: key, def: def, render: render)
             return
         }
-        if !exact { rasters.request(moduleID: module.id, key: key, def: def, render: render) }
+        if !exact {
+            // Ta sama skala, inna treść: stary obrazek pokazałby gałkę o krok w tyle,
+            // a nowy co tick budziłby całą kanwę drugi raz.
+            if entry.key.zoom == key.zoom, entry.key.backingScale == key.backingScale {
+                drawModule(ctx, module: module, def: def, rect: rect)
+                rasters.requestWhenSettled(moduleID: module.id, key: key, def: def, render: render)
+                return
+            }
+            rasters.request(moduleID: module.id, key: key, def: def, render: render)
+        }
         // Prostokąt docelowy = rozmiar obrazka w pt logicznych powiększenia, w którym
         // powstał; przy innym bieżącym powiększeniu skaluje się razem z kontekstem.
         let rasterPx = entry.key.zoom * entry.key.backingScale

@@ -21,6 +21,8 @@ final class DropTargetNSView: NSView {
     var onDropModuleColor: ((UInt8, CGPoint) -> Bool)?
     /// Building Block z listy Blocks — plik, kolumna i wiersz lewego górnego rogu.
     var onDropBlock: ((URL, Int, Int) -> Bool)?
+    /// A patch row of the Patches panel — loads into the slot this canvas shows.
+    var onDropPatch: ((SlotPatchDrag) -> Void)?
     /// Blok wisi nad kanwą (`nil` = wyszedł albo upuszczony) — dla ducha bloku.
     var onBlockHover: ((BlockDropHover?) -> Void)?
     private var lastBlockHover: BlockDropHover?
@@ -54,6 +56,8 @@ final class DropTargetNSView: NSView {
         // Moduły wyciągnięte z tej kanwy jako blok — wracają na nią bez skutku.
         if let string = sender.draggingPasteboard.string(forType: .string),
            BlockExportDragData.isExport(string) { return [] }
+        // A patch row keeps its own drag image: there is no module to preview.
+        if Self.patchDrag(sender) != nil { return .copy }
         // Plik z Findera zostaje z obrazkiem Findera — otwiera się, ducha nie ma.
         if let files = FinderOpen.files(on: sender.draggingPasteboard) {
             return FinderOpen.patchFile(in: files) == nil ? [] : .copy
@@ -74,6 +78,10 @@ final class DropTargetNSView: NSView {
         // Ukryj OS drag image — SwiftUI ghost przejmuje nad canvasem.
         hideDragImage(sender)
         return .copy
+    }
+
+    private static func patchDrag(_ sender: NSDraggingInfo) -> SlotPatchDrag? {
+        sender.draggingPasteboard.string(forType: .string).flatMap(SlotPatchDrag.init(payload:))
     }
 
     private func hideDragImage(_ sender: NSDraggingInfo) {
@@ -141,6 +149,10 @@ final class DropTargetNSView: NSView {
             return true
         }
         guard let string = sender.draggingPasteboard.string(forType: .string) else { return false }
+        if let drag = Self.patchDrag(sender) {
+            onDropPatch?(drag)
+            return onDropPatch != nil
+        }
         if let payload = ParameterPageDragData.parse(string) {
             return onDropParameterPageKnob?(payload.index, logicalPoint) ?? false
         }
@@ -223,6 +235,7 @@ struct DropTargetRepresentable: NSViewRepresentable {
     let onDropParameterPageKnob: ((Int, CGPoint) -> Bool)?
     let onDropModuleColor: ((UInt8, CGPoint) -> Bool)?
     let onDropBlock: ((URL, Int, Int) -> Bool)?
+    let onDropPatch: ((SlotPatchDrag) -> Void)?
     let onBlockHover: ((BlockDropHover?) -> Void)?
     let dragSource: CanvasDragSource
 
@@ -239,6 +252,7 @@ struct DropTargetRepresentable: NSViewRepresentable {
         v.onDropParameterPageKnob = onDropParameterPageKnob
         v.onDropModuleColor = onDropModuleColor
         v.onDropBlock = onDropBlock
+        v.onDropPatch = onDropPatch
         v.onBlockHover = onBlockHover
     }
 }

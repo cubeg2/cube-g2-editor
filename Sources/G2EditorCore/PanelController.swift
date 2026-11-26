@@ -116,28 +116,7 @@ public final class PanelController {
             case .mutatorTree: "arrow.triangle.branch"
             // Vertical sliders, like the step faders — available since macOS 11.
             case .sequenceEditor: "slider.vertical.3"
-            }
-        }
-
-        /// Klawisz skrótu (z ⌘⌥). Ten sam skrót zamyka to, co otworzył.
-        public var shortcutKey: Character {
-            switch self {
-            case .modules: "1"
-            case .banks: "2"
-            case .dsp: "3"
-            case .keyboard: "4"
-            case .parameterPages: "5"
-            case .mutator: "6"
-            case .parameterOverview: "7"
-            case .patchAdjuster: "8"
-            case .colors: "9"
-            case .spectrogram: "0"
-            case .xyPlot: "x"
-            // Bez skrótu i bez pozycji w menu — okno otwiera panel Mutatora. Ta sama
-            // litera co spektrogram nie szkodzi: skrótu nabiera dopiero panel z menu.
-            case .mutatorTree: "0"
-            // ⌘⌥E — in the Patch menu and on the top bar (after the keyboard).
-            case .sequenceEditor: "e"
+                // A wave drawn as a path — available since macOS 11.
             }
         }
 
@@ -223,6 +202,8 @@ public final class PanelController {
             case .dsp: CGSize(width: 300, height: 330)
             // Toolbar row of the Sequence Editor fits from this width on.
             case .sequenceEditor: CGSize(width: 720, height: 490)
+            // Header + 3D view (190) + Position group + Motion/Layer row (2 × 24 + gaps) + Row group (bars 132)
+            // + hint + margins.
             default: nil
             }
         }
@@ -434,6 +415,20 @@ public final class PanelController {
         sequencePinned = false
         sequenceOpensOnAll = false
         windows.insert(.sequenceEditor)
+    }
+
+    /// The sequencer `step` places away from `current` in `targets` (‹ = −1, › = +1). Wraps around:
+    /// after the last one comes the first, so the arrows never go dead. An unknown `current` starts
+    /// from the first (›) or the last (‹); an empty list gives nothing.
+    public static func neighbour(of current: SequenceEditorTarget?, in targets: [SequenceEditorTarget],
+                                 step: Int) -> SequenceEditorTarget?
+    {
+        guard !targets.isEmpty else { return nil }
+        guard let current, let index = targets.firstIndex(of: current) else {
+            return step >= 0 ? targets[0] : targets[targets.count - 1]
+        }
+        let count = targets.count
+        return targets[((index + step) % count + count) % count]
     }
 
     /// A module was clicked on the canvas — the open, unpinned window follows it.

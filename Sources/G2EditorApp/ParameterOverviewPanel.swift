@@ -6,7 +6,9 @@
 // Pole = Knob Floater Overview Group: nazwa modułu (55 × 15, u nas wyśrodkowana
 // względem ekranu — oryginał pisze ją do lewej) i pod nią
 // ekran Knob Floater Knob View w trybie `EDisplay = 1`, czyli **sama nazwa
-// parametru, bez wartości**. Wartość widać w oknie Parameter Pages.
+// parametru, bez wartości**. Wartość widać w oknie Parameter Pages. Odstępstwo od
+// oryginału: przycisk **Values** podmienia nazwy na bieżące wartości (domyślnie
+// wyłączony — widok zostaje klasyczny).
 
 import G2Core
 import G2EditorCore
@@ -38,6 +40,8 @@ struct ParameterOverviewPanel: View {
     @Bindable var state: PatchState
     @State private var showsButtons = false
     @State private var showsMidi = false
+    /// Ekrany pokazują wartości zamiast nazw (nasze rozszerzenie; domyślnie klasyczne nazwy).
+    @AppStorage("parameterOverviewShowsValues") private var showsValues = false
 
     var body: some View {
         VStack(spacing: ParameterOverviewMetrics.groupSpacing) {
@@ -56,7 +60,15 @@ struct ParameterOverviewPanel: View {
     // MARK: - Clavia control row
 
     private var controls: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
+            Button {
+                showsValues.toggle()
+            } label: {
+                Text("Values")
+            }
+            .buttonStyle(PanelButtonStyle(width: 46, height: ParameterOverviewMetrics.buttonHeight, active: showsValues))
+            .help(showsValues ? "Show parameter names" : "Show current parameter values")
+
             Button {
                 state.autoAssignMidiControllersFromParameterPages()
             } label: {
@@ -188,12 +200,14 @@ struct ParameterOverviewPanel: View {
 
     /// Co pokazuje ekran: nazwę parametru, nazwę powiązanego przycisku („--", gdy
     /// parametr żadnego nie ma) albo numer kontrolera MIDI — dokładnie te trzy
-    /// gałęzie ma Knob Floater Overview (SetupState).
+    /// gałęzie ma Knob Floater Overview (SetupState). Przycisk Values (nasz) zamienia
+    /// nazwę gałki albo przycisku na jej bieżącą wartość; MIDI ma pierwszeństwo.
     private func displayName(_ item: ParameterPagePresentation, paramIndex: Int?) -> String {
         guard item.knobParamIndex != nil else { return "" }
         guard showsMidi else {
-            guard showsButtons else { return item.parameterName }
-            return item.buttonParamIndex == nil ? "--" : item.buttonName
+            guard showsButtons else { return showsValues ? item.valueText : item.parameterName }
+            guard item.buttonParamIndex != nil else { return "--" }
+            return showsValues ? item.buttonValueText : item.buttonName
         }
         guard !showsButtons || item.buttonParamIndex != nil else { return "" }
         return midiController(for: item, paramIndex: paramIndex).map { "CC# \($0)" } ?? ""

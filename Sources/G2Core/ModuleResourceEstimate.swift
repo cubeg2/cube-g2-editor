@@ -42,8 +42,12 @@ public extension G2PatchLoad {
     static func estimate(area: PatchArea, modules: [G2Module], cables: [G2Cable] = []) -> G2PatchLoad {
         let connected = Set(cables.flatMap { [$0.destinationConnector, $0.sourceConnector] }
             .filter { !$0.isOutput })
+        // Wejścia pogrupowane raz, nie przeszukiwane dla każdego modułu: belka liczy to
+        // przy każdej zmianie patcha, a moduły × gniazda przy dużym patchu to dziesiątki
+        // tysięcy porównań.
+        let inputsByModule = Dictionary(grouping: connected, by: \.moduleID)
         let total = modules.reduce(ModuleResourceCost.zero) { sum, module in
-            let inputs = connected.filter { $0.moduleID == module.id }.map(\.index)
+            let inputs = inputsByModule[module.id]?.map(\.index) ?? []
             return sum + ModuleResourceCostDatabase.cost(of: module, connectedInputs: inputs)
         }
         return G2PatchLoad(

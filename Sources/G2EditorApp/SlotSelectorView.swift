@@ -8,6 +8,7 @@
 //   • KLAWIATURA (keyboard)  — „All slot buttons that have a red line on top of them
 //                              will follow the keyboard" → czerwona kreska NAD przyciskiem
 //   • NUTY Z DAW (nasze)     — zielona kreska nad czerwoną, gdy wtyczka DAW gra ten slot
+//   • POZIOM (nasze)         — pasek POD przyciskiem: wyjście slotu (`SlotLevelBar`)
 //   • EDYTOWANY (focus)      — „The focused Slot has a white frame around it" → biała ramka
 //                              (biała w ciemnym trybie systemu; na jasnej belce narzędzi
 //                              biel znika, więc tam ta sama rola przypada czerni)
@@ -17,6 +18,7 @@
 //                     (domyślnie dołącza do grających, oryginał gra nim samym)
 //   • SHIFT+klik    — włącz/wyłącz slot (kilka slotów naraz = gra multitimbralnie)
 //   • CTRL+klik     — przypisz/odbierz klawiaturę (czerwona kreska)
+// Upuszczony patch (lista Patches albo Finder) wchodzi do tego slotu → `SlotPatchDrop`.
 
 import AppKit
 import G2Core
@@ -30,6 +32,8 @@ struct SlotSelectorView: View {
     /// rząd w układzie czterech pasów i okno slotu pokazują tylko własną literę.
     var shown: [Int]?
     @Environment(\.colorScheme) private var colorScheme
+    /// The button a dragged patch hovers over.
+    @State private var dropTarget: Int?
 
     private let labels = ["A", "B", "C", "D"]
 
@@ -72,9 +76,10 @@ struct SlotSelectorView: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: TopBarMetrics.cornerRadius)
-                        .stroke(focused ? focusFrameColor
+                        .stroke(dropTarget == index ? Color.accentColor
+                            : focused ? focusFrameColor
                             : (playing ? Color.green : Color.primary.opacity(0.25)),
-                            lineWidth: focused ? 1.5 : 1)
+                            lineWidth: dropTarget == index ? 2.5 : focused ? 1.5 : 1)
                 )
                 // Kreski wiszą NAD przyciskiem jako nakładka i nie biorą miejsca w układzie:
                 // gdy stały w jednym stosie z przyciskiem, środek stosu wypadał na osi pasa,
@@ -97,11 +102,28 @@ struct SlotSelectorView: View {
                     }
                     .alignmentGuide(.top) { $0[.bottom] + 2 }
                 }
+                // Under the button, likewise taking no room in the row.
+                .overlay(alignment: .bottom) {
+                    SlotLevelBar(device: device, slot: index, playing: playing)
+                        .alignmentGuide(.bottom) { $0[.top] - 2 }
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(playing ? Color.green : Color.secondary)
         .help(helpText(index, focused: focused, playing: playing, keyboard: keyboard))
+        .onDrop(of: SlotPatchDrop.types, isTargeted: targeting(index)) {
+            SlotPatchDrop.accept($0, slot: index, state: state, device: device)
+        }
+    }
+
+    private func targeting(_ index: Int) -> Binding<Bool> {
+        Binding(
+            get: { dropTarget == index },
+            set: { inside in
+                if inside { dropTarget = index } else if dropTarget == index { dropTarget = nil }
+            }
+        )
     }
 
     /// Ramka slotu edytowanego. Instrukcja oryginału mówi „white frame", bo panel Clavii
@@ -139,6 +161,43 @@ struct SlotSelectorView: View {
         if keyboard { parts.append("keyboard") }
         parts.append("green line: notes from a DAW plugin")
         return parts.joined(separator: " · ")
-            + " — shift-click plays or mutes it, control-click assigns the keyboard."
+            + " — shift-click plays or mutes it, control-click assigns the keyboard,"
+            + " drag a patch from the Patches panel here to load it into this slot."
+    }
+}
+
+/// The level a slot sends out, under its button — which slots actually sound, not only
+/// which are switched on. A view of its own and the only reader of `slotLevels`: a level
+/// change redraws these small bars, nothing else of the top bar.
+private struct SlotLevelBar: View {
+    let device: DeviceConnection
+    let slot: Int
+    let playing: Bool
+
+    var body: some View {
+        let connected = device.status == .connected
+        let level = connected && playing && device.slotLevels.indices.contains(slot)
+            ? device.slotLevels[slot] : 0
+        Canvas { context, size in
+            // Without a G2 there is nothing to measure: no empty frames in the bar.
+            guard connected else { return }
+            let radius = TopBarMetrics.slotLevelBarCornerRadius
+            context.fill(Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: radius),
+                         with: .color(MiniVUGeometry.frameColor))
+            let inner = CGRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)
+            // The end segments follow the rounded corners of the frame.
+            context.clip(to: Path(roundedRect: inner, cornerRadius: radius - 0.5))
+            let count = G2VisualStream.meterSegments
+            let gap: CGFloat = 0.5
+            let width = (inner.width - CGFloat(count - 1) * gap) / CGFloat(count)
+            for segment in 0 ..< count {
+                let x = inner.minX + CGFloat(segment) * (width + gap)
+                context.fill(Path(CGRect(x: x, y: inner.minY, width: width, height: inner.height)),
+                             with: .color(MiniVUGeometry.color(segment: segment, lit: segment < level)))
+            }
+        }
+        .frame(width: TopBarMetrics.slotButtonWidth, height: TopBarMetrics.slotLevelBarHeight)
+        .help("Output level of slot \(["A", "B", "C", "D"][slot % 4])")
+        .allowsHitTesting(false)
     }
 }

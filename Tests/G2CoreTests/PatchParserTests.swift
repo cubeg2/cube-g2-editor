@@ -42,6 +42,17 @@ final class PatchParserTests: XCTestCase {
         }
     }
 
+    /// Plik urwany tuż za nagłówkiem tekstowym (sam nagłówek, bez bajtów wersji i danych)
+    /// wywracał parser odczytem poza końcem tablicy — także przy przeglądaniu całej kolekcji.
+    func testFileEndingRightAfterTheTextHeaderIsRejectedNotCrashing() {
+        for tail in [[], [0x17]] as [[UInt8]] {
+            let truncated = Data("Version=Nord Modular G2 File Format 1\r\n".utf8) + Data([0]) + Data(tail)
+            XCTAssertThrowsError(try PatchParser.parse(data: truncated)) { error in
+                XCTAssertTrue("\(error)".contains("no patch data"), "\(error)")
+            }
+        }
+    }
+
     // MARK: - Basic parse tests
 
     func testSimpleSynthParsesWithoutError() throws {

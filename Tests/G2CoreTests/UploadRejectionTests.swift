@@ -127,7 +127,9 @@ final class UploadRejectionTests: XCTestCase {
     /// odczyt slotu, do którego idzie — do nowego raportu wraca szacunek. Inne sloty zostają.
     func testUploadDropsTheOldDeviceReadingOfTheReplacedSlot() async {
         let transport = AnsweringTransport()
-        transport.answers = Array(repeating: [okFrame], count: 6)
+        // Na `0x37` prawdziwy Nord odpowiada numerem sesji slotu (0x36), nie `OK` (#191).
+        transport.answers = [[okFrame], [embedded([0x01, 0x08, 0x40, 0x36, 0x00, 0x03])]]
+            + Array(repeating: [okFrame], count: 4)
         let manager = G2MidiManager()
         await manager.attachTransportForTesting(transport)
         let device = DeviceConnection(connectedTo: manager)
@@ -216,6 +218,26 @@ final class UploadRejectionTests: XCTestCase {
 
     /// Upload Banks to G2 wysyła plik do slotu przed zapisem — bez zgody nawet slot Norda
     /// ma zostać nietknięty.
+    /// #191: po wgraniu patcha edytor zostawał przy starym numerze sesji slotu, więc każda następna
+    /// komenda slotu (wybór wariacji, gałki) szła ze starym numerem i Nord ją kwitował, ale ignorował.
+    /// Pod `0x37` trafiało się, że pierwszy był spóźniony `OK` (potwierdzenie wcześniejszej komendy
+    /// bez odpowiedzi, np. nuty z klawiatury; usb.log 2026-11-16 23:33:05), a prawdziwa odpowiedź —
+    /// numer sesji `0x36` — przychodziła później i ginęła.
+    func testPatchUploadWaitsForTheSessionNumberEvenWhenAStrayOKComesFirst() async throws {
+        let transport = AnsweringTransport()
+        let sessionReply = embedded([0x01, 0x08, 0x40, 0x36, 0x00, 0x03])
+        // SelectSlot dostaje swoje `OK`; na wgrany patch pierwszy przychodzi cudzy `OK`, dopiero potem numer sesji.
+        transport.answers = [[okFrame], [okFrame, sessionReply]]
+        let manager = G2MidiManager()
+        await manager.attachTransportForTesting(transport)
+
+        try await manager.sendPatch(G2Patch(), toSlot: 0, sectionStream: [0x21, 0x00])
+
+        let version = await manager.slotVersion(0)
+        XCTAssertEqual(version, 3, "numer sesji z odpowiedzi 0x36, nie z pierwszego `OK`")
+        XCTAssertEqual(transport.written.count, 2, "SelectSlot + SetPatch")
+    }
+
     func testFileStoreToTheRealNordNeedsExplicitPermission() async {
         let transport = AnsweringTransport()
         let manager = G2MidiManager()

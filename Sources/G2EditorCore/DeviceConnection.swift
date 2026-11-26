@@ -134,6 +134,9 @@ public final class DeviceConnection {
     /// ogłasza — a gdy odczyt nie przyjdzie, najwyżej `bankLoadHold`. Między nimi nic się
     /// nie dzieje, więc `isBusy` tej przerwy nie widział i dało się kliknąć następny patch.
     public private(set) var isLoadingFromBank = false
+    /// Początek i koniec wczytania z banku — edytor robi z niego krok Undo.
+    @ObservationIgnored public var onBankLoadWillStart: (() -> Void)?
+    @ObservationIgnored public var onBankLoadDidEnd: (() -> Void)?
     @ObservationIgnored private var bankLoadRelease: Task<Void, Never>?
     private static let bankLoadHold: UInt64 = 4_000_000_000
 
@@ -152,6 +155,10 @@ public final class DeviceConnection {
     /// Pojedyncze diody (obwiednie, LFO, „Link" sekwencera) — osobny komunikat `0x39`.
     public private(set) var leds: [G2LedReading] = []
     public private(set) var meterSlot: Int = 0
+    /// What each slot sends out (0…`G2VisualStream.meterSegments`) — the meters under the
+    /// slot buttons. The G2 reports a slot only when its meters change, so a value stands
+    /// until the next report.
+    public private(set) var slotLevels = [Int](repeating: 0, count: G2UsbProtocol.maxSlots)
 
     /// Obciążenie DSP każdego slotu, po jednym odczycie na obszar (`0x72`). Urządzenie
     /// nadaje je samo po każdej zmianie struktury patcha, więc panel pokazuje stan
@@ -323,7 +330,7 @@ public final class DeviceConnection {
     /// Wysyłka zgłoszona w trakcie innej wysyłki — jedno miejsce, wygrywa najnowsza.
     private var pendingUpload: (patches: [G2Patch], activeSlot: Int, performance: G2PerformanceSettings?,
                                 fileData: Data?, slotFiles: [Data?], fileName: String, firstSlot: Int,
-                                headerSent: Bool)?
+                                headerSent: Bool, giveBack: PatchState.SlotPlayState?)?
 
     public init() {
         manager = G2MidiManager()
@@ -380,6 +387,7 @@ public final class DeviceConnection {
                 // Pytanie o duży patch nie może wisieć gdy urządzenia już nie ma.
                 answerLargeUpload(send: false)
                 clearVisuals()
+                slotLevels = slotLevels.map { _ in 0 }
                 patchLoad = [:]
                 assignedVoices = nil
                 bankEntries = []
@@ -488,6 +496,7 @@ public final class DeviceConnection {
         await manager.disconnect()
         onDeviceLost?()
         clearVisuals()
+        slotLevels = slotLevels.map { _ in 0 }
         patchLoad = [:]
         assignedVoices = nil
         bankEntries = []
@@ -551,7 +560,7 @@ public final class DeviceConnection {
         }
     }
 
-    private func handle(_ note: G2Notification) {
+    func handle(_ note: G2Notification) {
         let slot = Int(note.slot)
         switch note.subCommand {
         case G2UsbProtocol.subResponseParamChange:
@@ -686,19 +695,26 @@ public final class DeviceConnection {
 
     /// Rozkład strumienia wizualnego dla zawartości oglądanego slotu — patrz
     /// `G2VisualLayout`. Liczony przy zmianie struktury patcha, nie przy każdym pakiecie.
-    private var visualLayout: G2VisualLayout?
+    private var visualLayouts: [Int: G2VisualLayout] = [:]
 
-    private func layout(for patch: G2Patch) -> G2VisualLayout {
+    private func layout(for patch: G2Patch, slot: Int) -> G2VisualLayout {
         let signature = G2VisualLayout.signature(of: patch)
-        if let visualLayout, visualLayout.signature == signature { return visualLayout }
+        if let layout = visualLayouts[slot], layout.signature == signature { return layout }
         let fresh = G2VisualLayout(patch: patch)
-        visualLayout = fresh
+        visualLayouts[slot] = fresh
         return fresh
     }
 
     private func updateMeters(slot: Int, payload: [UInt8]) {
-        guard slot == activeSlot, let patch = patchForSlot?(slot) else { return }
-        let readings = G2VisualStream.decodeVolumeData(payload, layout: layout(for: patch))
+        guard let patch = patchForSlot?(slot) else { return }
+        let readings = G2VisualStream.decodeVolumeData(payload, layout: layout(for: patch, slot: slot))
+        if slotLevels.indices.contains(slot), let level = G2VisualStream.slotLevel(readings, patch: patch),
+           slotLevels[slot] != level
+        {
+            slotLevels[slot] = level
+        }
+        // The meters and LEDs on the canvas belong to the slot on screen.
+        guard slot == activeSlot else { return }
         // Bez tego porównania canvas przerysowywałby się 20×/s także wtedy, gdy nic nie
         // gra i wszystkie wskaźniki stoją na zerze.
         guard readings.meters != meters || readings.ledGroups != ledGroups || slot != meterSlot
@@ -712,7 +728,7 @@ public final class DeviceConnection {
     /// przy wskaźnikach: bez zmiany nie budzimy widoku.
     private func updateLeds(slot: Int, payload: [UInt8]) {
         guard slot == activeSlot, let patch = patchForSlot?(slot) else { return }
-        let readings = G2VisualStream.decodeLedData(payload, layout: layout(for: patch))
+        let readings = G2VisualStream.decodeLedData(payload, layout: layout(for: patch, slot: slot))
         guard readings != leds || slot != meterSlot else { return }
         meterSlot = slot
         leds = readings
@@ -1171,23 +1187,25 @@ public final class DeviceConnection {
     /// klawiatura i zegar są nią opisane i nie powtarzamy ich osobnymi komendami.
     public func upload(patches: [G2Patch], activeSlot: Int, performance: G2PerformanceSettings? = nil,
                        fileData: Data? = nil, slotFiles: [Data?] = [], fileName: String = "",
-                       firstSlot: Int = 0, headerSent: Bool = false) async
+                       firstSlot: Int = 0, headerSent: Bool = false,
+                       giveBack: PatchState.SlotPlayState? = nil) async
     {
         guard status == .connected, !patches.isEmpty else { return }
         if isSending {
             pendingUpload = (patches, activeSlot, performance, fileData, slotFiles, fileName, firstSlot,
-                             headerSent)
+                             headerSent, giveBack)
             return
         }
         await performUpload(patches: patches, activeSlot: activeSlot, performance: performance,
                             fileData: fileData, slotFiles: slotFiles, fileName: fileName,
-                            firstSlot: firstSlot, headerSent: headerSent)
+                            firstSlot: firstSlot, headerSent: headerSent, giveBack: giveBack)
         while let next = pendingUpload {
             pendingUpload = nil
             await performUpload(patches: next.patches, activeSlot: next.activeSlot,
                                 performance: next.performance,
                                 fileData: next.fileData, slotFiles: next.slotFiles, fileName: next.fileName,
-                                firstSlot: next.firstSlot, headerSent: next.headerSent)
+                                firstSlot: next.firstSlot, headerSent: next.headerSent,
+                                giveBack: next.giveBack)
         }
     }
 
@@ -1229,7 +1247,7 @@ public final class DeviceConnection {
 
     private func performUpload(patches: [G2Patch], activeSlot: Int, performance: G2PerformanceSettings?,
                                fileData: Data?, slotFiles: [Data?], fileName: String, firstSlot: Int,
-                               headerSent: Bool) async
+                               headerSent: Bool, giveBack: PatchState.SlotPlayState?) async
     {
         guard status == .connected, !patches.isEmpty else { return }
         // Pojedynczy patch idzie do Norda z „Vol: Off" w grającej wariacji, a „On" wraca, gdy
@@ -1247,7 +1265,7 @@ public final class DeviceConnection {
                                      performance: performance)
         // `.pch2` nie ma w sobie nazwy patcha — oryginał nazywa slot tak, jak nazywa się
         // plik. Nazwy slotów `.prf2` niesie sekcja 0x11 i te są już w `patch.name`.
-        let fallbackName = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        let fallbackName = PluginBrowser.nameFromFile(URL(fileURLWithPath: fileName))
         clearVisuals()
         defer {
             sendProgress = nil
@@ -1344,11 +1362,18 @@ public final class DeviceConnection {
             (enabled, keyboard) = Self.slotSelectionAfterPatchUpload(playing: playingSlots, keyboard: keyboardSlots,
                                                                      target: target, emptySlots: empty)
         }
+        // ⌘Z of a load that had switched the slot on: what played before it, and its focus.
+        if let giveBack {
+            (enabled, keyboard) = (giveBack.playing, giveBack.keyboard)
+        }
+        let focus = giveBack?.focus ?? target
         do {
             try await manager.setSlotSelection(enabled, keyboard: keyboard)
             applyPlayingSlots(enabled)
             applyKeyboardSlots(keyboard)
-            try await manager.selectSlot(UInt8(target))
+            self.activeSlot = focus
+            try await manager.selectSlot(UInt8(focus))
+            if giveBack != nil { onSlotSelectionEdited?(playingSlots, keyboardSlots) }
             if let loadingMute {
                 try await unmuteAfterLoad([(target, loadingMute)])
             }
@@ -1722,7 +1747,13 @@ public final class DeviceConnection {
             ? playingSlots
             : (0 ..< G2UsbProtocol.maxSlots).map { $0 == activeSlot }
         enabled[slot].toggle()
-        guard enabled.contains(true) else { return }
+        await setPlayingSlots(enabled)
+    }
+
+    /// Które sloty grają (niebieskie przyciski): od razu cztery wartości, np. Mute/Solo z wtyczki DAW.
+    /// Co najmniej jeden slot musi grać — jak w oryginale; klawiatura idzie za nowym wyborem.
+    public func setPlayingSlots(_ enabled: [Bool]) async {
+        guard status == .connected, enabled.count == G2UsbProtocol.maxSlots, enabled.contains(true) else { return }
         do {
             let keyboard = keyboardAfter(enabled)
             try await manager.setSlotSelection(enabled, keyboard: keyboard)
@@ -1765,6 +1796,7 @@ public final class DeviceConnection {
         guard status == .connected, acceptsPatchChange else { return }
         let targetSlot: UInt8 = entry.kind == .performance ? 4 : UInt8(slot)
         bankLoadError = nil
+        onBankLoadWillStart?()
         isLoadingFromBank = true
         bankLoadRelease?.cancel()
         bankLoadRelease = Task { [weak self] in
@@ -1804,6 +1836,7 @@ public final class DeviceConnection {
         bankLoadRelease?.cancel()
         bankLoadRelease = nil
         isLoadingFromBank = false
+        onBankLoadDidEnd?()
     }
 
     public func dismissBankLoadError() {
@@ -2251,14 +2284,22 @@ public final class DeviceConnection {
     /// Wirtualny G2: MIDI na jego wejście „Virtual G2", na kanale slotu z Synth Settings
     /// i z dynamiką — gra tylko ten slot (`MidiNoteOutput`). Inaczej, a także gdy slot
     /// nie słucha MIDI albo wejścia nie ma: `0x56` bez dynamiki, grają sloty z klawiaturą.
-    /// Nord przejdzie na MIDI przez kabel, gdy będzie wybór portu (plan wtyczki §2.7).
     ///
     /// `0x56` idzie **w kolejności** — także między paczkami, dlatego każda czeka na
     /// poprzednią. Osobne `Task` na nutę mogłyby zamienić wciśnięcie z puszczeniem
     /// i zostawić wiszącą nutę.
-    public func playNotes(_ notes: [(key: UInt8, velocity: UInt8, on: Bool)], slot: Int) {
+    ///
+    /// `port` — wejście MIDI wybrane w oknie wtyczki (kabel do Norda): nuty idą na kanał slotu
+    /// z Synth Settings, z dynamiką, także akordy. Bez portu albo gdy go nie ma — jak dotąd.
+    public func playNotes(_ notes: [(key: UInt8, velocity: UInt8, on: Bool)], slot: Int, port: String? = nil) {
         guard status == .connected, !notes.isEmpty else { return }
         showDawNotes(notes, slot: slot)
+        if let port, !port.isEmpty, let slots = synthSettings?.slots, slots.indices.contains(slot), slots[slot].active,
+           noteOutput.send(notes.map { MidiNoteOutput.Note(key: $0.key, velocity: $0.velocity, on: $0.on) },
+                           channel: slots[slot].channel, to: port)
+        {
+            return
+        }
         if isVirtualDevice, let slots = synthSettings?.slots, slots.indices.contains(slot), slots[slot].active,
            noteOutput.send(notes.map { MidiNoteOutput.Note(key: $0.key, velocity: $0.velocity, on: $0.on) },
                            channel: slots[slot].channel, to: MidiNoteOutput.virtualG2)
@@ -2271,6 +2312,27 @@ public final class DeviceConnection {
                 try? await manager.playNote(note.key, on: note.on)
             }
         }
+    }
+
+    /// Kółko modulacji i inne kontrolery z klawiatury w oknie wtyczki: tylko MIDI (kabel albo Virtual G2) —
+    /// USB nie ma na to komendy. Kanał slotu z Synth Settings.
+    public func sendController(_ cc: Int, value: Int, slot: Int, port: String?) {
+        guard let route = controllerRoute(slot: slot, port: port) else { return }
+        _ = noteOutput.send(words: [MidiNoteOutput.controllerWord(cc: cc, value: value, channel: route.channel)],
+                            to: route.destination)
+    }
+
+    public func sendPitchBend(_ amount: Double, slot: Int, port: String?) {
+        guard let route = controllerRoute(slot: slot, port: port) else { return }
+        _ = noteOutput.send(words: [MidiNoteOutput.pitchBendWord(amount, channel: route.channel)],
+                            to: route.destination)
+    }
+
+    private func controllerRoute(slot: Int, port: String?) -> (channel: Int, destination: String)? {
+        guard status == .connected, let slots = synthSettings?.slots, slots.indices.contains(slot),
+              slots[slot].active else { return nil }
+        if let port, !port.isEmpty { return (slots[slot].channel, port) }
+        return isVirtualDevice ? (slots[slot].channel, MidiNoteOutput.virtualG2) : nil
     }
 
     private var noteTask: Task<Void, Never>?
@@ -2303,13 +2365,41 @@ public final class DeviceConnection {
     /// Panic z wtyczki DAW: „puść" dla wszystkich 128 klawiszy slotu — tą samą drogą co nuty
     /// z DAW-a (Virtual G2: MIDI na kanale slotu, inaczej `0x56` po kolei). Zawieszona nuta,
     /// której puszczenie zgubił DAW, gaśnie; puszczenie nietrzymanego klawisza nic nie robi.
-    public func panic(slot: Int) {
-        playNotes((0 ... 127).map { (key: UInt8($0), velocity: UInt8(0), on: false) }, slot: slot)
+    public func panic(slot: Int, port: String? = nil) {
+        playNotes((0 ... 127).map { (key: UInt8($0), velocity: UInt8(0), on: false) }, slot: slot, port: port)
+    }
+
+    /// Co wtyczka powinna wiedzieć o kablu MIDI do Norda: czy wejście istnieje, czy sloty słuchają
+    /// MIDI i czy kanał globalny nie dubluje kanału slotu (nuta zagrałaby dwa razy).
+    public func midiNotesWarnings(port: String, slots: [Int]) -> [String] {
+        guard !port.isEmpty else { return [] }
+        guard MidiNoteOutput.destinationNames().contains(port) else {
+            return ["MIDI output “\(port)” not found — notes go over USB (one note, no velocity)."]
+        }
+        guard let settings = synthSettings else {
+            return ["The G2's Synth Settings are not read yet — notes go over USB until they are."]
+        }
+        var warnings: [String] = []
+        for slot in slots where settings.slots.indices.contains(slot) {
+            let letter = ["A", "B", "C", "D"][slot]
+            if !settings.slots[slot].active {
+                warnings.append("Slot \(letter) does not listen to MIDI (Synth Settings) — its notes go over USB.")
+            } else if let global = settings.globalChannel, settings.slots[slot].channel == global {
+                warnings.append("Global channel \(global) is also Slot \(letter)'s channel — notes may sound twice.")
+            }
+        }
+        return warnings
     }
 
     /// Wtyczka oddała sloty albo zniknęła — jej trzymane nuty nie mogą zostawić zielonej kreski.
-    public func clearDawNotes(slots: [Int]) {
+    /// Nuty wciąż trzymane przez wtyczkę zostają puszczone (tą samą drogą, którą poszły), żeby
+    /// po oddaniu slotu innej wtyczce nic nie wisiało na Nordzie.
+    public func clearDawNotes(slots: [Int], port: String? = nil) {
         for slot in slots where dawHeldNotes.indices.contains(slot) {
+            let held = dawHeldNotes[slot]
+            if !held.isEmpty {
+                playNotes(held.sorted().map { (key: $0, velocity: UInt8(0), on: false) }, slot: slot, port: port)
+            }
             dawHeldNotes[slot] = []
             updateDawNoteSlot(slot)
         }
@@ -2616,6 +2706,33 @@ public final class DeviceConnection {
         }
     }
 
+    /// Cały patch do jednego slotu jedną komendą — dla mostów z zewnątrz (wtyczka DAW), które podmieniają
+    /// patch w całości. Kolejka ta sama co przy `syncStructure`, więc cztery sloty wysłane jeden za drugim
+    /// idą po kolei i żaden nie ginie (`upload` pamięta tylko jeden oczekujący).
+    public func sendWholeSlot(slot: Int, patch: G2Patch, fileData: Data?) {
+        guard status == .connected else { return }
+        ignoreDeviceReloadsUntil = Date().addingTimeInterval(1.0)
+        let previous = structureSyncTask
+        structureSyncTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.status == .connected else { return }
+            await self.upload(patches: [patch], activeSlot: slot, slotFiles: [fileData], firstSlot: slot)
+        }
+    }
+
+    /// Nazwa i ustawienia performance'u z wtyczki DAW (`put_performance`): wysyłane w tej samej kolejce
+    /// co `sendWholeSlot`, więc idą dopiero po patchach slotów, które wtyczka wysłała tuż przed nimi.
+    public func queuePerformanceSettings(name: String, performance: G2PerformanceSettings, fileData: Data?) {
+        guard status == .connected else { return }
+        let previous = structureSyncTask
+        structureSyncTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.status == .connected else { return }
+            await self.sendPerformanceName(name)
+            await self.sendPerformanceHeader(performance, fileData: fileData)
+        }
+    }
+
     /// Ustawienia patcha, gałki, CC i morfy wstawionego bloku (Building Blocks). Kolejka ta sama co przy
     /// `syncStructure`: przypisanie do modułu, którego Nord jeszcze nie dostał, nie ma sensu,
     /// więc czeka na wysyłkę modułów. Komendy te same co przy ręcznym przypisaniu.
@@ -2772,9 +2889,27 @@ public final class DeviceConnection {
         await send(state)
     }
 
+    /// ⌘Z of a slot load: the slot goes back to the G2 whole. `giveBack` — the load had
+    /// switched it on, so the playing slots, keyboard and focus from before come back too.
+    public func resend(slot: Int, of state: PatchState, giveBack: PatchState.SlotPlayState?) async {
+        guard status == .connected, state.slots.indices.contains(slot) else { return }
+        bankLoads[slot] = nil
+        bankLoads[4] = nil
+        await upload(patches: [state.slots[slot]], activeSlot: slot, slotFiles: [state.slotFileData[slot]],
+                     firstSlot: slot, giveBack: giveBack)
+        if status == .connected { state.markSentToDevice() }
+    }
+
     public func send(_ state: PatchState, onlyFocusedSlot: Bool = false, followDocument: Bool = false) async {
         guard status == .connected, !state.slots.isEmpty else { return }
         let slot = min(max(state.selectedSlot, 0), state.slots.count - 1)
+        // A performance says which slots play. Taken over before anything waits: the app
+        // follows the new focus meanwhile (`selectTargetSlot`), and a slot that was silent in
+        // the PREVIOUS document would be added to the playing ones — and written into this one.
+        if !onlyFocusedSlot, state.hasPerformanceSettings {
+            applyPlayingSlots(state.performance.slots.map(\.enabled))
+            applyKeyboardSlots(state.performance.slots.map(\.keyboard))
+        }
         if followDocument,
            let mode = PatchOpenMode.targetMode(performanceDocument: !onlyFocusedSlot && state.hasPerformanceSettings)
         {

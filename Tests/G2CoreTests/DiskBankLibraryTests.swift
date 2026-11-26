@@ -78,6 +78,29 @@ final class DiskBankLibraryTests: XCTestCase {
         return library
     }
 
+    /// Pamięć skanu (2026-11-25): lista zapisana po skanie jest DOKŁADNIE tą, którą daje skan
+    /// od zera — kolejny start pokazuje ją od razu — a plik, któremu po zapisie zmieniono tagi,
+    /// skan w tle czyta od nowa (zmienia się data zmiany atrybutów).
+    func testScanCacheGivesTheSameListAndNoticesNewTags() async throws {
+        let cache = FileManager.default.temporaryDirectory
+            .appendingPathComponent("g2-scan-cache-\(UUID().uuidString)", isDirectory: true)
+        DiskBankLibrary.scanCacheDirectory = cache
+        defer {
+            DiskBankLibrary.scanCacheDirectory = nil
+            try? FileManager.default.removeItem(at: cache)
+        }
+        try tag("Leads/saw.pch2", ["Red\n6"])
+        let fresh = await library()
+        let cached = try XCTUnwrap(DiskBankScanCache.load(folder: root, directory: cache))
+        XCTAssertEqual(cached, fresh.items)
+        XCTAssertEqual(cached.map(\.name), ["303", "303b", "deep", "root", "saw", "warm"])
+
+        try tag("Leads/saw.pch2", ["Blue\n4"])
+        let again = await library()
+        XCTAssertEqual(again.files(in: "Leads").first?.tags, [FinderTag(name: "Blue", color: 4)])
+        XCTAssertEqual(again.items.map(\.id), fresh.items.map(\.id))
+    }
+
     /// Katalog główny pokazuje swoje podfoldery i swoje pliki — i nic z głębszych pięter.
     func testRootListsItsOwnFoldersAndFiles() async {
         let library = await library()

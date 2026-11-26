@@ -105,6 +105,14 @@ public final class LiveAudioInput: LiveAudioReader {
     /// Nieudana próba — kolejną robimy dopiero po sekundzie, a nie co tyknięcie zegara.
     @MainActor private static var lastFailure: (uid: String, at: Date)?
 
+    /// Otwarcie w toku (na tle) — dopóki trwa, nie zaczynamy drugiego.
+    @MainActor private static var opening = false
+    /// Nagranie otwarte w tle, jeszcze nieodebrane przez okno.
+    @MainActor private static var ready: LiveAudioInput?
+
+    /// Zwraca działające nagranie albo `nil`. Otwarcie interfejsu bywa wolne, a przy zawieszonym
+    /// sterowniku (MOTU, 2026-11-21) nie wraca wcale — dlatego robimy je poza głównym wątkiem:
+    /// pierwsze wywołanie zwraca `nil` i zaczyna otwieranie, kolejne tyknięcie odbiera wynik.
     @MainActor
     static func open(deviceUID uid: String, left: Int, right: Int) -> LiveAudioInput? {
         if let input = current, input.deviceUID == uid, input.left == left, input.right == right,
@@ -112,18 +120,37 @@ public final class LiveAudioInput: LiveAudioReader {
         {
             return input
         }
+        // Gotowe nagranie z tła czeka u nas, aż je ktoś weźmie — `current` jest słabe i bez
+        // tego nagranie zniknęłoby zaraz po otwarciu.
+        if let input = ready {
+            ready = nil
+            if input.deviceUID == uid, input.left == left, input.right == right {
+                current = input
+                return input
+            }
+        }
+        if opening { return nil }
         if let failure = lastFailure, failure.uid == uid, Date().timeIntervalSince(failure.at) < 1 {
             return nil
         }
-        guard let device = deviceID(forUID: uid),
-              let input = LiveAudioInput(device: device, uid: uid, left: left, right: right)
-        else {
-            lastFailure = (uid, Date())
-            return nil
+        opening = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let input = deviceID(forUID: uid).flatMap {
+                LiveAudioInput(device: $0, uid: uid, left: left, right: right)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    opening = false
+                    if let input {
+                        lastFailure = nil
+                        ready = input
+                    } else {
+                        lastFailure = (uid, Date())
+                    }
+                }
+            }
         }
-        lastFailure = nil
-        current = input
-        return input
+        return nil
     }
 
     private init?(device: AudioDeviceID, uid: String, left: Int, right: Int) {
@@ -156,16 +183,25 @@ public final class LiveAudioInput: LiveAudioReader {
     }
 
     deinit {
-        if let unit {
-            AudioOutputUnitStop(unit) // czeka, aż wątek audio wyjdzie z wywołania
-            AudioUnitUninitialize(unit)
-            AudioComponentInstanceDispose(unit)
+        let unit = unit, buffers = buffers, ring = ring
+        let cleanup = {
+            if let unit {
+                AudioOutputUnitStop(unit) // czeka, aż wątek audio wyjdzie z wywołania
+                AudioUnitUninitialize(unit)
+                AudioComponentInstanceDispose(unit)
+            }
+            for buffer in buffers {
+                buffer.mData?.assumingMemoryBound(to: Float.self).deallocate()
+            }
+            free(buffers.unsafeMutablePointer)
+            ring.deallocate()
         }
-        for buffer in buffers {
-            buffer.mData?.assumingMemoryBound(to: Float.self).deallocate()
+        // Zatrzymanie czeka na sterownik; zawieszone nie może blokować głównego wątku.
+        if Thread.isMainThread {
+            DispatchQueue.global(qos: .utility).async(execute: cleanup)
+        } else {
+            cleanup()
         }
-        free(buffers.unsafeMutablePointer)
-        ring.deallocate()
     }
 
     /// AUHAL z włączonym wejściem i wyłączonym wyjściem, przypięty do urządzenia.

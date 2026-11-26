@@ -878,6 +878,9 @@ public class PatchParser {
         let bytes = [UInt8](data)
         let (headerLength, _) = try parseTextHeader(bytes)
         let binaryStart = headerLength + 1 + 2
+        guard binaryStart <= bytes.count else {
+            throw PatchParserError.invalidHeader("The file ends right after its text header — no patch data.")
+        }
         let binaryBytes = Array(bytes[binaryStart...])
         var slots = [G2Patch(), G2Patch(), G2Patch(), G2Patch()]
         var performance: G2PerformanceSettings?

@@ -44,7 +44,7 @@ enum PluginQuestionPanel {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 150),
                             styleMask: [.titled, .closable, .nonactivatingPanel, .utilityWindow],
                             backing: .buffered, defer: false)
-        panel.title = "G2 VST"
+        panel.title = "Cube G2 Plugin"
         panel.level = .floating
         // Panel ma wisieć nad DAW-em, czyli właśnie wtedy, gdy edytor nie jest aktywny.
         panel.hidesOnDeactivate = false

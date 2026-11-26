@@ -219,6 +219,25 @@ public struct G2VariationSettings: Equatable {
     /// Źródła ośmiu morfów: 0 = tylko gałka, 1 = nazwane źródło (tak ma init patch),
     /// 2 = „G Wh 1" — wyłącznie dla morfu 5 i wyłącznie na G2X.
     public var morphModes: [Int] = Array(repeating: 1, count: G2Morph.count)
+
+    /// What every factory patch has — the base of a NEW patch. The defaults above mean "not read yet"
+    /// and are the wrong start for a patch made in the editor: Octave Shift 0 is two octaves down
+    /// (neutral is 2), Sustain and Bend are off, the vibrato has no depth (#198). Values from three
+    /// factory patches that agree to the bit (SanPedroFlute, Sick Bass, VoxContinental).
+    public static var factory: G2VariationSettings {
+        var settings = G2VariationSettings()
+        settings.patchVolume = 100
+        settings.activeMuted = 1
+        settings.glideTime = 28
+        settings.bend = 1
+        settings.semitone = 1
+        settings.vibratoCents = 50
+        settings.vibratoRate = 64
+        settings.arpTime = 3
+        settings.octaveShift = 2
+        settings.sustain = 1
+        return settings
+    }
 }
 
 /// Jedno ustawienie patcha z arkusza Patch Settings, razem z miejscem, w którym

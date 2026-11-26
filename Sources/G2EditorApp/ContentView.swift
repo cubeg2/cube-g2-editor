@@ -80,11 +80,22 @@ struct RootView: View {
             state.onVariationCopy = { [device] slot, from, to in
                 device.sendVariationCopy(slot: slot, from: from, to: to)
             }
-            // ⌘Z po New / Init / kopii wariacji: slot wraca w całości (focus już na nim).
-            state.onSlotRestore = { [device, weak state] _ in
+            // ⌘Z po wczytaniu / New / Init / kopii wariacji: slot wraca w całości.
+            state.onSlotRestore = { [device, weak state] slot, giveBack in
                 guard let state else { return }
-                Task { await device.send(state, onlyFocusedSlot: true) }
+                Task { await device.resend(slot: slot, of: state, giveBack: giveBack) }
             }
+            state.devicePlayingSlots = { [weak device] in
+                guard let device, device.status == .connected, !device.playingSlots.isEmpty else { return nil }
+                return (device.playingSlots, device.keyboardSlots)
+            }
+            // ⌘Z po performance albo patchu „jak oryginał”: wraca cała zawartość.
+            state.onDocumentRestore = { [device, weak state] in
+                guard let state else { return }
+                Task { await device.send(state, followDocument: true) }
+            }
+            device.onBankLoadWillStart = { [weak state] in state?.expectBankLoad() }
+            device.onBankLoadDidEnd = { [weak state] in state?.endBankLoad() }
             state.onMorphRangeChange = { [device] slot, location, moduleID, paramIndex, morph, range, variation in
                 device.sendMorphRange(slot: slot, location: location, moduleID: moduleID,
                                       paramIndex: paramIndex, morph: morph,
@@ -543,7 +554,7 @@ struct ContentView: View {
         }
         // ⌘Z i ⇧⌘Z niesie teraz menu Edit (patrz `MainMenu.swift`). Zostaje samo ⌘Y,
         // którego menu macOS nie zna, a które ma na klawiaturze oryginalny edytor.
-        .background { RedoShortcut(state: state) }
+        .background { RedoShortcut(state: state, device: device) }
     }
 
     /// Arkusze wspólne dla wszystkich okien slotów — ich flagi mieszkają w `PatchState`,
@@ -840,7 +851,7 @@ struct ContentView: View {
             TopBarButton(content: .icon("arrow.up.left.and.arrow.down.right")) {
                 zoomToFit()
             }
-            .help("Fit all modules in the window (⌘⇧0)")
+            .help("Fit all modules in the window" + ShortcutStore.shared.hint(.zoomToFit))
 
             Text("\(Int(currentZoom * 50))%")
                 .font(.system(size: TopBarMetrics.labelSize))
@@ -880,7 +891,7 @@ struct ContentView: View {
             // jako skróty SwiftUI wyprzedzają pole tekstowe i nie dałoby się wpisać
             // „s" w nazwie patcha.
             TopBarButton(content: .icon("waveform.path.ecg")) { viewState.shakeCables() }
-                .help("Shake cables (S)")
+                .help("Shake cables" + ShortcutStore.shared.hint(.shakeCables))
 
             HStack(spacing: 4) {
                 ForEach(CableColor.allCases, id: \.self) { color in
@@ -894,7 +905,7 @@ struct ContentView: View {
     /// Przycisk szuflady (moduły, patche). Podświetlony = ta szuflada jest wysunięta.
     private func drawerButton(_ panel: PanelController.Panel) -> some View {
         let open = panels.isOpen(panel)
-        let hint = "\(open ? "Hide" : "Show") \(panel.title.lowercased()) (\(shortcutHint(panel)))"
+        let hint = "\(open ? "Hide" : "Show") \(panel.title.lowercased())\(shortcutHint(panel))"
         return TopBarButton(content: .icon(panel.symbol), isOn: open) {
             withAnimation(.easeInOut(duration: 0.2)) { panels.toggle(panel) }
         }
@@ -908,7 +919,7 @@ struct ContentView: View {
             if panel == .sequenceEditor, !open { prepareSequenceEditor() }
             panels.toggle(panel)
         }
-        .help("\(panel.title) — \(open ? "close the window" : "open in a window") (\(shortcutHint(panel)))")
+        .help("\(panel.title) — \(open ? "close the window" : "open in a window")\(shortcutHint(panel))")
     }
 
     /// The top-bar button opens the Sequence Editor on its All tab. The window needs a sequencer
@@ -926,7 +937,7 @@ struct ContentView: View {
     }
 
     private func shortcutHint(_ panel: PanelController.Panel) -> String {
-        "⌘⌥\(String(panel.shortcutKey))"
+        ShortcutCommand.panel(panel).map { ShortcutStore.shared.hint($0) } ?? ""
     }
 
     /// Obciążenie do paska pod modułem chwyconym z palety — liczone w chwili
@@ -1148,14 +1159,18 @@ struct ContentView: View {
 /// przeliczałaby całe okno, a bez tego odczytu wyszarzenie stało na starym stanie.
 private struct RedoShortcut: View {
     let state: PatchState
+    let device: DeviceConnection
 
     var body: some View {
         _ = state.undoRevision
-        return Button("") { state.undoManager.redo() }
-            .keyboardShortcut("y", modifiers: .command)
-            .disabled(!state.undoManager.canRedo)
-            .opacity(0)
-            .allowsHitTesting(false)
+        return Button("") {
+            guard device.acceptsPatchChange else { return }
+            state.undoManager.redo()
+        }
+        .keyboardShortcut("y", modifiers: .command)
+        .disabled(!state.undoManager.canRedo || !device.acceptsPatchChange)
+        .opacity(0)
+        .allowsHitTesting(false)
     }
 }
 

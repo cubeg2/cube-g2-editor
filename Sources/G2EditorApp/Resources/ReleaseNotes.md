@@ -1,3 +1,52 @@
+## 0.1.12 — November 26, 2026
+**Big performance update, Sequence Editor upgrades and more.**
+
+**Faster and smoother:**
+- **Knobs follow the mouse on large patches.** The lag, and knobs that kept turning after you let go, are gone.
+- **No more slowing down during long sessions.** The editor was piling up background work with every change to the patch.
+- **Patch browser for large libraries.** With 109,000 files the list appears in about 1.5 seconds instead of about 17, once the first scan is done. "Loading patches…" shows while it reads.
+- **Spectrum and X-Y no longer freeze the editor** when an audio interface input is selected.
+
+**New: your own keyboard shortcuts**
+- **Settings ▸ Shortcuts** now lets you change shortcuts: click a key and press the new one. Menu commands (also those that had no shortcut), slots, variations, the Voice and FX views, the clock, the F5–F8 overlays, patch browsing and the Patch Mutator keys can all be changed — for example slots on the number keys.
+- One searchable list with categories, **Find by Key**, filters for changed and unassigned commands, a warning when a key is already taken, and **Restore All Defaults**. The defaults are unchanged.
+- The list is complete now: it also shows the fixed keys and mouse gestures, which were missing before. On this page the window stands at the top of the screen and uses its whole height.
+
+**New: undo after loading**
+- ⌘Z takes back a loaded patch or performance, and ⇧⌘Z brings it again: files, patches and performances from the G2 banks, Get Active Slot from G2 and New Performance. What comes back is sent to the G2. Loading and New Patch no longer clear the earlier undo history.
+
+**Sequence Editor:**
+- **Add sequencer.** In a patch without a sequencer, Add sequencer… opens a sheet: the clock (a new one that follows Run and the tempo of the top bar, one with its own tempo, or a clock already in the patch), the step length (1/32 to 1/4), restart every bar, short or whole-step gate, and which oscillators and envelopes it drives. Filters are not ticked, a slow envelope is flagged, the DSP cost shows before you add, and a poly patch becomes Mono so the pattern plays once. One ⌘Z removes it all.
+- **Clock in the Edit tab:** for a note sequencer, a strip above the tools shows its clock and lets you switch between the top bar and its own tempo, change the step length and turn restart every bar on or off.
+- **Icons in the toolbars:** Random, Mutate, Humanize, Reverse, Copy, Clear, Loop and the rest have symbols, coloured by kind (orange for the random tools, red for Clear). Labels hides the names in a narrow window.
+- **New note and value tools:** Generate ▸ Notes (Markov, Walk, Motif), Arpeggio (chords, scale chords, directions), Curve (shapes for SeqVal / SeqLev / SeqCtr) and Humanize.
+- **Presets:** a Rhythm bank of 122 sixteen-step rhythms sorted by role, My patterns for your own notes, rhythms and curves, many more note figures grouped by style, and previous / next arrows. 19 more scales.
+- **Euclid:** classic rhythms grouped by tradition, a Kit menu, an Interlock mode, Random for a group of sequencers and a Meeting points strip showing where they hit together.
+- **All:** the Lanes tab is now part of All, with cable targets and Add lane. Shift-click and ⌘-click select lanes like in the Finder, double-click opens a lane in Edit, and the window can be made shorter.
+- **Edit:** ‹ › arrows step through the sequencers of the slot. Notes outside the piano roll show as outlines, you can drag or scroll the keyboard, and black keys have names. The gate row keeps its size in a low window.
+- **Light mode** is easier to read: visible sections, light faders and a darker playhead.
+
+**Other changes:**
+- **Slot meters.** A level meter under each slot button A–D shows which slots are actually sounding, not only which are switched on (with a G2 or a Virtual G2 connected).
+- **Drag a patch onto a slot.** Drag a patch from the Patches panel (Disk or the G2 banks) onto a slot button A–D, or onto the patch itself, to load it into that slot. A `.pch2` file dragged from Finder onto a slot button goes into that slot too. ⌘Z takes it back, and a slot that was silent goes silent again.
+- **Empty slots open switched off.** Opening a `.prf2` no longer lights the buttons of slots that hold no modules, and does not ask you to save for that.
+- **Oct** in the slot bar, between Variations and Morph Groups: the patch's Octave Shift with − and + and five LEDs, as on the keyboard's front panel. Handy on the G2 Engine, which has no such buttons. Off by default: turn it on in Settings ▸ Display.
+- Parameter Overview has a **Values** button that shows current values instead of names.
+- In the Patches panel, search, category and sorting now sit in one row with the tabs.
+- A file called like "Name — Author [code]" gives the patch just the name.
+
+**Fixes:**
+- **Patch Mutator remembers your changes.** While a child or a Temporary Storage sound plays, changes to Octave Shift and the other patch settings, and to morphs, now stay in that box — made in the editor or on the G2. Before, only module knobs did. ⌘Z returns to the box where the change was made, and knobs with Lock Across Variations move while a Mutator sound plays.
+- **A new patch plays in the right octave.** New Patch, New Performance and the empty patch at start had Octave Shift two octaves down, with Sustain and pitch Bend off. They now start with the settings of a factory patch.
+- **Variations changed in the editor reach the G2 again.** Sometimes, after a patch was sent, the G2 silently ignored variation changes and other commands for that slot.
+- The first click on the patch works right after using the Patch Mutator.
+- With a G2 connected, opening a performance no longer mixes in the slots that played before (which could also ask you to save it).
+- ⌘X, ⌘C, ⌘V, ⌘A, ⌘Z and ⇧⌘Z work in search and text fields.
+- A patch file cut off right after its header shows an error instead of crashing the editor.
+- Undoing a morph range change applies to the correct slot.
+
+---
+
 ## 0.1.11 — November 16, 2026
 This release adds the **Sequence Editor**, a new window for all the step sequencers in a patch, plus a handful of fixes.
 

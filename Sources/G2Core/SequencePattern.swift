@@ -228,6 +228,11 @@ public extension SequencePattern {
 public enum MusicalScale: String, CaseIterable, Identifiable, Sendable {
     case chromatic, major, naturalMinor, harmonicMinor, dorian, mixolydian
     case majorPentatonic, minorPentatonic, blues
+    // Modes, other minors and the colourful scales (added 2026-11-18 — user's request for more scales).
+    case phrygian, lydian, locrian, melodicMinor, lydianDominant, altered
+    case majorBlues, bebopDominant, wholeTone, halfWholeDiminished, wholeHalfDiminished
+    case hungarianMinor, phrygianDominant, harmonicMajor, doubleHarmonic, neapolitanMinor, persian
+    case hirajoshi, inSen
 
     public var id: String {
         rawValue
@@ -245,6 +250,25 @@ public enum MusicalScale: String, CaseIterable, Identifiable, Sendable {
         case .majorPentatonic: "Major pentatonic"
         case .minorPentatonic: "Minor pentatonic"
         case .blues: "Blues"
+        case .phrygian: "Phrygian"
+        case .lydian: "Lydian"
+        case .locrian: "Locrian"
+        case .melodicMinor: "Melodic minor"
+        case .lydianDominant: "Lydian dominant"
+        case .altered: "Altered"
+        case .majorBlues: "Major blues"
+        case .bebopDominant: "Bebop dominant"
+        case .wholeTone: "Whole tone"
+        case .halfWholeDiminished: "Diminished (half-whole)"
+        case .wholeHalfDiminished: "Diminished (whole-half)"
+        case .hungarianMinor: "Hungarian minor"
+        case .phrygianDominant: "Phrygian dominant (Hijaz)"
+        case .harmonicMajor: "Harmonic major"
+        case .doubleHarmonic: "Double harmonic"
+        case .neapolitanMinor: "Neapolitan minor"
+        case .persian: "Persian"
+        case .hirajoshi: "Hirajoshi"
+        case .inSen: "In-sen"
         }
     }
 
@@ -259,6 +283,25 @@ public enum MusicalScale: String, CaseIterable, Identifiable, Sendable {
         case .majorPentatonic: [0, 2, 4, 7, 9]
         case .minorPentatonic: [0, 3, 5, 7, 10]
         case .blues: [0, 3, 5, 6, 7, 10]
+        case .phrygian: [0, 1, 3, 5, 7, 8, 10]
+        case .lydian: [0, 2, 4, 6, 7, 9, 11]
+        case .locrian: [0, 1, 3, 5, 6, 8, 10]
+        case .melodicMinor: [0, 2, 3, 5, 7, 9, 11]
+        case .lydianDominant: [0, 2, 4, 6, 7, 9, 10]
+        case .altered: [0, 1, 3, 4, 6, 8, 10]
+        case .majorBlues: [0, 2, 3, 4, 7, 9]
+        case .bebopDominant: [0, 2, 4, 5, 7, 9, 10, 11]
+        case .wholeTone: [0, 2, 4, 6, 8, 10]
+        case .halfWholeDiminished: [0, 1, 3, 4, 6, 7, 9, 10]
+        case .wholeHalfDiminished: [0, 2, 3, 5, 6, 8, 9, 11]
+        case .hungarianMinor: [0, 2, 3, 6, 7, 8, 11]
+        case .phrygianDominant: [0, 1, 4, 5, 7, 8, 10]
+        case .harmonicMajor: [0, 2, 4, 5, 7, 8, 11]
+        case .doubleHarmonic: [0, 1, 4, 5, 7, 8, 11]
+        case .neapolitanMinor: [0, 1, 3, 5, 7, 8, 11]
+        case .persian: [0, 1, 4, 5, 6, 8, 11]
+        case .hirajoshi: [0, 2, 3, 7, 8]
+        case .inSen: [0, 1, 5, 7, 10]
         }
     }
 
@@ -318,23 +361,140 @@ public enum EuclideanRhythm {
 
     /// Named presets for the Euclid tab. Names after Toussaint (2005); orientation follows
     /// our formula, see `pattern`.
+    /// Where a preset comes from, for the grouped Presets menu.
+    public enum Category: String, CaseIterable, Identifiable, Sendable {
+        case basic, latin, africa, balkans, middleEast, other
+
+        public var id: String {
+            rawValue
+        }
+
+        /// Name for menus — English.
+        public var title: String {
+            switch self {
+            case .basic: "Basic grooves"
+            case .latin: "Latin"
+            case .africa: "Africa"
+            case .balkans: "Balkans"
+            case .middleEast: "Middle East"
+            case .other: "Other"
+            }
+        }
+    }
+
     public struct Preset: Identifiable, Sendable {
         public let name: String
         public let hits: Int
         public let steps: Int
+        public let rotation: Int
+        public let category: Category
         public var id: String {
             name
         }
+
+        init(_ name: String, _ hits: Int, _ steps: Int, rotation: Int = 0, _ category: Category) {
+            self.name = name
+            self.hits = hits
+            self.steps = steps
+            self.rotation = rotation
+            self.category = category
+        }
     }
 
+    /// The rhythms of the Presets menu, 16 steps at most (one sequencer module). Traditions as listed
+    /// by Toussaint (2005); the bar of 12, 9, 7… steps is the rhythm's own length.
     public static let presets: [Preset] = [
-        Preset(name: "Four on the floor", hits: 4, steps: 16),
-        Preset(name: "Tresillo", hits: 3, steps: 8),
-        Preset(name: "Cinquillo", hits: 5, steps: 8),
-        Preset(name: "Bossa nova", hits: 5, steps: 16),
-        Preset(name: "Samba", hits: 7, steps: 16),
-        Preset(name: "Bell", hits: 7, steps: 12),
-        Preset(name: "Aksak", hits: 4, steps: 9),
+        Preset("Four on the floor", 4, 16, .basic),
+        Preset("Backbeat", 2, 16, rotation: 4, .basic),
+        Preset("Offbeat hat", 4, 16, rotation: 2, .basic),
+        Preset("Straight eighths", 8, 16, .basic),
+        Preset("Tresillo", 3, 8, .latin),
+        Preset("Cinquillo", 5, 8, .latin),
+        Preset("Calypso", 3, 4, .latin),
+        Preset("Bossa nova", 5, 16, .latin),
+        Preset("Samba", 7, 16, .latin),
+        Preset("Bell", 7, 12, .africa),
+        Preset("Venda", 5, 12, .africa),
+        Preset("Central African", 9, 16, .africa),
+        Preset("Aksak", 4, 9, .balkans),
+        Preset("Bulgarian 3/7", 3, 7, .balkans),
+        Preset("Bulgarian 4/7", 4, 7, .balkans),
+        Preset("Khafif-e-ramal", 2, 5, .middleEast),
+        Preset("York-Samai", 5, 6, .middleEast),
+        Preset("Nawakhat", 5, 7, .middleEast),
+        Preset("Agsag-Samai", 5, 9, .middleEast),
+        Preset("Moussorgsky", 5, 11, .other),
+        Preset("Outside Now", 4, 11, .other),
+    ]
+
+    /// The presets of one category, in list order.
+    public static func presets(in category: Category) -> [Preset] {
+        presets.filter { $0.category == category }
+    }
+}
+
+// MARK: - Kits for a group of sequencers
+
+/// A set of Euclidean rhythms for several sequencers at once: part 1 goes to the first row of the
+/// ticked sequencers (in the order of the cards), part 2 to the next, and so on — a kick, a clap, a
+/// hat… A SeqEvent holds two rows, so its two rows take two parts. Rows beyond the last part, and
+/// parts beyond the last row, are left out. The kits are starting points, not claims about a genre.
+public struct EuclidKit: Identifiable, Sendable {
+    public struct Part: Sendable {
+        /// What the part is meant for ("kick", "clap"…) — English, for the tooltip.
+        public let role: String
+        public let hits: Int
+        public let steps: Int
+        public let rotation: Int
+
+        init(_ role: String, _ hits: Int, _ steps: Int = 16, rotation: Int = 0) {
+            self.role = role
+            self.hits = hits
+            self.steps = steps
+            self.rotation = rotation
+        }
+
+        /// The steps of this part for a row of `steps` steps (its own length unless given): the
+        /// hits are kept inside the length and the rotation wraps.
+        public func pattern(steps override: Int? = nil) -> [Bool] {
+            let steps = max(1, min(SequencerLayout.steps, override ?? steps))
+            return EuclideanRhythm.pattern(hits: min(hits, steps), steps: steps, rotation: rotation % steps)
+        }
+    }
+
+    public let name: String
+    public let parts: [Part]
+    public var id: String {
+        name
+    }
+
+    /// "1 kick · 2 clap · 3 hat" — for the menu tooltip.
+    public var summary: String {
+        parts.enumerated().map { "\($0.offset + 1) \($0.element.role)" }.joined(separator: " · ")
+    }
+
+    public static let all: [EuclidKit] = [
+        EuclidKit(name: "House", parts: [
+            Part("kick", 4), Part("clap", 2, rotation: 4), Part("offbeat hat", 4, rotation: 2), Part("shaker", 11),
+        ]),
+        EuclidKit(name: "Techno", parts: [
+            Part("kick", 4), Part("clap", 2, rotation: 4), Part("16th hat", 8, rotation: 1), Part("perc", 5),
+        ]),
+        EuclidKit(name: "Breakbeat", parts: [
+            Part("kick", 3), Part("snare", 2, rotation: 4), Part("hat", 8), Part("perc", 5, rotation: 2),
+        ]),
+        EuclidKit(name: "Half-time", parts: [
+            Part("kick", 2), Part("snare", 1, rotation: 8), Part("hat", 8), Part("perc", 3, rotation: 3),
+        ]),
+        EuclidKit(name: "Reggaeton style", parts: [
+            Part("kick", 4), Part("snare", 3, 8), Part("hat", 8), Part("perc", 5, rotation: 1),
+        ]),
+        EuclidKit(name: "Afro-Cuban (polymeter)", parts: [
+            Part("tresillo", 3, 8), Part("clave", 5), Part("bell", 7, 12), Part("shaker", 9),
+        ]),
+        EuclidKit(name: "Polymeter 5 · 7 · 9 · 11", parts: [
+            Part("part 1", 3, 5), Part("part 2", 3, 7), Part("part 3", 4, 9), Part("part 4", 5, 11),
+        ]),
     ]
 }
 

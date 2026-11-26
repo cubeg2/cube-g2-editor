@@ -436,20 +436,14 @@ struct MutatorPanel: View {
 
     /// Skróty z rozdziału „Patch Mutator Shortcuts Overview" instrukcji.
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
-        let focus = state.mutatorFocus
+        // The event itself, not `press`: `ShortcutStore` names keys the way AppKit sees them.
+        if let event = NSApp.currentEvent, event.type == .keyDown, let stroke = KeyStroke(event: event),
+           let command = ShortcutStore.shared.command(for: stroke, in: .mutator)
+        {
+            perform(command)
+            return .handled
+        }
         switch press.key {
-        case "1": state.mutatorSetFocus(.mother)
-        case "2", "3", "4", "5", "6", "7":
-            state.mutatorSetFocus(.child(Int(String(press.key.character))! - 2))
-        case "8": state.mutatorSetFocus(.father)
-        case "o", "O": if let focus { state.mutatorCopyToParent(focus, mother: true) }
-        case "t", "T": if let focus { state.mutatorCopyToParent(focus, mother: false) }
-        case "e", "E": state.mutatorMutate(from: focus)
-        case "u", "U": state.mutatorMutate()
-        case "n", "N": state.mutatorRandomize()
-        case "i", "I": state.mutatorInterpolate()
-        case "x", "X": state.mutatorCross()
-        case "s", "S": if let focus { state.mutatorStore(focus) }
         case .space:
             guard state.mutatorCompare != nil else { return .ignored }
             state.mutatorCompareToggle()
@@ -466,6 +460,26 @@ struct MutatorPanel: View {
         default: return .ignored
         }
         return .handled
+    }
+
+    private func perform(_ command: ShortcutCommand) {
+        if let box = ShortcutCommand.mutatorBoxes.firstIndex(of: command) {
+            // Mother, the six children, Father — the order of the commands.
+            state.mutatorSetFocus(box == 0 ? .mother : box == 7 ? .father : .child(box - 1))
+            return
+        }
+        let focus = state.mutatorFocus
+        switch command {
+        case ShortcutCommand.mutatorToMother: if let focus { state.mutatorCopyToParent(focus, mother: true) }
+        case ShortcutCommand.mutatorToFather: if let focus { state.mutatorCopyToParent(focus, mother: false) }
+        case ShortcutCommand.mutatorMutateFocused: state.mutatorMutate(from: focus)
+        case ShortcutCommand.mutatorMutate: state.mutatorMutate()
+        case ShortcutCommand.mutatorRandomize: state.mutatorRandomize()
+        case ShortcutCommand.mutatorInterpolate: state.mutatorInterpolate()
+        case ShortcutCommand.mutatorCross: state.mutatorCross()
+        case ShortcutCommand.mutatorStore: if let focus { state.mutatorStore(focus) }
+        default: break
+        }
     }
 
     private func treeStep(_ key: KeyEquivalent) {

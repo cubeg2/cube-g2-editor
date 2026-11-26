@@ -506,6 +506,8 @@ public final class PatchState {
     /// Start aplikacji: od razu pusta kanwa i cztery puste sloty zamiast ekranu powitalnego.
     public func startEmpty() {
         newPerformance()
+        // Przed startem nie było czego przywracać.
+        resetUndoHistory()
         isUntouchedStart = true
     }
 
@@ -623,11 +625,14 @@ public final class PatchState {
            || isParameterVariationLocked(slot: slot, moduleID: moduleID, paramIndex: index, area: area)
         {
             setParameterInVariations(slot: slot, moduleID: moduleID, index: index, area: area,
-                                     values: Array(repeating: clamped, count: G2Patch.initVariation))
+                                     values: valuesForAllVariations(clamped, slot: slot, moduleID: moduleID,
+                                                                    index: index, area: area))
             return true
         }
 
         if undoable {
+            // Tryb modułu jest jeden dla wszystkich wariacji — nie ma do czego wracać.
+            let back = isMode ? { _ in } : returningToAudition(slot: slot)
             let key = ParameterKey(slot: slot, moduleID: moduleID, index: index,
                                    isMode: isMode, isVoice: area == .voice)
             // W trakcie gestu rejestrujemy tylko pierwszą zmianę danej wartości —
@@ -635,6 +640,7 @@ public final class PatchState {
             registerUndo(isMode ? "Change Mode" : "Change Parameter",
                          first: !gestureActive || gestureRegistered.insert(key).inserted)
             { target in
+                back(target)
                 target.applyParameter(slot: slot, moduleID: moduleID, index: index,
                                       value: old, area: area, isMode: isMode, undoable: true)
             }
@@ -644,8 +650,9 @@ public final class PatchState {
             slots[slot].setMode(moduleID: moduleID, modeIndex: index, value: clamped, in: area)
         } else {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: index, value: clamped, in: area)
-            storeInFocusedBox(slot: slot, area: area, moduleID: moduleID, paramIndex: index,
-                              value: clamped, variation: slots[slot].activeVariation)
+            storeInFocusedBox(slot: slot, variation: slots[slot].activeVariation) {
+                $0[G2Individual.Key(area: area, moduleID: moduleID, paramIndex: index)] = Double(clamped)
+            }
             if !fromAdjuster {
                 updateAdjusterBaseline(slot: slot, area: area, moduleID: moduleID, paramIndex: index,
                                        value: clamped, variation: slots[slot].activeVariation)
@@ -671,12 +678,31 @@ public final class PatchState {
         }
         let key = ParameterKey(slot: slot, moduleID: moduleID, index: index,
                                isMode: false, isVoice: area == .voice)
+        let back = returningToAudition(slot: slot)
         registerUndo("Change Parameter", first: !gestureActive || gestureRegistered.insert(key).inserted) { target in
+            back(target)
             target.setParameterInVariations(slot: slot, moduleID: moduleID, index: index,
                                             area: area, values: before)
         }
         writeParameterVariations(slot: slot, moduleID: moduleID, index: index, area: area,
                                  values: values, before: before)
+    }
+
+    /// Ta sama wartość dla zmiany „we wszystkie naraz” (blokada wariacji, „Edit all”):
+    /// wariacje 1–8, a gdy gra bufor odsłuchu, także on — inaczej gałka przy słuchanym
+    /// dziecku stała w miejscu. Init (pozycja 8) zostaje ze swoją wartością.
+    private func valuesForAllVariations(_ value: Int, slot: Int, moduleID: Int, index: Int,
+                                        area: PatchArea) -> [Int]
+    {
+        var values = Array(repeating: value, count: G2Patch.initVariation)
+        guard slots[slot].activeVariation == G2Patch.mutatorVariation,
+              let module = slots[slot].modules(in: area).first(where: { $0.id == moduleID }),
+              module.parameterVariations.indices.contains(G2Patch.mutatorVariation),
+              module.parameterVariations[G2Patch.initVariation].indices.contains(index)
+        else { return values }
+        values.append(module.parameterVariations[G2Patch.initVariation][index])
+        values.append(value)
+        return values
     }
 
     /// Wartości parametru w wariacjach 1–8; brakujące (patch bez sekcji wariacji) jak grająca.
@@ -695,6 +721,9 @@ public final class PatchState {
         for variation in values.indices where before[variation] != values[variation] {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: index, value: values[variation],
                                      in: area, variation: variation)
+            storeInFocusedBox(slot: slot, variation: variation) {
+                $0[G2Individual.Key(area: area, moduleID: moduleID, paramIndex: index)] = Double(values[variation])
+            }
             onLiveParameterChange?(slot, area, moduleID, index, values[variation], variation)
         }
         let active = slots[slot].activeVariation
@@ -1067,9 +1096,9 @@ public final class PatchState {
     /// przypisanie — tak samo jak w oryginale, jedną i tą samą komendą.
     /// Cofalne i sklejane w obrębie gestu, jak zwykła gałka.
     public func setMorphRange(location: UInt8, moduleID: Int, paramIndex: Int,
-                              morph: Int, range: Int)
+                              morph: Int, range: Int, slot: Int? = nil)
     {
-        let slot = selectedSlot
+        let slot = slot ?? selectedSlot
         guard slots.indices.contains(slot) else { return }
         let variation = slots[slot].activeVariation
         let old = slots[slot].morphRange(variation: variation, location: location,
@@ -1082,11 +1111,25 @@ public final class PatchState {
 
         let key = MorphKey(slot: slot, location: location, moduleID: moduleID,
                            paramIndex: paramIndex, morph: morph)
+        let back = returningToAudition(slot: slot)
         registerUndo("Change Morph Range", first: !gestureActive || morphGestureRegistered.insert(key).inserted) { target in
+            back(target)
             target.setMorphRange(location: location, moduleID: moduleID,
-                                 paramIndex: paramIndex, morph: morph, range: old)
+                                 paramIndex: paramIndex, morph: morph, range: old, slot: slot)
         }
-        onMorphRangeChange?(slot, location, moduleID, paramIndex, morph, clamped, variation)
+        morphRangeChanged(slot: slot, location: location, moduleID: moduleID, paramIndex: paramIndex,
+                          morph: morph, range: clamped, variation: variation)
+    }
+
+    /// Zakres morfu zmieniony w edytorze: kratka Mutatora (jeśli gra bufor) i urządzenie.
+    private func morphRangeChanged(slot: Int, location: UInt8, moduleID: Int, paramIndex: Int,
+                                   morph: Int, range: Int, variation: Int)
+    {
+        storeInFocusedBox(slot: slot, variation: variation) {
+            $0.setMorphRange(G2Individual.Key(location: location, moduleID: moduleID, paramIndex: paramIndex),
+                             morph: morph, range: range)
+        }
+        onMorphRangeChange?(slot, location, moduleID, paramIndex, morph, range, variation)
     }
 
     /// Zdejmuje wszystkie przypisania jednego morfu w bieżącej wariacji
@@ -1133,6 +1176,7 @@ public final class PatchState {
     {
         let variations = variations.filter { slots[slot].morphAssignments.indices.contains($0) }
         let before = Dictionary(uniqueKeysWithValues: variations.map { ($0, slots[slot].morphs(in: $0)) })
+        let back = variations.contains(G2Patch.mutatorVariation) ? returningToAudition(slot: slot) : { _ in }
         for variation in variations {
             edit(&slots[slot], variation)
         }
@@ -1146,6 +1190,7 @@ public final class PatchState {
         }
         guard changed else { return }
         undoManager.registerUndo(withTarget: self) { target in
+            back(target)
             target.editMorphs(in: variations, slot: slot, actionName: actionName) { patch, variation in
                 patch.morphAssignments[variation] = before[variation] ?? []
             }
@@ -1159,12 +1204,14 @@ public final class PatchState {
         let key = { (a: G2MorphAssignment) in [Int(a.location), a.moduleID, a.paramIndex, a.morph] }
         let newKeys = Set(new.map(key))
         for entry in old where !newKeys.contains(key(entry)) {
-            onMorphRangeChange?(slot, entry.location, entry.moduleID, entry.paramIndex,
-                                entry.morph, 0, variation)
+            morphRangeChanged(slot: slot, location: entry.location, moduleID: entry.moduleID,
+                              paramIndex: entry.paramIndex, morph: entry.morph, range: 0,
+                              variation: variation)
         }
         for entry in new where !old.contains(entry) {
-            onMorphRangeChange?(slot, entry.location, entry.moduleID, entry.paramIndex,
-                                entry.morph, entry.range, variation)
+            morphRangeChanged(slot: slot, location: entry.location, moduleID: entry.moduleID,
+                              paramIndex: entry.paramIndex, morph: entry.morph, range: entry.range,
+                              variation: variation)
         }
     }
 
@@ -1185,10 +1232,13 @@ public final class PatchState {
         slots[slot].setMorphDial(morph, in: variation, value: clamped)
         let key = MorphKey(slot: slot, location: 2, moduleID: Self.morphSettingsModule,
                            paramIndex: morph, morph: morph)
+        let back = returningToAudition(slot: slot)
         registerUndo("Change Morph", first: !gestureActive || morphGestureRegistered.insert(key).inserted) { target in
+            back(target)
             target.setMorphDial(morph, value: old, slot: slot)
         }
-        onPatchSettingChange?(slot, Self.morphSettingsModule, morph, clamped, variation)
+        patchSettingChanged(slot: slot, moduleID: Self.morphSettingsModule, paramIndex: morph,
+                            value: clamped, variation: variation)
     }
 
     /// Źródło morfu (0 = tylko gałka, 1 = nazwane źródło, 2 = „G Wh 1" dla morfu 5).
@@ -1202,13 +1252,16 @@ public final class PatchState {
         let variation = slots[slot].activeVariation
         let old = slots[slot].morphMode(morph, in: variation)
         guard old != value else { return }
+        let back = returningToAudition(slot: slot)
         slots[slot].setMorphMode(morph, in: variation, value: value)
         let new = slots[slot].morphMode(morph, in: variation)
         undoManager.registerUndo(withTarget: self) { target in
+            back(target)
             target.setMorphMode(morph, value: old, slot: slot)
         }
         undoManager.setActionName("Change Morph Source")
-        onPatchSettingChange?(slot, Self.morphSettingsModule, morph + G2Morph.count, new, variation)
+        patchSettingChanged(slot: slot, moduleID: Self.morphSettingsModule,
+                            paramIndex: morph + G2Morph.count, value: new, variation: variation)
     }
 
     /// Nazwa morfu (podwójny klik na nazwie w pasku morfów, jak u Clavii). Nord mieści
@@ -1278,12 +1331,24 @@ public final class PatchState {
 
         let key = MorphKey(slot: slot, location: 2, moduleID: setting.module,
                            paramIndex: setting.param, morph: -1)
+        let back = returningToAudition(slot: slot)
         registerUndo("Change \(setting.label)",
                      first: !gestureActive || morphGestureRegistered.insert(key).inserted)
         { target in
+            back(target)
             target.setPatchSetting(setting, value: old, slot: slot)
         }
-        onPatchSettingChange?(slot, setting.module, setting.param, clamped, variation)
+        patchSettingChanged(slot: slot, moduleID: setting.module, paramIndex: setting.param,
+                            value: clamped, variation: variation)
+    }
+
+    /// Ustawienie patcha albo gałka/źródło morfu zmienione w edytorze: kratka Mutatora
+    /// (jeśli gra bufor) i urządzenie.
+    private func patchSettingChanged(slot: Int, moduleID: Int, paramIndex: Int, value: Int, variation: Int) {
+        storeInFocusedBox(slot: slot, variation: variation) {
+            $0[G2Individual.Key.setting(module: moduleID, param: paramIndex)] = Double(value)
+        }
+        onPatchSettingChange?(slot, moduleID, paramIndex, value, variation)
     }
 
     /// Wartość ustawienia z grającej wariacji przepisana do wszystkich ośmiu
@@ -1710,7 +1775,7 @@ public final class PatchState {
         axisFlushPending = false
         guard let axis = preparedAxis() else { return }
         let point = axis.point(at: mutatorAxisAmount, genome: mutatorGenome, anchoring: mutatorAnchoring())
-        audition(point, registerUndo: !axisGestureUndone)
+        audition(point, focus: mutatorFocus, registerUndo: !axisGestureUndone)
         axisGestureUndone = true
     }
 
@@ -1879,7 +1944,6 @@ public final class PatchState {
             mutatorSetFocus(box)
             return
         }
-        mutatorFocus = nil
         treePlayingNode = node
         audition(mutatorTree.sound(of: node))
     }
@@ -1966,28 +2030,43 @@ public final class PatchState {
             return
         }
         guard let individual = mutatorIndividual(at: box) else { return }
-        mutatorFocus = box
-        audition(individual)
+        audition(individual, focus: box)
     }
 
-    /// Zmiana parametru, gdy slot gra z bufora odsłuchu, trafia też do kratki z focusem
-    /// — jak `SetParamValue` oryginału. Bez tego kratka pamiętała dźwięk
-    /// sprzed zmiany i następne Randomize/Mutate cofały ją po cichu: długość SeqNote
-    /// ustawiona na 8 wracała do 16 (zgłoszenie 2026-10-26).
-    private func storeInFocusedBox(slot: Int, area: PatchArea, moduleID: Int, paramIndex: Int,
-                                   value: Int, variation: Int)
-    {
-        guard slot == selectedSlot, variation == G2Patch.mutatorVariation, let focus = mutatorFocus
-        else { return }
-        let key = G2Individual.Key(area: area, moduleID: moduleID, paramIndex: paramIndex)
-        switch focus.kind {
-        case .parents where mutatorParents.indices.contains(focus.index):
-            mutatorParents[focus.index]?[key] = Double(value)
-        case .storage where mutatorStorage.indices.contains(focus.index):
-            mutatorStorage[focus.index]?[key] = Double(value)
-        default:
-            break
-        }
+    /// Zmiana brzmienia, gdy slot gra z bufora odsłuchu, trafia też do kratki z focusem
+    /// — jak `SetParamValue` i `SetMorphDelta` oryginału: gałki modułów, ustawienia
+    /// patcha (Octave Shift, Vol, Glide…) i morfy, z edytora i z Norda. Bez tego kratka
+    /// pamiętała dźwięk sprzed zmiany i wracał on przy następnym kliknięciu w nią.
+    private func storeInFocusedBox(slot: Int, variation: Int, _ change: (inout G2Individual) -> Void) {
+        guard variation == G2Patch.mutatorVariation, let box = playingBox(slot: slot),
+              var sound = mutatorIndividual(at: box) else { return }
+        change(&sound)
+        setBox(box, to: sound)
+    }
+
+    /// Rodzic, dziecko albo kratka magazynu, której dźwięk slot ma w buforze. `nil`, gdy
+    /// buforem rządzi fader wariacji — wtedy nie gra żadna kratka.
+    private func playingBox(slot: Int) -> G2MutatorBox? {
+        guard slot == selectedSlot, variationFaders[slot] == nil, let focus = mutatorFocus,
+              focus.kind != .variations else { return nil }
+        return focus
+    }
+
+    /// Pierwszy krok cofnięcia zmiany zrobionej przy słuchanej kratce: z powrotem do niej.
+    /// Wybór wariacji z kratki nie ma własnego kroku undo (#135), więc bez tego ⌘Z
+    /// wpisywało dawną wartość w wybraną wariację zamiast w kratkę.
+    private func returningToAudition(slot: Int) -> (PatchState) -> Void {
+        guard let box = playingBox(slot: slot),
+              slots[slot].activeVariation == G2Patch.mutatorVariation else { return { _ in } }
+        return { state in state.resumeAudition(box, slot: slot) }
+    }
+
+    private func resumeAudition(_ box: G2MutatorBox, slot: Int) {
+        if selectedSlot != slot { selectedSlot = slot }
+        guard playingBox(slot: slot) != box || slots[slot].activeVariation != G2Patch.mutatorVariation,
+              let sound = mutatorIndividual(at: box) else { return }
+        treePlayingNode = nil
+        audition(sound, focus: box, registerUndo: false)
     }
 
     /// Kratka uzupełniona o moduły dodane do patcha po jej powstaniu — z ich bieżącymi
@@ -2011,7 +2090,9 @@ public final class PatchState {
     /// `mutatorFocus` jest jeden na cały edytor, nie na slot, więc o wariacji decyduje
     /// sam slot — inaczej po przejściu z A na B świeciła kratka wariacji ze slotu A (#145).
     public var mutatorHighlight: G2MutatorBox? {
-        let variation = patch.activeVariation
+        // Nagłówek, nie `patch` — kratki czytają to w `body`, a `patch` zmienia się
+        // przy każdym ruchu gałki (canvas-performance).
+        let variation = header(slot: selectedSlot).activeVariation
         if (0 ... 7).contains(variation) { return G2MutatorBox(.variations, variation) }
         // Bufor gra dźwięk spod fadera wariacji, nie z żadnej kratki.
         if variationFaders[selectedSlot] != nil { return nil }
@@ -2030,7 +2111,9 @@ public final class PatchState {
     /// Czy patch gra w tej chwili z bufora mutatora — wtedy żaden przycisk wariacji
     /// nie jest zapalony, tak samo jak w oryginale.
     public var isAuditioningMutation: Bool {
-        patch.activeVariation == G2Patch.mutatorVariation
+        // Nagłówek, nie `patch`: czyta to pas wariacji w `body`, a ruch gałki zmienia
+        // `patch`, nie numer wariacji (canvas-performance).
+        header(slot: selectedSlot).activeVariation == G2Patch.mutatorVariation
     }
 
     /// Wkłada dźwięk do **dziesiątego zestawu parametrów** (`G2Patch.mutatorVariation`)
@@ -2044,7 +2127,10 @@ public final class PatchState {
     ///
     /// Fader „Amount axis" woła to wiele razy w jednym geście: undo zapisuje tylko
     /// pierwszy krok.
-    func audition(_ individual: G2Individual, registerUndo: Bool = true) {
+    ///
+    /// `focus` — kratka, z której dźwięk przyszedł (`nil` = spoza kratek). Cofnięcie
+    /// przywraca poprzednią razem z dźwiękiem, jak molekuła Set Marker oryginału.
+    func audition(_ individual: G2Individual, focus: G2MutatorBox? = nil, registerUndo: Bool = true) {
         let slot = selectedSlot
         guard slots.indices.contains(slot) else { return }
         let buffer = G2Patch.mutatorVariation
@@ -2052,6 +2138,8 @@ public final class PatchState {
         let previousSound = G2Mutator.individual(from: slots[slot], variation: buffer,
                                                  genome: mutatorGenome)
 
+        let previousFocus = mutatorFocus
+        mutatorFocus = focus
         // Bufor przejmuje Mutator — fader wariacji przestaje w nim grać.
         variationFaders[slot] = nil
         slots[slot].apply(keepingHeldModules(individual), variation: buffer)
@@ -2059,7 +2147,8 @@ public final class PatchState {
 
         if registerUndo {
             undoManager.registerUndo(withTarget: self) { target in
-                target.restoreAudition(previousSound, variation: previousVariation, slot: slot)
+                target.restoreAudition(previousSound, variation: previousVariation, slot: slot,
+                                       focus: previousFocus)
             }
             undoManager.setActionName("Mutator")
         }
@@ -2067,18 +2156,19 @@ public final class PatchState {
         sendMutatorBuffer(slot: slot, variation: buffer)
     }
 
-    private func restoreAudition(_ sound: G2Individual, variation: Int, slot: Int) {
+    private func restoreAudition(_ sound: G2Individual, variation: Int, slot: Int, focus: G2MutatorBox?) {
         guard slots.indices.contains(slot) else { return }
         let buffer = G2Patch.mutatorVariation
         let redoSound = G2Mutator.individual(from: slots[slot], variation: buffer,
                                              genome: mutatorGenome)
         let redoVariation = slots[slot].description.variation
+        let redoFocus = mutatorFocus
         slots[slot].apply(sound, variation: buffer)
         slots[slot].setActiveVariation(variation)
-        if variation != buffer { mutatorFocus = nil }
+        mutatorFocus = focus
         treePlayingNode = nil
         undoManager.registerUndo(withTarget: self) { target in
-            target.restoreAudition(redoSound, variation: redoVariation, slot: slot)
+            target.restoreAudition(redoSound, variation: redoVariation, slot: slot, focus: redoFocus)
         }
         undoManager.setActionName("Mutator")
         sendMutatorBuffer(slot: slot, variation: variation)
@@ -3217,6 +3307,42 @@ public final class PatchState {
         structureChanged(slot: slot)
     }
 
+    /// Patch z pliku do slotu: jeden krok Undo, bez wysyłki różnicy modułów. Różnica wobec zupełnie innego
+    /// patcha to setki komend strukturalnych i zamrażała Norda (#192) — cały slot do Norda wysyła wołający
+    /// (`DeviceConnection.sendWholeSlot`), cofnięcie i ponowienie idą `onSlotRestore`.
+    public func replaceSlotWholeFromFile(slot: Int, patch: G2Patch, fileData: Data?, actionName: String) {
+        guard slots.indices.contains(slot) else { return }
+        let before = slotContents(slot)
+        var incoming = patch
+        incoming.ensureRuntimeVariations()
+        slots[slot] = incoming
+        slots[slot].syncParametersToActiveVariation()
+        slotFileData[slot] = fileData
+        registerSlotRestore(before, slot: slot, actionName: actionName)
+    }
+
+
+    /// Ustawienia performance'u z wtyczki DAW (piosenka przywraca zegar, zakresy klawiszy, Hold…)
+    /// w jednym kroku Undo. Od tej chwili edytor ma ustawienia, które zapisze do `.prf2`.
+    public func applyPerformanceSettings(_ settings: G2PerformanceSettings, name: String?, actionName: String) {
+        let before = performance
+        let hadSettings = hasPerformanceSettings
+        let previousName = performanceName
+        performance = settings
+        hasPerformanceSettings = true
+        if let name { performanceName = name }
+        undoManager.registerUndo(withTarget: self) { target in
+            target.applyPerformanceSettings(before, name: previousName, actionName: actionName)
+            target.hasPerformanceSettings = hadSettings
+        }
+        undoManager.setActionName(actionName)
+    }
+
+    /// Bajty `.prf2` wczytanego przez wtyczkę — baza, na której `DeviceConnection.send` składa
+    /// cały performance jedną komendą (#192), zamiast różnicy modułów.
+    public func rememberPerformanceFile(data: Data) {
+        performanceFileData = data
+    }
 
     public func renameModule(moduleID: Int, label: String, area: PatchArea, slot: Int? = nil) {
         let slot = slot ?? selectedSlot
@@ -3480,7 +3606,7 @@ public final class PatchState {
         if !isLoaded { fileName = Self.emptyPatchName }
         selectedSlot = slot
         errorMessage = nil
-        resetUndoHistory()
+        endParameterGesture()
         registerSlotRestore(before, slot: slot, actionName: "New Patch")
     }
 
@@ -3494,24 +3620,32 @@ public final class PatchState {
     /// włączają (`EnableSlot`) wszystkie cztery sloty, u nas **gra tylko A**. Cztery puste,
     /// a grające sloty nie dawały nic poza ryzykiem: patch otwarty potem do B–D grał od razu
     /// razem z A.
+    ///
+    /// Krok undo (prośba użytkownika 2026-11-25): ⌘Z przywraca całą poprzednią zawartość.
     public func newPerformance() {
+        let before = documentContents()
         slots = Array(repeating: emptyPatch(), count: Self.slotTotal)
         selectedSlot = 0
         fileName = Self.emptyPerformanceName
         mirrorsDevice = false
         errorMessage = nil
-        resetUndoHistory()
+        endParameterGesture()
         resetPerformanceSettings()
         performance = Self.emptyPerformanceSettings()
         hasPerformanceSettings = true
         performanceName = Self.emptyPerformanceName
         forgetFiles()
+        registerDocumentRestore(before, actionName: "New Performance")
     }
 
     /// Pusty patch pod nazwą, którą urządzenie pokazuje po Init — patrz `emptyPatchName`.
     private func emptyPatch() -> G2Patch {
         var patch = G2Patch()
         patch.name = Self.emptyPatchName
+        // Factory patch settings, not zeros: with zeros a patch built from scratch played two octaves
+        // down on the G2, with Sustain and Bend off (#198).
+        patch.ensureRuntimeVariations()
+        patch.variationSettings = patch.variationSettings.map { _ in .factory }
         return patch
     }
 
@@ -3580,30 +3714,53 @@ public final class PatchState {
         performance.globalPagesEnabled = globalPages
     }
 
-    /// Historia undo należy do konkretnego patcha — po podmianie zawartości slotów
-    /// akcje z poprzedniego są bezużyteczne, a snapshotowe (usunięcie, wklejenie)
-    /// wręcz nadpisałyby świeżo wczytany patch. Stąd czyszczenie przy każdym resecie.
+    /// Czyści historię tam, gdzie zawartość slotów podmienia się bez kroku undo (start
+    /// aplikacji, odczyt z Norda): akcje z poprzedniej, zwłaszcza snapshotowe (usunięcie,
+    /// wklejenie), nadpisałyby wtedy świeżo wczytany patch. Wczytanie pliku, New Patch
+    /// i New Performance są krokiem undo, więc starsza historia przy nich zostaje.
     private func resetUndoHistory() {
         undoManager.removeAllActions()
         endParameterGesture()
         undoRevision += 1
     }
 
-    /// Wszystko, co New, Init 1/2 i Init wariacji podmieniają w slocie — do ⌘Z. Oryginał
-    /// tych operacji nie cofa; jeden zły klik kasował patch (prośba użytkownika G2 z FB,
-    /// 2026-09-25). Historia sprzed podmiany i tak przepada (`resetUndoHistory`), więc ⌘Z
-    /// wraca do patcha takiego, jaki był w chwili kliknięcia.
+    /// Wszystko, co wczytanie patcha, New, Init 1/2 i Init wariacji podmieniają w slocie —
+    /// do ⌘Z. Oryginał tych operacji nie cofa; jeden zły klik kasował patch (prośba
+    /// użytkownika G2 z FB, 2026-09-25; wczytanie pliku — 2026-11-25).
     private struct SlotContents {
         var patch: G2Patch
         var fileURL: URL?
         var fileData: Data?
         var saved: G2Patch
         var performanceSlotName: String?
+        var playState: SlotPlayState?
+    }
+
+    /// The slots that played, followed the keyboard and had the focus on the G2 — remembered
+    /// with a slot load, so that ⌘Z can switch off a slot the load had switched on.
+    public struct SlotPlayState: Equatable, Sendable {
+        public let playing: [Bool]
+        public let keyboard: [Bool]
+        public let focus: Int
+
+        public init(playing: [Bool], keyboard: [Bool], focus: Int) {
+            self.playing = playing
+            self.keyboard = keyboard
+            self.focus = focus
+        }
+    }
+
+    /// What plays on the G2 right now; `nil` without one. Connected by `RootView`.
+    public var devicePlayingSlots: (() -> (playing: [Bool], keyboard: [Bool])?)?
+
+    private var currentPlayState: SlotPlayState? {
+        devicePlayingSlots?().map { SlotPlayState(playing: $0.playing, keyboard: $0.keyboard, focus: selectedSlot) }
     }
 
     /// Cofnięta albo ponowiona podmiana slotu — Nord ma dostać z powrotem cały slot, bo różnica
     /// może obejmować wszystko naraz. Most do urządzenia podłącza `RootView`.
-    public var onSlotRestore: ((_ slot: Int) -> Void)?
+    /// `giveBack` — the undone load had switched this slot on: what played before comes back.
+    public var onSlotRestore: ((_ slot: Int, _ giveBack: SlotPlayState?) -> Void)?
 
     private func slotContents(_ slot: Int) -> SlotContents {
         SlotContents(
@@ -3611,21 +3768,26 @@ public final class PatchState {
             fileURL: slotFileURLs[slot],
             fileData: slotFileData[slot],
             saved: savedSlots[slot],
-            performanceSlotName: performance.slots.indices.contains(slot) ? performance.slots[slot].name : nil
+            performanceSlotName: performance.slots.indices.contains(slot) ? performance.slots[slot].name : nil,
+            playState: currentPlayState
         )
     }
 
     /// Para undo/redo dla podmiany slotu: każdy krok zapamiętuje stan, który zastępuje.
-    /// Grupa własna, gdy żadna nie jest otwarta — `resetUndoHistory` (New, Init 1/2)
-    /// zamyka `removeAllActions` także grupę bieżącego zdarzenia.
     private func registerSlotRestore(_ contents: SlotContents, slot: Int, actionName: String) {
-        let ownGroup = undoManager.groupingLevel == 0
-        if ownGroup { undoManager.beginUndoGrouping() }
-        undoManager.registerUndo(withTarget: self) { state in
+        registerReplacementUndo(actionName) { state in
             let replaced = state.slotContents(slot)
             state.restoreSlot(contents, slot: slot)
             state.registerSlotRestore(replaced, slot: slot, actionName: actionName)
         }
+    }
+
+    /// Grupa własna, gdy żadna nie jest otwarta — podmiana zawartości przychodzi też spoza
+    /// pętli zdarzeń (odczyt z Norda, mosty).
+    private func registerReplacementUndo(_ actionName: String, _ undo: @escaping (PatchState) -> Void) {
+        let ownGroup = undoManager.groupingLevel == 0
+        if ownGroup { undoManager.beginUndoGrouping() }
+        undoManager.registerUndo(withTarget: self, handler: undo)
         undoManager.setActionName(actionName)
         if ownGroup { undoManager.endUndoGrouping() }
     }
@@ -3640,8 +3802,115 @@ public final class PatchState {
         if let name = contents.performanceSlotName, performance.slots.indices.contains(slot) {
             performance.slots[slot].name = name
         }
-        selectedSlot = slot
-        onSlotRestore?(slot)
+        // A slot that was silent before the load goes silent again, with the focus back where
+        // it was — a focus left on it would switch it on once more.
+        let giveBack = contents.playState.flatMap { before in
+            before.playing.indices.contains(slot) && !before.playing[slot] ? before : nil
+        }
+        selectedSlot = giveBack?.focus ?? slot
+        onSlotRestore?(slot, giveBack)
+    }
+
+    /// Wszystko, co wczytanie performance'u (albo patcha „jak oryginał”) podmienia — do ⌘Z.
+    private struct DocumentContents {
+        var slots: [G2Patch]
+        var slotFileURLs: [URL?]
+        var slotFileData: [Data?]
+        var savedSlots: [G2Patch]
+        var performanceFileURL: URL?
+        var performanceFileData: Data?
+        var savedPerformance: SavedPerformance
+        var performance: G2PerformanceSettings
+        var hasPerformanceSettings: Bool
+        var performanceName: String
+        var fileName: String
+        var selectedSlot: Int
+    }
+
+    /// Cofnięta albo ponowiona podmiana całej zawartości — Nord ma dostać cztery sloty
+    /// i ustawienia performance'u. Most do urządzenia podłącza `RootView`.
+    public var onDocumentRestore: (() -> Void)?
+
+    private func documentContents() -> DocumentContents {
+        DocumentContents(
+            slots: slots, slotFileURLs: slotFileURLs, slotFileData: slotFileData, savedSlots: savedSlots,
+            performanceFileURL: performanceFileURL, performanceFileData: performanceFileData,
+            savedPerformance: savedPerformance, performance: performance,
+            hasPerformanceSettings: hasPerformanceSettings, performanceName: performanceName,
+            fileName: fileName, selectedSlot: selectedSlot
+        )
+    }
+
+    private func registerDocumentRestore(_ contents: DocumentContents, actionName: String) {
+        registerReplacementUndo(actionName) { state in
+            let replaced = state.documentContents()
+            state.restoreDocument(contents)
+            state.registerDocumentRestore(replaced, actionName: actionName)
+        }
+    }
+
+    private func restoreDocument(_ contents: DocumentContents) {
+        endParameterGesture()
+        clearMutations()
+        comparedVariations = [:]
+        errorMessage = nil
+        slots = contents.slots
+        slotFileURLs = contents.slotFileURLs
+        slotFileData = contents.slotFileData
+        savedSlots = contents.savedSlots
+        savedPerformance = contents.savedPerformance
+        performance = contents.performance
+        hasPerformanceSettings = contents.hasPerformanceSettings
+        performanceName = contents.performanceName
+        fileName = contents.fileName
+        performanceFileData = contents.performanceFileData
+        performanceFileURL = contents.performanceFileURL
+        selectedSlot = contents.selectedSlot
+        onDocumentRestore?()
+    }
+
+    // MARK: - Wczytanie z Norda na prośbę użytkownika
+
+    private enum RequestedDeviceLoad {
+        /// Wysłana prośba o patch z banku — jego odczyt będzie krokiem undo.
+        case waiting
+        /// Krok undo już jest; kolejne odczyty tego samego wczytania nic nie dopisują.
+        case recorded
+    }
+
+    @ObservationIgnored private var requestedDeviceLoad: RequestedDeviceLoad?
+
+    /// Voice mode of a slot before a sequencer's "By itself" made it Mono — given back when the sequencer
+    /// plays with the keys again (`PatchState+AddSequencer`). Memory of the session, not of the patch.
+    @ObservationIgnored public internal(set) var voiceModeBeforeSequencer: [Int: Int] = [:]
+
+    /// Użytkownik wybrał patch albo performance z banku Norda (panel Banks, wtyczka).
+    public func expectBankLoad() {
+        guard requestedDeviceLoad == nil else { return }
+        requestedDeviceLoad = .waiting
+        playStateBeforeBankLoad = currentPlayState
+    }
+
+    public func endBankLoad() {
+        requestedDeviceLoad = nil
+        playStateBeforeBankLoad = nil
+    }
+
+    /// Taken when the load is asked for: by the time the patch is read back, the G2 may
+    /// already play the slot it went into.
+    @ObservationIgnored private var playStateBeforeBankLoad: SlotPlayState?
+
+    /// Co z historią po podmianie zawartości odczytanej z Norda: wczytanie, o które prosił
+    /// użytkownik, można cofnąć; zmiana zrobiona na samym urządzeniu czyści historię.
+    private func settleDeviceReplacement(changed: Bool, requested: Bool = false, record: () -> Void) {
+        guard changed, requestedDeviceLoad != .recorded else { return }
+        guard requested || requestedDeviceLoad == .waiting else {
+            resetUndoHistory()
+            return
+        }
+        endParameterGesture()
+        record()
+        if requestedDeviceLoad != nil { requestedDeviceLoad = .recorded }
     }
 
     // MARK: - Zmiany przychodzące Z URZĄDZENIA
@@ -3729,13 +3998,15 @@ public final class PatchState {
             slots[slot].setParameter(moduleID: moduleID, paramIndex: paramIndex,
                                      value: value, in: area, variation: variation)
         }
-        storeInFocusedBox(slot: slot, area: area, moduleID: moduleID, paramIndex: paramIndex,
-                          value: max(0, min(127, value)), variation: variation)
+        storeInFocusedBox(slot: slot, variation: variation) {
+            $0[G2Individual.Key(area: area, moduleID: moduleID, paramIndex: paramIndex)]
+                = Double(max(0, min(127, value)))
+        }
         updateAdjusterBaseline(slot: slot, area: area, moduleID: moduleID, paramIndex: paramIndex,
                                value: max(0, min(127, value)), variation: variation)
         // Gałka z blokadą wariacji ruszona na Nordzie: Nord zmienił tylko grającą wariację,
         // pozostałe siedem dostaje tę samą wartość od nas.
-        guard variation < G2Patch.initVariation,
+        guard variation < G2Patch.initVariation || variation == G2Patch.mutatorVariation,
               isParameterVariationLocked(slot: slot, moduleID: moduleID, paramIndex: paramIndex, area: area)
         else { return }
         let clamped = max(0, min(127, value))
@@ -3759,7 +4030,9 @@ public final class PatchState {
         guard slots.indices.contains(slot),
               slots[slot].variationSettings.indices.contains(variation) else { return }
         let clamped = max(0, min(127, value))
+        let key = G2Individual.Key.setting(module: moduleID, param: paramIndex)
         if moduleID == Self.morphSettingsModule {
+            storeInFocusedBox(slot: slot, variation: variation) { $0[key] = Double(clamped) }
             followingDevice(slot: slot) {
                 if paramIndex < G2Morph.count {
                     slots[slot].setMorphDial(paramIndex, in: variation, value: clamped)
@@ -3772,6 +4045,7 @@ public final class PatchState {
         guard let setting = G2PatchSetting.allCases.first(where: {
             $0.module == moduleID && $0.param == paramIndex
         }) else { return }
+        storeInFocusedBox(slot: slot, variation: variation) { $0[key] = Double(clamped) }
         followingDevice(slot: slot) {
             slots[slot].variationSettings[variation][keyPath: setting.keyPath] = clamped
         }
@@ -3781,19 +4055,24 @@ public final class PatchState {
     /// Tylko gdy w edytorze jest widok urządzenia: otwarty plik użytkownika ma
     /// pierwszeństwo i nie może zostać skasowany przez ruch na froncie Norda.
     ///
-    /// Undo czyścimy w całości, bo akcje snapshotowe (usunięcie, wklejenie) cofnęłyby
-    /// się na świeżo wczytany patch — ten sam powód co przy `loadFromDevice`. Slot traci
-    /// swój plik: jego zawartość przyszła z Norda, nie z dysku.
+    /// Zmiana zrobiona na urządzeniu czyści historię — ten sam powód co przy `loadFromDevice`;
+    /// patch z banku wybrany w edytorze i Get Active Slot można cofnąć
+    /// (`settleDeviceReplacement`). Slot traci swój plik: jego zawartość przyszła z Norda.
     ///
     /// `force` — Synth ▸ Get Active Slot from G2: użytkownik sam prosi o patch z Norda,
     /// więc podmieniamy slot także wtedy, gdy edytor pokazywał coś innego.
     public func replaceSlotFromDevice(slot: Int, patch: G2Patch, force: Bool = false) {
         guard force || mirrorsDevice, slots.indices.contains(slot) else { return }
+        var before = slotContents(slot)
+        if let remembered = playStateBeforeBankLoad { before.playState = remembered }
+        let changed = patch != slots[slot]
         slots[slot] = patch
         slotFileURLs[slot] = nil
         slotFileData[slot] = nil
         markSlotSaved(slot)
-        resetUndoHistory()
+        settleDeviceReplacement(changed: changed, requested: force) {
+            registerSlotRestore(before, slot: slot, actionName: "Load from G2")
+        }
         if slot == selectedSlot {
             withoutParameterPageEcho { focusFirstAssignedParameterPage() }
         }
@@ -3811,9 +4090,10 @@ public final class PatchState {
                                        performance: G2PerformanceSettings? = nil)
     {
         guard mirrorsDevice, !patches.isEmpty else { return }
+        let before = documentContents()
+        let changed = fourSlots(patches) != slots
         slots = fourSlots(patches)
         fileName = "Nord G2"
-        resetUndoHistory()
         withoutParameterPageEcho {
             resetPerformanceSettings()
             adoptDevicePerformance(performance)
@@ -3821,6 +4101,9 @@ public final class PatchState {
         }
         self.performanceName = performanceName
         forgetFiles()
+        settleDeviceReplacement(changed: changed) {
+            registerDocumentRestore(before, actionName: "Load from G2")
+        }
     }
 
     /// Wariacja przełączona na froncie Norda — gałki mają pokazać wartości tej wariacji.
@@ -3853,8 +4136,8 @@ public final class PatchState {
     /// puste, ustawienia performance'u porzucone — do Norda jadą wszystkie cztery sloty.
     /// Pliku, którego nie da się odczytać, nie ma czym zastąpić, więc wtedy nic nie znika.
     private func loadAsOnlyPatch(url: URL) {
-        load(url: url, intoSlot: 0)
-        guard errorMessage == nil else { return }
+        let before = documentContents()
+        guard readPatch(url: url, intoSlot: 0) else { return }
         let patch = slots[0]
         let data = slotFileData[0]
         resetPerformanceSettings()
@@ -3864,12 +4147,14 @@ public final class PatchState {
         slotFileData[0] = data
         fileName = url.lastPathComponent
         selectedSlot = 0
+        registerDocumentRestore(before, actionName: "Load Patch")
     }
 
     /// Patch z banku Norda przy opcji „jak oryginał” (#137): cztery puste sloty, focus na A,
     /// bez ustawień performance'u. Puste B–D jadą potem do Norda, a slot A wypełnia sam Nord
     /// (`0x0A`) — patrz `DeviceConnection.loadFromBankAsOnlyPatch`.
     public func clearSlotsForBankPatch() {
+        let before = documentContents()
         clearMutations()
         resetPerformanceSettings()
         slots = fourSlots([])
@@ -3877,8 +4162,11 @@ public final class PatchState {
         comparedVariations = [:]
         fileName = "Nord G2"
         errorMessage = nil
-        resetUndoHistory()
+        endParameterGesture()
         forgetFiles()
+        registerDocumentRestore(before, actionName: "Load Patch")
+        // Patch z banku, który zaraz przyjdzie do slotu A, należy do tego samego kroku.
+        requestedDeviceLoad = .recorded
     }
 
     /// Wczytanie innego patcha unieważnia potomstwo mutatora — dotyczyło tamtych modułów.
@@ -3889,6 +4177,7 @@ public final class PatchState {
         do {
             let data = try Data(contentsOf: url)
             let parsed = try PatchParser.parseFile(data: data)
+            let before = documentContents()
             slots = fourSlots(parsed.patches.enumerated().map { index, patch in
                 var patch = patch
                 patch.upgradeLegacyModules()
@@ -3902,7 +4191,7 @@ public final class PatchState {
             fileName = url.lastPathComponent
             mirrorsDevice = false
             errorMessage = nil
-            resetUndoHistory()
+            endParameterGesture()
             resetPerformanceSettings()
             // Nazwą performance'u jest nazwa pliku bez rozszerzenia — pola na nią plik nie
             // ma, a oryginał robi dokładnie to samo (`MakePerformanceNameFromFileName`).
@@ -3915,12 +4204,14 @@ public final class PatchState {
                 hasPerformanceSettings = true
                 // Pole `focus` mówi, na którym slocie performance ma się otworzyć.
                 selectedSlot = min(max(loaded.focusedSlot, 0), slots.count - 1)
+                switchOffEmptySlots()
             }
             forgetFiles()
             performanceFileURL = url
             performanceFileData = data
             focusFirstAssignedParameterPage()
             RecentFiles.remember(url)
+            registerDocumentRestore(before, actionName: "Load Performance")
         } catch {
             errorMessage = "[\(url.lastPathComponent)]\n\(error.localizedDescription)\n\nTechnical: \(error)"
             print("Parse error for \(url.path): \(error)")
@@ -3928,6 +4219,30 @@ public final class PatchState {
                 let preview = data.prefix(100).map { String(format: "%02x", $0) }.joined(separator: " ")
                 print("First 100 bytes: \(preview)")
             }
+        }
+    }
+
+    /// A `.prf2` often marks slots as playing although they hold no modules; the green button
+    /// then promises a sound that cannot come. Those slots open switched off (our choice,
+    /// 2026-11-26; the original editor shows the file as it is). A performance with nothing
+    /// in any slot is left alone — one slot has to play.
+    private func switchOffEmptySlots() {
+        let empty = slots.indices.filter { slots[$0].voiceModules.isEmpty && slots[$0].fxModules.isEmpty }
+        let filled = performance.slots.indices.filter { !empty.contains($0) }
+        guard !empty.isEmpty,
+              let first = filled.first(where: { performance.slots[$0].enabled }) ?? filled.first
+        else { return }
+        for index in empty where performance.slots.indices.contains(index) {
+            performance.slots[index].enabled = false
+            performance.slots[index].keyboard = false
+        }
+        performance.slots[first].enabled = true
+        if !performance.slots.contains(where: { $0.enabled && $0.keyboard }) {
+            performance.slots[first].keyboard = true
+        }
+        if empty.contains(selectedSlot) {
+            selectedSlot = first
+            performance.focusedSlot = first
         }
     }
 
@@ -3941,16 +4256,23 @@ public final class PatchState {
     /// Focus przenosimy na slot z tego samego powodu co w `newPatch(inSlot:)`.
     public func load(url: URL, intoSlot slot: Int) {
         guard slots.indices.contains(slot) else { return }
+        let before = slotContents(slot)
+        guard readPatch(url: url, intoSlot: slot) else { return }
+        registerSlotRestore(before, slot: slot, actionName: "Load Patch")
+    }
+
+    /// Plik do slotu, bez kroku undo — ten rejestruje wołający. `false` = slot nietknięty.
+    private func readPatch(url: URL, intoSlot slot: Int) -> Bool {
         guard url.pathExtension.lowercased() == "pch2" else {
             errorMessage = "Open To takes a single patch (.pch2).\nSelected: \(url.lastPathComponent)"
-            return
+            return false
         }
         clearMutations()
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
             let data = try Data(contentsOf: url)
-            guard var patch = try PatchParser.parseFile(data: data).patches.first else { return }
+            guard var patch = try PatchParser.parseFile(data: data).patches.first else { return false }
             // Moduły ze starych OS-ów w postaci, którą Nord zna (#168) — jak oryginał przy otwarciu.
             patch.upgradeLegacyModules()
             patch.fillMissingParameters()
@@ -3960,8 +4282,9 @@ public final class PatchState {
             variationLockMemory.restore(into: &patch, key: VariationLockMemory.key(for: url))
             // `.pch2` nie niesie nazwy patcha — u oryginału slot nazywa się jak plik. To samo
             // robi już wysyłka do Norda (`performUpload`), a w `.prf2` nazwę trzyma sekcja 0x11.
+            // Odstępstwo: ozdobniki „ — Autor [hash]” z plików z internetu odpadają przed obcięciem.
             if patch.name.isEmpty {
-                patch.name = String(url.deletingPathExtension().lastPathComponent.prefix(16))
+                patch.name = PluginBrowser.nameFromFile(url)
             }
             slots[slot] = patch
             comparedVariations[slot] = nil
@@ -3975,11 +4298,13 @@ public final class PatchState {
             mirrorsDevice = false
             selectedSlot = slot
             errorMessage = nil
-            resetUndoHistory()
+            endParameterGesture()
             focusFirstAssignedParameterPage()
             RecentFiles.remember(url)
+            return true
         } catch {
             errorMessage = "[\(url.lastPathComponent)]\n\(error.localizedDescription)\n\nTechnical: \(error)"
+            return false
         }
     }
 
@@ -4084,8 +4409,7 @@ public final class PatchState {
         }
         let target = selectedSlot
         let before = slotContents(target)
-        load(url: url, intoSlot: target)
-        guard slotFileURLs[target] == url else { return } // szablonu nie dało się wczytać
+        guard readPatch(url: url, intoSlot: target) else { return }
         slotFileURLs[target] = nil
         registerSlotRestore(before, slot: target, actionName: "Init Patch \(slot)")
     }

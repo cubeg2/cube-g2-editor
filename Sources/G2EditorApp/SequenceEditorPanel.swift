@@ -76,6 +76,31 @@ final class SequenceEditorMemory {
     var noteZoom = 24
     /// Mutate: share of steps that change, in percent.
     var mutate = 25
+    /// Arpeggio (SeqNote): where the chord comes from, the order it is played in, and how many octaves it spans.
+    var arpChord: ArpeggioChord = .type(.major)
+    var arpDirection: ArpeggioDirection = .up
+    var arpOctaves = 1
+    /// Curve (SeqVal / SeqLev / SeqCtr): the shape, how many times it repeats, its phase, and its low and high end (%).
+    var curveShape: SequenceCurve = .sine
+    var curveCycles = 1
+    var curvePhase = 0
+    var curveLow = 0
+    var curveHigh = 100
+    /// Humanize (SeqVal / SeqLev / SeqCtr): the largest nudge, in percent of the range.
+    var humanizeAmount = 10
+    /// The user's own patterns (Presets ▸ My patterns), read from the settings folder at start.
+    var library = SequenceUserLibrary.load()
+
+    /// Writes the library file; a failed write only means the patterns last until the app quits.
+    func saveLibrary() {
+        try? library.write()
+    }
+
+    /// The preset last stepped to with the arrows beside Presets, per sequencer (window only).
+    var presetCursor: [SequenceTarget: Int] = [:]
+    /// The Rhythm bank pattern last stepped to with its arrows, per sequencer (window only).
+    var rhythmCursor: [SequenceTarget: Int] = [:]
+
     /// Mute / Solo of lanes (window only). A muted lane has its gate rows cleared in the patch;
     /// what they held is kept here in `silenced` and put back on unmute.
     var muted: Set<SequenceTarget> = []
@@ -126,7 +151,7 @@ enum SequenceMixer {
 /// blue = values and the selection, orange = locked or hand-edited, red = reserved for the
 /// step playing now and for destructive actions. Cells have a strong outline and a weak fill,
 /// like the lit buttons of the bar (user's choice 2026-11-15, variant A).
-private enum SeqColor {
+enum SeqColor {
     static let green = Color(red: 0.18, green: 0.78, blue: 0.28)
     static let blue = Color(red: 0.20, green: 0.50, blue: 1.00)
     static let orange = Color(red: 0.98, green: 0.55, blue: 0.08)
@@ -139,18 +164,49 @@ private enum SeqColor {
     static let yellow = Color(red: 0.95, green: 0.88, blue: 0.10)
     /// Playhead: a cool, soft hue that stays apart from the green steps, the orange locks and the
     /// red of destructive buttons (user's choice 2026-11-15, option A2).
-    static let ice = Color(red: 0.525, green: 0.827, blue: 0.902)
+    /// Light mode: a deeper teal (`#0A8CA6`, user's choice A, 2026-11-17), because the ice blue vanished
+    /// on the light window.
+    static let ice = pair(light: rgb(0.039, 0.549, 0.651), dark: rgb(0.525, 0.827, 0.902))
     /// Length handle: the blue of the top bar and of the bars (option B1).
     static let handle = blue
-    static let rim = Color.white.opacity(0.14)
-    static let empty = Color.white.opacity(0.05)
-    static let grid = Color(white: 0.16)
-    static let gridAlt = Color(white: 0.19)
-    static let offScale = Color(white: 0.11)
-    static let muted = Color(white: 0.0, opacity: 0.45)
+    /// Light on dark, dark on light: white of the given opacity in dark mode, black in light mode.
+    private static func adaptive(dark: Double, light: Double) -> Color {
+        pair(light: NSColor.black.withAlphaComponent(light), dark: NSColor.white.withAlphaComponent(dark))
+    }
+
+    /// One colour for light mode, another for dark.
+    private static func pair(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        })
+    }
+
+    private static func rgb(_ red: Double, _ green: Double, _ blue: Double, _ alpha: Double = 1) -> NSColor {
+        NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+    }
+
+    static let rim = adaptive(dark: 0.14, light: 0.22)
+    static let empty = adaptive(dark: 0.05, light: 0.07)
+    /// Lane cards and toolbar groups: a faint panel with a clear outline, so the sections read in both modes.
+    static let card = adaptive(dark: 0.05, light: 0.05)
+    static let cardBorder = adaptive(dark: 0.25, light: 0.32)
+    /// Fader and piano-roll fields: near black in dark mode, light blue-grey in light mode (the dark
+    /// fields stuck out of the light window — user's note 2026-11-17).
+    static let field = pair(light: rgb(0.914, 0.922, 0.937), dark: NSColor(white: 0.09, alpha: 1))
+    static let fieldBorder = adaptive(dark: 0, light: 0.18)
+    static let grid = pair(light: rgb(0.855, 0.867, 0.894), dark: NSColor(white: 0.16, alpha: 1))
+    static let gridAlt = pair(light: rgb(0.902, 0.910, 0.929), dark: NSColor(white: 0.19, alpha: 1))
+    static let offScale = pair(light: rgb(0.788, 0.804, 0.839), dark: NSColor(white: 0.11, alpha: 1))
+    /// Steps after Length: darkened in dark mode, faded towards white in light mode.
+    static let muted = pair(light: NSColor.white.withAlphaComponent(0.6), dark: NSColor.black.withAlphaComponent(0.45))
+    /// Value and note names drawn on the bars.
+    static let labelStrong = adaptive(dark: 0.85, light: 0.75)
+    static let labelWeak = adaptive(dark: 0.4, light: 0.4)
+    static let noteLabelStrong = adaptive(dark: 0.8, light: 0.75)
+    static let noteLabelWeak = adaptive(dark: 0.35, light: 0.4)
 }
 
-/// Colour dot of a lane, only to tell lanes apart (the same in All, Lanes and the Edit title):
+/// Colour dot of a lane, only to tell lanes apart (the same in All and the Edit title):
 /// Chance lanes are always orange; the other lanes of the clock group take blue, yellow, white in order.
 @MainActor
 private func laneDotColor(state: PatchState, slot: Int, area: PatchArea, id: Int) -> Color {
@@ -179,10 +235,68 @@ private struct LaneName: View {
 }
 
 /// A lit cell: strong outline, weak fill. `strong: false` is the same cell with its gate off.
-private func drawCell(_ context: GraphicsContext, rect: CGRect, color: Color, strong: Bool, radius: CGFloat = 3) {
+func drawCell(_ context: GraphicsContext, rect: CGRect, color: Color, strong: Bool, radius: CGFloat = 3) {
     let path = Path(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), cornerRadius: radius)
     context.fill(path, with: .color(color.opacity(strong ? 0.2 : 0.07)))
     context.stroke(path, with: .color(color.opacity(strong ? 1 : 0.4)), lineWidth: 1.5)
+}
+
+/// A cell for a note outside the window: the outline only, no fill (`strong: false` is the gate off).
+private func drawOutlineCell(_ context: GraphicsContext, rect: CGRect, color: Color, strong: Bool,
+                             radius: CGFloat = 3)
+{
+    let path = Path(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), cornerRadius: radius)
+    context.stroke(path, with: .color(color.opacity(strong ? 1 : 0.4)), lineWidth: 1.5)
+}
+
+/// Scroll wheel and two-finger scrolling over a piano roll: reports how many semitones to move the
+/// window (positive = higher notes, as the content moves down). Reads the events with a local monitor,
+/// because the drawing view above it would swallow them; only events inside its own bounds count.
+private struct NoteScrollWheel: NSViewRepresentable {
+    let rowHeight: CGFloat
+    let onScroll: (Int) -> Void
+
+    final class Coordinator {
+        var monitor: Any?
+        weak var view: NSView?
+        var accumulated: CGFloat = 0
+        var rowHeight: CGFloat = 12
+        var onScroll: (Int) -> Void = { _ in }
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        let coordinator = context.coordinator
+        coordinator.view = view
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak coordinator] event in
+            guard let coordinator, let view = coordinator.view, event.window === view.window,
+                  view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { return event }
+            // A trackpad reports points; a wheel reports lines — three rows to a click.
+            let points = event.hasPreciseScrollingDeltas
+                ? event.scrollingDeltaY : event.scrollingDeltaY * 3 * coordinator.rowHeight
+            coordinator.accumulated += points
+            let rows = Int(coordinator.accumulated / coordinator.rowHeight)
+            if rows != 0 {
+                coordinator.accumulated -= CGFloat(rows) * coordinator.rowHeight
+                coordinator.onScroll(rows)
+            }
+            return nil
+        }
+        return view
+    }
+
+    func updateNSView(_: NSView, context: Context) {
+        context.coordinator.rowHeight = max(1, rowHeight)
+        context.coordinator.onScroll = onScroll
+    }
 }
 
 /// An empty cell: faint fill and rim.
@@ -208,11 +322,45 @@ struct SequenceEditorPanel: View {
     @State private var tab = Tab.edit
     /// What the All tab wants from the window height — see `WindowHeightFitter`.
     @State private var allFit = WindowFit(delta: nil, token: 0, natural: 0)
+    /// Edit tab: height of the toolbar as laid out (more rows when the window is narrow).
+    @State private var editToolbarHeight: CGFloat = 0
+    @AppStorage(SequenceToolLabels.key) private var showLabels = true
+    /// The Add sequencer sheet (a slot without a sequencer).
+    @State private var addingSequencer = false
 
     enum Tab: String, CaseIterable, Identifiable {
-        case edit = "Edit", euclid = "Euclid", all = "All", lanes = "Lanes"
+        case edit = "Edit", euclid = "Euclid", all = "All"
         var id: String {
             rawValue
+        }
+    }
+
+    /// A patch without a sequencer: one click adds a note sequencer in the keyboard's place (see
+    /// `PatchState.addSequencer`); without a keyboard to take over, the reason is shown instead.
+    private var addSequencerOffer: some View {
+        let slot = state.selectedSlot
+        let obstacle = state.addSequencerObstacle(slot: slot)
+        return VStack(spacing: 6) {
+            Button("Add sequencer…") { addingSequencer = true }
+                .disabled(obstacle == .noSoundSource)
+                .sheet(isPresented: $addingSequencer) {
+                    AddSequencerSheet(state: state, slot: slot) { sequencerID in
+                        panels.sequenceTarget = .init(slot: slot, area: .voice, moduleID: sequencerID)
+                    }
+                }
+            Text(addSequencerHint(obstacle))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func addSequencerHint(_ obstacle: PatchState.AddSequencerResult?) -> String {
+        switch obstacle {
+        case .noSoundSource: "No oscillator or keyboard cable here that a sequencer could drive."
+        case .wontFit: "Not enough DSP left for a sequencer and a clock."
+        default: "Choose how it plays, its clock and what it drives. A starter pattern is written in; one ⌘Z takes it all back."
         }
     }
 
@@ -222,17 +370,14 @@ struct SequenceEditorPanel: View {
                let layout = SequencerLayout(typeID: module.typeID)
             {
                 header(module: module, target: target)
+                if tab == .edit { SequencePlayStrip(state: state, target: target) }
                 let editor = SequenceEditing(state: state, target: target, module: module, layout: layout)
                 switch tab {
-                case .edit: SequenceEditTab(editor: editor, panels: panels)
+                case .edit: SequenceEditTab(editor: editor, panels: panels, onToolbarHeight: { editToolbarHeight = $0 })
                 case .euclid: SequenceEuclidTab(state: state, target: target)
-                case .lanes:
-                    SequenceLanesTab(state: state, target: target, open: { moduleID in
-                        panels.sequenceTarget = .init(slot: target.slot, area: target.area, moduleID: moduleID)
-                        tab = .edit
-                    })
                 case .all:
                     SequenceAllTab(state: state, slot: target.slot, area: target.area,
+                                   currentID: target.moduleID,
                                    onFit: { allFit = $0 },
                                    open: { moduleID in
                                        panels.sequenceTarget = .init(slot: target.slot, area: target.area,
@@ -246,6 +391,7 @@ struct SequenceEditorPanel: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
                     .multilineTextAlignment(.center)
+                addSequencerOffer
                 Spacer()
             }
         }
@@ -315,6 +461,22 @@ struct SequenceEditorPanel: View {
         return nil
     }
 
+    /// Every sequencer of a slot in navigation order: Voice before FX, in module order.
+    private func sequencerTargets(inSlot slot: Int) -> [SequenceTarget] {
+        guard state.slots.indices.contains(slot) else { return [] }
+        return [PatchArea.voice, .fx].flatMap { area in
+            state.slots[slot].modules(in: area).filter { SequencerLayout(typeID: $0.typeID) != nil }
+                .map { SequenceTarget(slot: slot, area: area, moduleID: $0.id) }
+        }
+    }
+
+    /// The ‹ › arrows of the Edit tab: moves to the previous / next sequencer of the slot.
+    private func step(from target: SequenceTarget, by delta: Int) {
+        if let next = PanelController.neighbour(of: target, in: sequencerTargets(inSlot: target.slot), step: delta) {
+            panels.sequenceTarget = next
+        }
+    }
+
     private var minimumHeight: CGFloat {
         switch fitMode {
         case let .fixed(height, floor): floor ?? height
@@ -323,34 +485,26 @@ struct SequenceEditorPanel: View {
         }
     }
 
-    /// Window height for the Lanes tab: panel padding, header and clock row (82), plus 108 pt per lane
-    /// card (about 100, measured from the user's screenshots) and its gap; long lists scroll past 620.
-    private func lanesTabHeight(_ target: SequenceTarget) -> CGFloat {
-        let patch = state.slots.indices.contains(target.slot) ? state.slots[target.slot] : G2Patch()
-        let lanes = SequencerClockGroup.groups(in: patch, area: target.area)
-            .first { $0.sequencerIDs.contains(target.moduleID) }?.sequencerIDs.count ?? 1
-        return min(max(82 + 108 * CGFloat(lanes), 190), 620)
-    }
-
     /// All: fits the lane list. Edit on SeqEvent: only two rows of steps, so a short window.
     /// Everything else keeps the normal minimum (note grid, bars, Euclid circles).
     private var fitMode: WindowHeightFitter.Mode {
-        if tab == .all { return .lanes(delta: allFit.delta, token: allFit.token, natural: allFit.natural) }
-        // Lanes: a height of its own — otherwise the window kept the (taller) All height.
-        if tab == .lanes, let target = panels.sequenceTarget {
-            return .fixed(height: lanesTabHeight(target))
+        if tab == .all {
+            return .lanes(delta: allFit.delta, token: allFit.token, natural: allFit.natural, toolbar: allFit.toolbar)
         }
         if tab == .edit, let target = panels.sequenceTarget, let module = module(for: target),
            SequencerLayout(typeID: module.typeID)?.kind == .event
         {
-            return .fixed(height: 315)
+            return .fixed(height: 315, floor: 315 + editToolbarExtra)
         }
         // Edit on bars (SeqVal, SeqLev, SeqCtr): the bars are three squares tall at the default
         // width, as in All; the window can still be stretched.
         if tab == .edit, let target = panels.sequenceTarget, let module = module(for: target),
            let kind = SequencerLayout(typeID: module.typeID)?.kind, kind == .value || kind == .controlled
         {
-            return .fixed(height: 405 + 8 + (SequenceEditorMemory.shared.probTall ? 120 : 44))
+            // The 405 was worked out for a toolbar of three rows; a narrow window wraps it into more, and the
+            // window may then not be dragged lower than those rows need.
+            let base: CGFloat = 405 + 8 + (SequenceEditorMemory.shared.probTall ? 120 : 44)
+            return .fixed(height: base, floor: base + editToolbarExtra)
         }
         // One ring only (every sequencer except SeqEvent): a short window, the ring scales up.
         // The rings scale down with the window, to `SequenceEuclidTab.minRing` each.
@@ -373,6 +527,13 @@ struct SequenceEditorPanel: View {
         return .normal
     }
 
+    /// How much taller than the three rows the heights were worked out for the Edit toolbar is (a narrow window wraps
+    /// it into more rows): the window may not be dragged lower than those rows need.
+    private var editToolbarExtra: CGFloat {
+        let threeRows: CGFloat = 3 * (15 + 4 + TopBarMetrics.controlSide + 8) + 2 * 8
+        return editToolbarHeight > 0 ? max(0, editToolbarHeight - threeRows) : 0
+    }
+
     private func header(module: G2Module, target: SequenceTarget) -> some View {
         HStack(spacing: 10) {
             Circle().fill(laneDotColor(state: state, slot: target.slot, area: target.area, id: target.moduleID))
@@ -380,6 +541,18 @@ struct SequenceEditorPanel: View {
                 .help("Lane colour: only tells the lanes apart. Chance lanes are orange.")
             Text(title(of: module, target: target))
                 .font(.system(size: 13, weight: .semibold))
+            if tab == .edit, sequencerTargets(inSlot: target.slot).count > 1 {
+                HStack(spacing: 4) {
+                    TopBarButton(content: .icon("chevron.left"), isOn: false, tint: SeqColor.blue) {
+                        step(from: target, by: -1)
+                    }
+                    .help("Previous sequencer in this slot (wraps around)")
+                    TopBarButton(content: .icon("chevron.right"), isOn: false, tint: SeqColor.blue) {
+                        step(from: target, by: 1)
+                    }
+                    .help("Next sequencer in this slot (wraps around)")
+                }
+            }
             Spacer()
             HStack(spacing: 4) {
                 ForEach(Tab.allCases) { item in
@@ -388,6 +561,10 @@ struct SequenceEditorPanel: View {
                     }
                 }
             }
+            Toggle("Labels", isOn: $showLabels)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 11))
+                .help("Names next to the toolbar icons; off for a narrow window")
             TopBarButton(content: .icon(panels.sequencePinned ? "pin.fill" : "pin"),
                          isOn: panels.sequencePinned, tint: SeqColor.blue)
             {
@@ -475,7 +652,12 @@ struct SequenceEditing {
     }
 
     func scrollNotes(by semitones: Int) {
-        memory.lowNote[target] = max(0, min(127 - visibleNotes + 1, lowNote + semitones))
+        setLowNote(lowNote + semitones)
+    }
+
+    /// Puts the lowest shown note at `low` (kept inside the range) — dragging the keyboard, the scroll wheel.
+    func setLowNote(_ low: Int) {
+        memory.lowNote[target] = max(0, min(127 - visibleNotes + 1, low))
     }
 
     // MARK: Writing
@@ -628,6 +810,61 @@ struct SequenceEditing {
         }
     }
 
+    /// SeqNote: a new melody from the Generate ▸ Notes menu, inside the visible octaves and the chosen
+    /// scale. Markov learns from the pattern as it is now. Locked steps stay; one ⌘Z, ↺ undoes it.
+    func generate(_ kind: SequenceGenerator) {
+        guard layout.kind == .note else { return }
+        var generator = SystemRandomNumberGenerator()
+        let notes = kind.notes(current: values, length: length, range: visibleRange,
+                               scale: memory.scale, root: memory.root, using: &generator)
+        writeRandom(changes(row: 0, notes))
+    }
+
+    /// SeqVal / SeqLev / SeqCtr: every step that plays gets a small random nudge of its value (up to the
+    /// window's Human %); resting and locked steps stay. One ⌘Z, ↺ undoes it. Notes and rhythms are not touched.
+    func humanize() {
+        guard layout.kind == .value || layout.kind == .controlled else { return }
+        var generator = SystemRandomNumberGenerator()
+        let jittered = SequenceHumanize.jittered(values, playing: gates.map { $0 != 0 }, length: length,
+                                                 amount: memory.humanizeAmount, using: &generator)
+        writeRandom(changes(row: 0, jittered))
+    }
+
+    /// SeqVal / SeqLev / SeqCtr: the curve chosen in the Curve group over the played steps (Length). Locked
+    /// steps stay; one ⌘Z, ↺ undoes it. Row 2 (the trigger row) is not touched.
+    func generateCurve() {
+        guard layout.kind == .value || layout.kind == .controlled else { return }
+        var generator = SystemRandomNumberGenerator()
+        let values = memory.curveShape.values(length: length, cycles: memory.curveCycles, phase: memory.curvePhase,
+                                              low: memory.curveLow, high: memory.curveHigh, using: &generator)
+        writeRandom(changes(row: 0, values))
+    }
+
+    /// SeqNote: the chord chosen in the Arpeggio group played over the steps in the chosen direction.
+    /// Chord types start on the root (scale bar) in the lowest visible octave, like the note figures
+    /// in Presets; scale chords start on the first degree there. Locked steps stay; one ⌘Z, ↺ undoes it.
+    func arpeggiate() {
+        guard layout.kind == .note else { return }
+        let low = visibleRange.lowerBound
+        let base = low + ((memory.root - low) % 12 + 12) % 12
+        let chord: [Int]
+        switch memory.arpChord {
+        case let .type(type):
+            chord = SequenceArpeggio.notes(of: type, root: base)
+        case let .scaleDegree(degree, seventh):
+            let top = SequenceArpeggio.degreeCount(of: memory.scale) - 1
+            chord = SequenceArpeggio.scaleChord(degree: min(degree, top), seventh: seventh,
+                                                scale: memory.scale, root: memory.root, base: base)
+        case .pattern:
+            chord = Array(values.prefix(length))
+        }
+        var generator = SystemRandomNumberGenerator()
+        let notes = SequenceArpeggio.steps(chord: chord, direction: memory.arpDirection,
+                                           octaves: memory.arpOctaves, using: &generator)
+        guard !notes.isEmpty else { return }
+        writeRandom(changes(row: 0, notes))
+    }
+
     /// Random on/off for the step row of SeqNote / SeqVal / SeqLev / SeqCtr (values stay).
     func randomizeSteps() {
         writeRandom(changes(row: 1, randomGates()))
@@ -649,6 +886,48 @@ struct SequenceEditing {
         case .value, .controlled:
             writeRandom(changes(row: 0, preset.steps))
         }
+    }
+
+    /// Which of the user's pattern lists this sequencer uses: notes, rhythms or curves.
+    var userCategory: SequenceUserPattern.Category {
+        SequenceUserPattern.Category(kind: layout.kind)
+    }
+
+    /// Presets ▸ My patterns ▸ Save: the pattern the module holds now — Row 1, Row 2 and Length.
+    func saveCurrentAsUserPattern(named name: String) {
+        let memory = SequenceEditorMemory.shared
+        memory.library.save(name: name, category: userCategory,
+                            values: layout.row(0, in: parameters), gates: layout.row(1, in: parameters),
+                            length: layout.lengthIndex == nil ? nil : length)
+        memory.saveLibrary()
+    }
+
+    /// Presets ▸ My patterns ▸ a name: both rows and the Length in place of the pattern (locked steps
+    /// stay). One ⌘Z; ↺ puts the old pattern back.
+    func applyUserPattern(_ pattern: SequenceUserPattern) {
+        var all = changes(row: 0, pattern.values)
+        all.merge(changes(row: 1, pattern.gates)) { $1 }
+        if let lengthIndex = layout.lengthIndex, let saved = pattern.length,
+           parameters.indices.contains(lengthIndex), parameters[lengthIndex] != saved - 1
+        {
+            all[lengthIndex] = saved - 1
+        }
+        if layout.kind == .event { SequenceEditorMemory.shared.linkedRests.remove(target) } // both rows are set
+        writeRandom(all)
+    }
+
+    func deleteUserPattern(_ pattern: SequenceUserPattern) {
+        let memory = SequenceEditorMemory.shared
+        memory.library.remove(id: pattern.id)
+        memory.saveLibrary()
+    }
+
+    /// Presets ▸ Rhythm bank: one 16-step on/off pattern into Row 1 of a SeqEvent, or into the step
+    /// on/off row of the other sequencers (their values stay). Locked steps stay; one ⌘Z, ↺ undoes it.
+    func applyRhythmBank(_ index: Int) {
+        let flags = SequenceRhythmBank.flags(at: index)
+        guard !flags.isEmpty else { return }
+        writeRandom(changes(row: layout.kind == .event ? 0 : 1, flags))
     }
 
     /// SeqNote: the notes of the chosen scale in the visible octaves, from the root upwards (or from
@@ -749,7 +1028,7 @@ struct SequenceEditing {
 // MARK: - Toolbar groups
 
 /// A caption over a group of controls — Shift, Clipboard, Generate, Pattern.
-private struct SeqGroup<Content: View>: View {
+struct SeqGroup<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 
@@ -758,6 +1037,10 @@ private struct SeqGroup<Content: View>: View {
             Text(title).font(.system(size: TopBarMetrics.captionSize)).foregroundStyle(.secondary)
             content
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(SeqColor.card))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(SeqColor.cardBorder, lineWidth: 1))
     }
 }
 
@@ -802,17 +1085,28 @@ private struct SeqWrapLayout: Layout {
 private struct SequenceEditTab: View {
     let editor: SequenceEditing
     let panels: PanelController?
+    /// Presets ▸ My patterns ▸ Save current pattern…: the name prompt.
+    @State private var savingPattern = false
+    @State private var patternName = ""
+
+    /// Reports the toolbar's height as laid out: it wraps into more rows in a narrow window, and the panel raises
+    /// the window's lowest height by the extra rows (the bars were squeezed to nothing — user's screenshots
+    /// 2026-11-18). One fixed view structure: switching between two layouts while the window is dragged was jerky.
+    var onToolbarHeight: (CGFloat) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             toolbar
+                .background(GeometryReader { inner in
+                    Color.clear.onChange(of: inner.size.height, initial: true) { _, height in onToolbarHeight(height) }
+                })
             if editor.layout.kind == .note { scaleBar }
             StepHeader(editor: editor)
             switch editor.layout.kind {
             case .note:
                 VStack(spacing: 8) {
                     VStack(spacing: 8) {
-                        NoteGrid(editor: editor)
+                        NoteGrid(editor: editor).frame(minHeight: 120)
                         GateRow(editor: editor, row: 1, label: "Step on", color: SeqColor.on, fillColumns: true)
                     }
                     .stepOverlay(editor)
@@ -822,7 +1116,7 @@ private struct SequenceEditTab: View {
             case .value, .controlled:
                 VStack(spacing: 8) {
                     VStack(spacing: 8) {
-                        ValueGrid(editor: editor)
+                        ValueGrid(editor: editor).frame(minHeight: 90)
                         GateRow(editor: editor, row: 1, label: "Trigger", color: SeqColor.trigger, fillColumns: true)
                     }
                     .stepOverlay(editor)
@@ -847,12 +1141,57 @@ private struct SequenceEditTab: View {
     /// Four labelled groups that wrap to a second row when the window is narrow: Shift, Clipboard,
     /// Generate (Random, Mutate and their settings — window-only, shared with the All tab) and Pattern.
     private var toolbar: some View {
-        SeqWrapLayout(hSpacing: 22, vSpacing: 8) {
+        SeqWrapLayout(hSpacing: 10, vSpacing: 8) {
             SeqGroup(title: "Shift") { editGroup }
             SeqGroup(title: "Clipboard") { fileGroup }
             SeqGroup(title: "Generate") { generateGroup }
+            if editor.layout.kind == .note {
+                SeqGroup(title: "Arpeggio") { arpeggioGroup }
+            }
+            if editor.layout.kind == .value || editor.layout.kind == .controlled {
+                SeqGroup(title: "Curve") { curveGroup }
+            }
             SeqGroup(title: "Pattern") { lengthGroup }
+            SeqGroup(title: "Rhythm bank") { rhythmStepper }
         }
+    }
+
+    /// Previous / next pattern of the Rhythm bank (all 122, in bank order — the numbers of the menu): auditioning
+    /// rhythms one after the other. Sets Row 1 of a SeqEvent or the step on/off row of the others; locked steps
+    /// stay; one ⌘Z, ↺ undoes it. The first step from nothing goes to pattern 1 (next) or the last (previous).
+    private var rhythmStepper: some View {
+        let total = SequenceRhythmBank.patterns.count
+        let cursor = SequenceEditorMemory.shared.rhythmCursor[editor.target]
+        return HStack(spacing: 4) {
+            TopBarButton(content: .icon("chevron.left")) { stepRhythm(-1) }
+                .help("Previous rhythm of the Rhythm bank")
+            Menu(cursor.map { "\($0 + 1) / \(total)" } ?? "– / \(total)") {
+                ForEach(SequenceRhythmBank.Role.allCases) { role in
+                    rhythmBankMenu(role.title, indices: SequenceRhythmBank.indices(of: role))
+                }
+                Divider()
+                rhythmBankMenu("All patterns", indices: Array(SequenceRhythmBank.patterns.indices))
+            }
+            .menuStyle(.button)
+            .frame(width: 86)
+            .help("Choose a rhythm from the Rhythm bank by role; the ticked one is the one chosen last")
+            TopBarButton(content: .icon("chevron.right")) { stepRhythm(1) }
+                .help("Next rhythm of the Rhythm bank")
+        }
+    }
+
+    private func stepRhythm(_ delta: Int) {
+        let total = SequenceRhythmBank.patterns.count
+        let memory = SequenceEditorMemory.shared
+        let next = memory.rhythmCursor[editor.target].map { (($0 + delta) % total + total) % total }
+            ?? (delta > 0 ? 0 : total - 1)
+        applyRhythmEntry(next)
+    }
+
+    /// Applies Rhythm bank pattern `index` and remembers it: the arrows go on from it and the menus tick it.
+    private func applyRhythmEntry(_ index: Int) {
+        SequenceEditorMemory.shared.rhythmCursor[editor.target] = index
+        editor.applyRhythmBank(index)
     }
 
     private var editGroup: some View {
@@ -861,9 +1200,12 @@ private struct SequenceEditTab: View {
                 .help("Shift pattern one step left")
             TopBarButton(content: .icon("arrow.right")) { editor.shift(1) }
                 .help("Shift pattern one step right")
-            TopBarButton(content: .text("Reverse")) { editor.reverse() }
-            TopBarButton(content: .text("Invert")) { editor.invert() }
-            TopBarButton(content: .text("Double 1–8")) { editor.doubleFirstHalf() }
+            SeqToolButton(icon: "arrow.left.arrow.right", title: "Reverse") { editor.reverse() }
+                .help("Reverse the pattern")
+            SeqToolButton(icon: "arrow.up.arrow.down", title: "Invert") { editor.invert() }
+                .help("Invert the pattern (high becomes low)")
+            SeqToolButton(icon: "square.on.square", title: "Double 1–8") { editor.doubleFirstHalf() }
+                .help("Copy steps 1–8 to 9–16")
             if editor.layout.kind == .note {
                 SeqDivider()
                 TopBarButton(content: .text("−12")) { editor.transpose(-12) }.help("Transpose one octave down")
@@ -876,22 +1218,35 @@ private struct SequenceEditTab: View {
 
     private var fileGroup: some View {
         HStack(spacing: 4) {
-            TopBarButton(content: .text("Copy")) { editor.copy() }
-            TopBarButton(content: .text("Paste"), isEnabled: SequenceEditorMemory.shared.clipboard != nil) {
-                editor.paste()
-            }
-            TopBarButton(content: .text("Clear"), outline: SeqColor.red) { editor.clear() }
+            SeqToolButton(icon: "doc.on.doc", title: "Copy") { editor.copy() }
+                .help("Copy the pattern")
+            SeqToolButton(icon: "doc.on.clipboard", title: "Paste",
+                          isEnabled: SequenceEditorMemory.shared.clipboard != nil) { editor.paste() }
+                .help("Paste the copied pattern (locked steps stay)")
+            SeqToolButton(icon: "trash", title: "Clear", tint: SeqColor.destructive, outline: SeqColor.red) { editor.clear() }
+                .help("Clear the steps (locked steps stay)")
         }
     }
 
     private var generateGroup: some View {
         @Bindable var memory = SequenceEditorMemory.shared
         return HStack(spacing: 4) {
-            TopBarButton(content: .text("Random")) { editor.randomize() }
+            SeqToolButton(icon: "dice", title: "Random", tint: SeqColor.generate) { editor.randomize() }
                 .help(editor.layout.kind == .event ? "Randomise the steps" : "Randomise the values")
             if editor.layout.kind != .event {
-                TopBarButton(content: .text("Random steps")) { editor.randomizeSteps() }
+                SeqToolButton(icon: "die.face.4", title: "Random steps", tint: SeqColor.generate) { editor.randomizeSteps() }
                     .help("Randomise which steps play (values stay)")
+            }
+            if editor.layout.kind == .note {
+                Menu("Notes") {
+                    ForEach(SequenceGenerator.allCases) { kind in
+                        Button(kind.title) { editor.generate(kind) }
+                            .help(kind.help)
+                    }
+                }
+                .menuStyle(.button)
+                .fixedSize()
+                .help("Generate a new melody in the chosen scale — one ⌘Z, ↺ puts the old notes back")
             }
             SeqNumberControl(title: "Density %", value: memory.density, range: 0 ... 100,
                              state: editor.state, patchGesture: false) { memory.density = $0 }
@@ -902,14 +1257,125 @@ private struct SequenceEditTab: View {
             SeqNumberControl(title: "Mutate %", value: memory.mutate, range: 0 ... 100,
                              state: editor.state, patchGesture: false) { memory.mutate = $0 }
                 .padding(.leading, 6)
-            TopBarButton(content: .text("Mutate")) { editor.mutate() }
+            SeqToolButton(icon: "wand.and.stars", title: "Mutate", tint: SeqColor.generate) { editor.mutate() }
                 .help(editor.layout.kind == .event
                     ? "Flip this share of the steps, keep the rest"
                     : "Draw new values for this share of the steps, keep the rest")
+            if editor.layout.kind == .value || editor.layout.kind == .controlled {
+                SeqNumberControl(title: "Human %", value: memory.humanizeAmount, range: 0 ... 100,
+                                 state: editor.state, patchGesture: false) { memory.humanizeAmount = $0 }
+                    .help("Humanize: the largest nudge, in percent of the range (100 % = ±63)")
+                    .padding(.leading, 6)
+                SeqToolButton(icon: "hand.draw", title: "Humanize", tint: SeqColor.generate) { editor.humanize() }
+                    .help("Nudge the value of every step that plays by a small random amount — accents and "
+                        + "modulation that breathe. Resting and locked steps stay. Values only: a G2 step has no timing.")
+            }
             TopBarButton(content: .icon("arrow.counterclockwise"), isEnabled: editor.canUndoRandom) {
                 editor.undoRandom()
             }
             .help("Undo the last Random or Mutate")
+        }
+    }
+
+    /// Shape, cycles, phase, low and high end, and the button that writes the curve into the steps
+    /// (SeqVal, SeqLev, SeqCtr). Low and High are percentages of the whole range; for a bipolar SeqVal
+    /// 0 % is −64 and 100 % is +63.
+    private var curveGroup: some View {
+        @Bindable var memory = SequenceEditorMemory.shared
+        return HStack(spacing: 4) {
+            Menu(memory.curveShape.title) {
+                ForEach(SequenceCurve.allCases) { shape in
+                    Button(shape.title) { memory.curveShape = shape }
+                        .help(shape.help)
+                }
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .help(memory.curveShape.help)
+            SeqNumberControl(title: "Cycles", value: memory.curveCycles, range: 1 ... 4,
+                             state: editor.state, patchGesture: false) { memory.curveCycles = $0 }
+                .help("How many times the shape repeats over the played steps")
+                .padding(.leading, 6)
+            SeqNumberControl(title: "Phase", value: memory.curvePhase, range: 0 ... 15,
+                             state: editor.state, patchGesture: false) { memory.curvePhase = $0 }
+                .help("Moves the shape along by this many steps")
+                .padding(.leading, 6)
+            SeqNumberControl(title: "Low %", value: memory.curveLow, range: 0 ... 100,
+                             state: editor.state, patchGesture: false)
+            {
+                memory.curveLow = min($0, memory.curveHigh)
+            }
+            .help("The lowest value the curve reaches, in percent of the range")
+            .padding(.leading, 6)
+            SeqNumberControl(title: "High %", value: memory.curveHigh, range: 0 ... 100,
+                             state: editor.state, patchGesture: false)
+            {
+                memory.curveHigh = max($0, memory.curveLow)
+            }
+            .help("The highest value the curve reaches, in percent of the range")
+            .padding(.leading, 6)
+            SeqToolButton(icon: "point.topleft.down.curvedto.point.bottomright.up", title: "Curve",
+                          tint: SeqColor.generate) { editor.generateCurve() }
+                .help("Write the curve into the values — one ⌘Z, ↺ puts the old values back")
+        }
+    }
+
+    /// Chord, direction, octaves and the button that writes the arpeggio into the steps (SeqNote).
+    private var arpeggioGroup: some View {
+        @Bindable var memory = SequenceEditorMemory.shared
+        let root = NoteName.pitchClass(memory.root)
+        let scale = SequenceArpeggio.degreeScale(memory.scale)
+        let degrees = SequenceArpeggio.degreeCount(of: memory.scale)
+        func degreeName(_ degree: Int, seventh: Bool) -> String {
+            SequenceArpeggio.scaleChordName(degree: degree, seventh: seventh, scale: memory.scale,
+                                            root: memory.root) { NoteName.pitchClass($0) }
+        }
+        let chordTitle: String = switch memory.arpChord {
+        case let .type(type): root + type.suffix
+        case let .scaleDegree(degree, seventh): degreeName(min(degree, degrees - 1), seventh: seventh)
+        case .pattern: "Pattern notes"
+        }
+        return HStack(spacing: 4) {
+            Menu(chordTitle) {
+                Section("Chord on \(root)") {
+                    ForEach(ChordType.allCases) { type in
+                        Button("\(root)\(type.suffix) — \(type.title)") { memory.arpChord = .type(type) }
+                    }
+                }
+                Section("Triads of \(scale.title)") {
+                    ForEach(0 ..< degrees, id: \.self) { degree in
+                        Button("\(degree + 1) — \(degreeName(degree, seventh: false))") {
+                            memory.arpChord = .scaleDegree(degree, seventh: false)
+                        }
+                    }
+                }
+                Section("Seventh chords of \(scale.title)") {
+                    ForEach(0 ..< degrees, id: \.self) { degree in
+                        Button("\(degree + 1) — \(degreeName(degree, seventh: true))") {
+                            memory.arpChord = .scaleDegree(degree, seventh: true)
+                        }
+                    }
+                }
+                Divider()
+                Button("Notes of the pattern") { memory.arpChord = .pattern }
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .help("Chord to play: a type on the root, a chord of the scale, or the notes the pattern already has")
+            Menu(memory.arpDirection.title) {
+                ForEach(ArpeggioDirection.allCases) { direction in
+                    Button(direction.title) { memory.arpDirection = direction }
+                }
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .help("Order the chord notes are played in")
+            SeqNumberControl(title: "Oct", value: memory.arpOctaves, range: 1 ... 3,
+                             state: editor.state, patchGesture: false) { memory.arpOctaves = $0 }
+                .help("How many octaves the chord spans")
+                .padding(.leading, 6)
+            SeqToolButton(icon: "stairs", title: "Arpeggio", tint: SeqColor.generate) { editor.arpeggiate() }
+                .help("Write the chord into the steps — one ⌘Z, ↺ puts the old notes back")
         }
     }
 
@@ -990,13 +1456,82 @@ private struct SequenceEditTab: View {
                 }
             }
             if editor.layout.loopIndex != nil {
-                TopBarButton(content: .text("Loop"), isOn: editor.isLooping, tint: SeqColor.blue) {
+                SeqToolButton(icon: "repeat", title: "Loop", isOn: editor.isLooping) {
                     editor.setLooping(!editor.isLooping)
                 }
                 .help("Loop, or play once (1-Cycle, used in chains)")
             }
+            TopBarButton(content: .icon("chevron.left")) { stepPreset(-1) }
+                .help("Previous preset: the same list as the Presets menu, and your own patterns after it")
             presetsMenu
+            TopBarButton(content: .icon("chevron.right")) { stepPreset(1) }
+                .help("Next preset: the same list as the Presets menu, and your own patterns after it")
         }
+    }
+
+    /// What the arrows step through, in the order of the Presets menu: scale runs (SeqNote), the ready-made
+    /// patterns of this kind, then the user's own patterns of this kind.
+    /// The style submenus of this kind's presets, in the order they first appear.
+    private var presetGroups: [String] {
+        let list = SequencePresets.figures
+        guard editor.layout.kind == .note else { return [] }
+        var seen: [String] = []
+        for group in list.compactMap(\.group) where !seen.contains(group) {
+            seen.append(group)
+        }
+        return seen
+    }
+
+    /// How many ready-made patterns (not scale runs, not My patterns) the Presets menu holds for this kind.
+    private var presetListCount: Int {
+        switch editor.layout.kind {
+        case .note: SequencePresets.figures.count
+        case .event: SequencePresets.rhythms.count
+        case .value, .controlled: SequencePresets.curves.count
+        }
+    }
+
+    private var presetEntries: [(name: String, apply: () -> Void)] {
+        var entries: [(name: String, apply: () -> Void)] = []
+        switch editor.layout.kind {
+        case .note:
+            entries.append(("Scale up", { editor.applyScaleRun(descending: false) }))
+            entries.append(("Scale down", { editor.applyScaleRun(descending: true) }))
+            entries += SequencePresets.figures.map { preset in (preset.name, { editor.applyPreset(preset) }) }
+        case .event:
+            entries += SequencePresets.rhythms.map { preset in (preset.name, { editor.applyPreset(preset) }) }
+        case .value, .controlled:
+            entries += SequencePresets.curves.map { preset in (preset.name, { editor.applyPreset(preset) }) }
+        }
+        let mine = SequenceEditorMemory.shared.library.patterns(in: editor.userCategory)
+        entries += mine.map { pattern in ("My: \(pattern.name)", { editor.applyUserPattern(pattern) }) }
+        return entries
+    }
+
+    /// Previous / next preset: applies it like a pick from the menu (one ⌘Z, ↺ undoes it). The first step
+    /// from nothing goes to the first preset (next) or the last (previous), and the list wraps round.
+    private func stepPreset(_ delta: Int) {
+        let entries = presetEntries
+        guard !entries.isEmpty else { return }
+        let memory = SequenceEditorMemory.shared
+        let count = entries.count
+        let next = memory.presetCursor[editor.target].map { (($0 + delta) % count + count) % count }
+            ?? (delta > 0 ? 0 : count - 1)
+        applyPresetEntry(next)
+    }
+
+    /// Applies entry `index` of the preset list and remembers it: the arrows go on from it and the menu
+    /// ticks it.
+    private func applyPresetEntry(_ index: Int) {
+        let entries = presetEntries
+        guard entries.indices.contains(index) else { return }
+        SequenceEditorMemory.shared.presetCursor[editor.target] = index
+        entries[index].apply()
+    }
+
+    /// A menu item that shows a tick when it is the pattern last chosen (menu or arrows).
+    private func tickedItem(_ title: String, isCurrent: Bool, action: @escaping () -> Void) -> some View {
+        Toggle(title, isOn: Binding(get: { isCurrent }, set: { _ in action() }))
     }
 
     /// Ready-made patterns: curves (SeqVal / SeqLev / SeqCtr), note figures and scale runs (SeqNote),
@@ -1008,21 +1543,98 @@ private struct SequenceEditTab: View {
         case .note: SequencePresets.figures
         case .value, .controlled: SequencePresets.curves
         }
-        return Menu("Presets") {
+        let entries = presetEntries
+        let cursor = SequenceEditorMemory.shared.presetCursor[editor.target]
+        let current = cursor.flatMap { entries.indices.contains($0) ? entries[$0].name : nil }
+        // Entry numbers of `presetEntries`: the two scale runs (SeqNote), the ready-made patterns, then My patterns.
+        let first = kind == .note ? 2 : 0
+        return Menu(current ?? "Presets") {
             if kind == .note {
-                Button("Scale up") { editor.applyScaleRun(descending: false) }
-                Button("Scale down") { editor.applyScaleRun(descending: true) }
+                tickedItem("Scale up", isCurrent: cursor == 0) { applyPresetEntry(0) }
+                tickedItem("Scale down", isCurrent: cursor == 1) { applyPresetEntry(1) }
                 Divider()
             }
-            ForEach(list) { preset in
-                Button(preset.name) { editor.applyPreset(preset) }
+            // The main list, then one submenu per style (note figures only; the arrows step through all of them
+            // in this order).
+            ForEach(Array(list.enumerated()).filter { $0.element.group == nil }, id: \.element.id) { offset, preset in
+                tickedItem(preset.name, isCurrent: cursor == first + offset) { applyPresetEntry(first + offset) }
             }
+            ForEach(presetGroups, id: \.self) { group in
+                Menu(group) {
+                    ForEach(Array(list.enumerated()).filter { $0.element.group == group }, id: \.element.id) { offset, preset in
+                        tickedItem(preset.name, isCurrent: cursor == first + offset) { applyPresetEntry(first + offset) }
+                    }
+                }
+            }
+            Divider()
+            Menu("Rhythm bank") {
+                ForEach(SequenceRhythmBank.Role.allCases) { role in
+                    rhythmBankMenu(role.title, indices: SequenceRhythmBank.indices(of: role))
+                }
+                Divider()
+                rhythmBankMenu("All patterns", indices: Array(SequenceRhythmBank.patterns.indices))
+            }
+            myPatternsMenu
         }
         .menuStyle(.button)
-        .fixedSize()
+        .frame(width: 120)
+        .alert("Save pattern", isPresented: $savingPattern) {
+            TextField("Name", text: $patternName)
+            Button("Save") { editor.saveCurrentAsUserPattern(named: patternName) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Saved under Presets ▸ My patterns, among your \(editor.userCategory.title) patterns. "
+                + "Same name replaces the old one.")
+        }
         .help(kind == .note
-            ? "Ready-made note figures from the root note (set in the scale bar)"
-            : "Ready-made patterns — one ⌘Z, ↺ puts the old pattern back")
+            ? "Ready-made note figures from the root note (set in the scale bar); Rhythm bank sets which steps play"
+            : kind == .event
+            ? "Ready-made rhythms — one ⌘Z, ↺ puts the old pattern back; Rhythm bank sets Row 1"
+            : "Ready-made patterns — one ⌘Z, ↺ puts the old pattern back; Rhythm bank sets which steps play")
+    }
+
+    /// The user's own patterns for this kind of sequencer (notes, rhythms or curves — kept apart), with
+    /// Save and Delete. One undo step to load one; ↺ puts the old pattern back.
+    private var myPatternsMenu: some View {
+        let mine = SequenceEditorMemory.shared.library.patterns(in: editor.userCategory)
+        return Menu("My patterns (\(mine.count))") {
+            Button("Save current pattern…") {
+                patternName = ""
+                savingPattern = true
+            }
+            if !mine.isEmpty {
+                Divider()
+                let first = (editor.layout.kind == .note ? 2 : 0) + presetListCount
+                let cursor = SequenceEditorMemory.shared.presetCursor[editor.target]
+                ForEach(Array(mine.enumerated()), id: \.element.id) { offset, pattern in
+                    tickedItem(pattern.name, isCurrent: cursor == first + offset) { applyPresetEntry(first + offset) }
+                }
+                Divider()
+                Menu("Delete") {
+                    ForEach(mine) { pattern in
+                        Button(pattern.name) { editor.deleteUserPattern(pattern) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One entry of Presets ▸ Rhythm bank: the patterns of a role (or all), in pages of 20 named by
+    /// their first and last pattern number.
+    private func rhythmBankMenu(_ title: String, indices: [Int]) -> some View {
+        Menu("\(title) (\(indices.count))") {
+            ForEach(SequenceRhythmBank.pages(of: indices), id: \.first) { page in
+                Menu("\(page[0] + 1)–\(page[page.count - 1] + 1)") {
+                    ForEach(page, id: \.self) { index in
+                        tickedItem(SequenceRhythmBank.label(at: index),
+                                   isCurrent: SequenceEditorMemory.shared.rhythmCursor[editor.target] == index)
+                        {
+                            applyRhythmEntry(index)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private var scaleBar: some View {
@@ -1142,15 +1754,25 @@ private struct NoteGrid: View {
     let editor: SequenceEditing
     @State private var stroke = Stroke()
     @State private var pointer: CGPoint?
+    /// Lowest note shown when a drag on the keyboard began.
+    @State private var dragStartLow: Int?
 
     var body: some View {
         let low = editor.lowNote
         let rows = editor.visibleNotes
         let memory = SequenceEditorMemory.shared
         HStack(spacing: 0) {
-            keyboard(low: low, rows: rows)
-                .frame(width: labelWidth - 4)
-                .padding(.trailing, 4)
+            // Grab the keyboard and drag it up or down, or use the scroll wheel — the piano roll shows
+            // 12 or 24 of the 128 notes, and notes outside it are outlined at the top or bottom edge.
+            GeometryReader { geometry in
+                let rowHeight = geometry.size.height / CGFloat(max(1, rows))
+                keyboard(low: low, rows: rows)
+                    .gesture(scrollDrag(rowHeight: rowHeight))
+                    .background(NoteScrollWheel(rowHeight: rowHeight) { editor.scrollNotes(by: $0) })
+                    .help("Drag up or down to scroll the notes; the scroll wheel works over the whole piano roll")
+            }
+            .frame(width: labelWidth - 4)
+            .padding(.trailing, 4)
 
             GeometryReader { geometry in
                 ZStack(alignment: .topLeading) {
@@ -1166,11 +1788,18 @@ private struct NoteGrid: View {
                         }
                         for step in 0 ..< SequencerLayout.steps {
                             let note = editor.values[step]
-                            guard visible(note, low: low, rows: rows) else { continue }
-                            let index = low + rows - 1 - note
+                            let strong = editor.gates[step] != 0
+                            // A note outside the window is an outline on the top or bottom row, as the
+                            // module draws it — scroll the keyboard to see it.
+                            let inside = visible(note, low: low, rows: rows)
+                            let index = inside ? low + rows - 1 - note : (note >= low + rows ? 0 : rows - 1)
                             let rect = CGRect(x: CGFloat(step) * columnWidth, y: CGFloat(index) * rowHeight,
                                               width: columnWidth, height: rowHeight).insetBy(dx: 1, dy: 1)
-                            drawCell(context, rect: rect, color: SeqColor.on, strong: editor.gates[step] != 0, radius: 2)
+                            if inside {
+                                drawCell(context, rect: rect, color: SeqColor.on, strong: strong, radius: 2)
+                            } else {
+                                drawOutlineCell(context, rect: rect, color: SeqColor.on, strong: strong, radius: 2)
+                            }
                         }
                         shadeBeyondLength(context: context, size: size, columnWidth: columnWidth, length: editor.length)
                         drawBeatLines(context: context, size: size, columnWidth: columnWidth)
@@ -1184,9 +1813,13 @@ private struct NoteGrid: View {
                     }
                     readout(in: geometry.size, low: low, rows: rows)
                 }
+                .background(NoteScrollWheel(rowHeight: geometry.size.height / CGFloat(max(1, rows))) {
+                    editor.scrollNotes(by: $0)
+                })
             }
-            .background(Color(white: 0.09))
+            .background(SeqColor.field)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(SeqColor.fieldBorder, lineWidth: 1))
         }
     }
 
@@ -1213,6 +1846,12 @@ private struct NoteGrid: View {
                 if played.contains(note) {
                     let tint = black ? CGRect(x: 0, y: y + 0.5, width: size.width * 0.62, height: rowHeight - 1) : white.insetBy(dx: 0, dy: 0.5)
                     context.fill(Path(roundedRect: tint, cornerRadius: 1.5), with: .color(SeqColor.green.opacity(0.75)))
+                }
+                // Black keys carry their names too (white on the dark key), when the rows are tall enough to read.
+                if black, rowHeight >= 10 {
+                    context.draw(Text(NoteName.name(note)).font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.85)),
+                        at: CGPoint(x: size.width * 0.62 - 4, y: white.midY), anchor: .trailing)
                 }
                 if note % 12 == 0 || (!black && rowHeight >= 11) {
                     context.draw(Text(NoteName.name(note)).font(.system(size: 8, weight: note % 12 == 0 ? .semibold : .regular, design: .monospaced))
@@ -1250,6 +1889,18 @@ private struct NoteGrid: View {
         note >= low && note < low + rows
     }
 
+    /// Dragging the keyboard moves the notes with the pointer: down shows higher notes, up lower ones.
+    private func scrollDrag(rowHeight: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { drag in
+                let start = dragStartLow ?? editor.lowNote
+                dragStartLow = start
+                guard rowHeight > 0 else { return }
+                editor.setLowNote(start + Int((drag.translation.height / rowHeight).rounded()))
+            }
+            .onEnded { _ in dragStartLow = nil }
+    }
+
     private func drawGesture(size: CGSize, low: Int, rows: Int) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { drag in
@@ -1272,7 +1923,7 @@ private struct NoteGrid: View {
 
 /// Probability of each step: the bars of the Chance lane that gates this sequencer's trigger
 /// (a SeqLev feeding the Prob input of the RndTrig that the trigger passes through). Without a
-/// Chance lane a button adds one. SeqEvent (two trigger rows) uses the Lanes tab.
+/// Chance lane a button adds one. SeqEvent (two trigger rows) uses Add lane in the All tab.
 private struct ProbabilityRow: View {
     let editor: SequenceEditing
     private var memory: SequenceEditorMemory {
@@ -1416,8 +2067,9 @@ private struct ValueGrid: View {
                         editor.state.endParameterGesture()
                     })
             }
-            .background(Color(white: 0.09))
+            .background(SeqColor.field)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(SeqColor.fieldBorder, lineWidth: 1))
         }
     }
 }
@@ -1438,6 +2090,18 @@ private struct GateRow: View {
     /// height comes from the aspect ratio, which only works when nothing squeezes the row.
     var rowHeight: CGFloat?
     @State private var stroke = Stroke()
+    /// Width of the whole row as laid out, to give the squares their height from it (see `exactHeight`).
+    @State private var rowWidth: CGFloat = 0
+
+    /// The row's height: given by the caller (All tab), or — with `fillColumns` — one column of the grid
+    /// above, measured from the row's own width. An aspect ratio did the same until the window was too
+    /// low for it: then the whole row shrank sideways instead of keeping its size (user's screenshot
+    /// 2026-11-17).
+    private var exactHeight: CGFloat? {
+        if let rowHeight { return rowHeight }
+        guard fillColumns, rowWidth > labelWidth else { return nil }
+        return (rowWidth - labelWidth) / CGFloat(SequencerLayout.steps)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1475,8 +2139,11 @@ private struct GateRow: View {
                         editor.state.endParameterGesture()
                     })
             }
-            .modifier(RowHeight(fillColumns: fillColumns, cell: cell, exact: rowHeight))
+            .modifier(RowHeight(fillColumns: fillColumns, cell: cell, exact: exactHeight))
         }
+        .background(GeometryReader { geometry in
+            Color.clear.onChange(of: geometry.size.width, initial: true) { _, width in rowWidth = width }
+        })
     }
 }
 
@@ -1507,14 +2174,20 @@ private struct SequenceAllTab: View {
     let state: PatchState
     let slot: Int
     let area: PatchArea
+    /// The sequencer the window follows: Add lane works on it while no lane is selected.
+    let currentID: Int?
     /// Height the lane list needs, so the window can be fitted to it once.
     let onFit: (WindowFit) -> Void
     let open: (Int) -> Void
     @State private var selected: Set<Int> = []
+    /// The lane a ⇧-click counts from (the last one clicked).
+    @State private var anchor: Int?
     @State private var viewportHeight: CGFloat = 0
     /// Width of the lane list as laid out — the step squares are as wide as a column of the
     /// bars (user's note 2026-11-15), so lane heights follow the window width.
     @State private var listWidth: CGFloat = 0
+    /// Height of the toolbar as laid out: more rows in a narrow window, and the window is fitted to it.
+    @State private var toolbarHeight: CGFloat = 0
 
     /// One line of the lane list: a clock header or a sequencer.
     private enum Row: Hashable {
@@ -1527,10 +2200,15 @@ private struct SequenceAllTab: View {
         let modules = Dictionary(uniqueKeysWithValues: patch.modules(in: area).map { ($0.id, $0) })
         let groups = SequencerClockGroup.groups(in: patch, area: area)
         let rows = rows(of: groups)
-        let natural = naturalHeight(rows, modules: modules, column: column)
+        let valueRows = fittedValueRows(rows, modules: modules, column: column)
+        let natural = naturalHeight(rows, modules: modules, column: column, valueRows: valueRows)
         let token = laneToken(rows, modules: modules)
+        let edges = G2SignalGraph(patch: patch, area: area).edges
         VStack(alignment: .leading, spacing: 8) {
-            toolbar(modules: modules)
+            toolbar(modules: modules, edges: edges)
+                .background(GeometryReader { inner in
+                    Color.clear.onChange(of: inner.size.height, initial: true) { _, height in toolbarHeight = height }
+                })
             GeometryReader { geometry in
                 ScrollView {
                     // One flat list: every lane gets the same share of extra height, whatever
@@ -1545,7 +2223,9 @@ private struct SequenceAllTab: View {
                             case let .lane(id):
                                 if let module = modules[id], let layout = SequencerLayout(typeID: module.typeID) {
                                     lane(SequenceEditing(state: state, target: .init(slot: slot, area: area, moduleID: id),
-                                                         module: module, layout: layout))
+                                                         module: module, layout: layout),
+                                         targets: targets(of: id, edges: edges, modules: modules),
+                                         valueRows: valueRows)
                                 }
                             }
                         }
@@ -1563,23 +2243,30 @@ private struct SequenceAllTab: View {
                 }
                 .onChange(of: natural) { _, newValue in report(natural: newValue, token: token) }
                 .onChange(of: listWidth) { report(natural: natural, token: token) }
+                .onChange(of: toolbarHeight) { report(natural: natural, token: token) }
             }
         }
     }
 
     /// The same four groups as in Edit, acting on the selected lanes — one action on all of them
     /// is one ⌘Z. Copy takes the first selected lane; Paste writes it into every selected one.
-    private func toolbar(modules: [Int: G2Module]) -> some View {
+    private func toolbar(modules: [Int: G2Module], edges: [G2SignalGraph.Edge]) -> some View {
         @Bindable var memory = SequenceEditorMemory.shared
         let on = !selected.isEmpty
+        // Add lane works on the one selected lane, or on the sequencer the window follows while nothing is selected.
+        let addTarget = selected.count == 1 ? selected.first : (selected.isEmpty ? currentID : nil)
         let first = selected.sorted().first.flatMap { editor(for: $0, modules: modules) }
         let allLooping = on && selected.allSatisfy { editor(for: $0, modules: modules)?.isLooping == true }
-        return SeqWrapLayout(hSpacing: 22, vSpacing: 8) {
+        return SeqWrapLayout(hSpacing: 10, vSpacing: 8) {
             SeqGroup(title: "Lanes") {
-                Text(on ? "\(selected.count) selected" : "None selected")
-                    .font(.system(size: TopBarMetrics.labelSize)).foregroundStyle(.secondary)
-                    .frame(height: TopBarMetrics.controlSide)
-                    .help("Click a lane to select it, ⇧- or ⌘-click to add more")
+                HStack(spacing: 8) {
+                    Text(on ? "\(selected.count) selected" : "None selected")
+                        .font(.system(size: TopBarMetrics.labelSize)).foregroundStyle(.secondary)
+                        .frame(height: TopBarMetrics.controlSide)
+                        .help("Click a lane to select it, ⌘-click to add or remove one, ⇧-click to select a range. "
+                            + "Double-click a lane to open it in Edit.")
+                    addLaneMenu(sequencerID: addTarget, modules: modules, edges: edges)
+                }
             }
             SeqGroup(title: "Shift") {
                 HStack(spacing: 4) {
@@ -1587,28 +2274,28 @@ private struct SequenceAllTab: View {
                         .help("Shift the selected lanes one step left")
                     TopBarButton(content: .icon("arrow.right"), isEnabled: on) { apply(modules) { $0.shift(1) } }
                         .help("Shift the selected lanes one step right")
-                    TopBarButton(content: .text("Reverse"), isEnabled: on) { apply(modules) { $0.reverse() } }
-                    TopBarButton(content: .text("Invert"), isEnabled: on) { apply(modules) { $0.invert() } }
-                    TopBarButton(content: .text("Double 1–8"), isEnabled: on) { apply(modules) { $0.doubleFirstHalf() } }
+                    SeqToolButton(icon: "arrow.left.arrow.right", title: "Reverse", isEnabled: on) { apply(modules) { $0.reverse() } }
+                    SeqToolButton(icon: "arrow.up.arrow.down", title: "Invert", isEnabled: on) { apply(modules) { $0.invert() } }
+                    SeqToolButton(icon: "square.on.square", title: "Double 1–8", isEnabled: on) { apply(modules) { $0.doubleFirstHalf() } }
                 }
             }
             SeqGroup(title: "Clipboard") {
                 HStack(spacing: 4) {
-                    TopBarButton(content: .text("Copy"), isEnabled: on) { first?.copy() }
+                    SeqToolButton(icon: "doc.on.doc", title: "Copy", isEnabled: on) { first?.copy() }
                         .help("Copy the first selected lane")
-                    TopBarButton(content: .text("Paste"), isEnabled: on && memory.clipboard != nil) {
+                    SeqToolButton(icon: "doc.on.clipboard", title: "Paste", isEnabled: on && memory.clipboard != nil) {
                         apply(modules) { $0.paste() }
                     }
-                    TopBarButton(content: .text("Clear"), isEnabled: on, outline: SeqColor.red) {
+                    SeqToolButton(icon: "trash", title: "Clear", tint: SeqColor.destructive, isEnabled: on, outline: SeqColor.red) {
                         apply(modules) { $0.clear() }
                     }
                 }
             }
             SeqGroup(title: "Generate") {
                 HStack(spacing: 4) {
-                    TopBarButton(content: .text("Random"), isEnabled: on) { apply(modules) { $0.randomize() } }
+                    SeqToolButton(icon: "dice", title: "Random", tint: SeqColor.generate, isEnabled: on) { apply(modules) { $0.randomize() } }
                         .help("Randomise the selected lanes (locked steps stay)")
-                    TopBarButton(content: .text("Random steps"), isEnabled: on) {
+                    SeqToolButton(icon: "die.face.4", title: "Random steps", tint: SeqColor.generate, isEnabled: on) {
                         apply(modules) { $0.randomizeSteps() }
                     }
                     SeqNumberControl(title: "Density %", value: memory.density, range: 0 ... 100,
@@ -1617,15 +2304,21 @@ private struct SequenceAllTab: View {
                     SeqNumberControl(title: "Mutate %", value: memory.mutate, range: 0 ... 100,
                                      state: state, patchGesture: false) { memory.mutate = $0 }
                         .padding(.leading, 6)
-                    TopBarButton(content: .text("Mutate"), isEnabled: on) { apply(modules) { $0.mutate() } }
+                    SeqToolButton(icon: "wand.and.stars", title: "Mutate", tint: SeqColor.generate, isEnabled: on) { apply(modules) { $0.mutate() } }
                         .help("Change a share of the steps of the selected lanes")
+                    SeqNumberControl(title: "Human %", value: memory.humanizeAmount, range: 0 ... 100,
+                                     state: state, patchGesture: false) { memory.humanizeAmount = $0 }
+                        .padding(.leading, 6)
+                    SeqToolButton(icon: "hand.draw", title: "Humanize", tint: SeqColor.generate, isEnabled: on) { apply(modules) { $0.humanize() } }
+                        .help("Nudge the values of the steps that play in the selected value lanes (SeqVal, SeqLev, "
+                            + "SeqCtr); notes and rhythms are left alone")
                 }
             }
             SeqGroup(title: "Pattern") {
                 HStack(spacing: 4) {
                     SeqNumberControl(title: "Length", value: first?.length ?? 16, range: 1 ... 16, state: state,
                                      isEnabled: on) { length in apply(modules) { $0.setLength(length) } }
-                    TopBarButton(content: .text("Loop"), isOn: allLooping, tint: SeqColor.blue, isEnabled: on) {
+                    SeqToolButton(icon: "repeat", title: "Loop", isOn: allLooping, isEnabled: on) {
                         apply(modules) { $0.setLooping(!allLooping) }
                     }
                     .help("Loop, or play once (1-Cycle, used in chains)")
@@ -1634,20 +2327,102 @@ private struct SequenceAllTab: View {
         }
     }
 
+    /// "Add lane": Chance for each trigger output of the sequencer (SeqEvent: both rows) and Accent. The
+    /// output that already feeds a RndTrig is marked. Modulation comes later.
+    private func addLaneMenu(sequencerID: Int?, modules: [Int: G2Module],
+                             edges: [G2SignalGraph.Edge]) -> some View
+    {
+        let module = sequencerID.flatMap { modules[$0] }
+        let outputs = module.map { PatchState.chanceOutputs(typeID: $0.typeID) } ?? []
+        let canAdd = slot == state.selectedSlot
+        let fits = state.chanceLaneFits(slot: slot, area: area)
+        return Menu {
+            ForEach(outputs, id: \.output) { item in
+                let done = edges.contains { edge in
+                    edge.fromModule == sequencerID && edge.fromOutput == item.output
+                        && modules[edge.toModule]?.typeID == PatchState.chanceTriggerTypeID
+                }
+                Button("Chance — \(item.title)\(done ? " (already added)" : "")") {
+                    if let sequencerID {
+                        state.addChanceLane(slot: slot, area: area, sequencerID: sequencerID,
+                                            trigOutput: item.output,
+                                            label: outputs.count > 1 ? "Chance \(item.title.suffix(1))" : "Chance")
+                    }
+                }
+                .disabled(done || !canAdd || !fits)
+            }
+            let accentName = module.map { PatchState.accentLabel(sequencerName: sequencerName($0)) }
+            let accentDone = accentName.flatMap { state.accentLaneID(slot: slot, area: area, label: $0) } != nil
+            Button("Accent\(accentDone ? " (already added)" : "")") {
+                if let accentName, let sequencerID {
+                    state.addAccentLane(slot: slot, area: area, sequencerID: sequencerID, label: accentName)
+                }
+            }
+            .disabled(accentDone || !canAdd || !state.accentLaneFits(slot: slot, area: area))
+            .help("A SeqLev that walks with this sequencer; its bars are the strength of each step. "
+                + "Cable its Val output where you want it (VCA, filter…). Euclid can fill it.")
+            Divider()
+            Text(fits
+                ? "Adds a SeqLev and a RndTrig (about 2.5 % cycles), wired to the same clock. One ⌘Z removes them."
+                : "Not enough DSP left in this area for a Chance lane (it would pass 100 %).")
+        } label: {
+            Label("Add lane", systemImage: "plus")
+        }
+        .menuStyle(.button)
+        .fixedSize()
+        .disabled(outputs.isEmpty)
+        .help(sequencerID == nil
+            ? "Click one lane first, then add a lane to it"
+            : "Add a lane to the selected sequencer (or to the one the window follows, while none is selected)")
+    }
+
+    /// Where the module's output cables go: "Module · Input", the first one and a count of the rest.
+    private func targets(of id: Int, edges: [G2SignalGraph.Edge], modules: [Int: G2Module]) -> [String] {
+        edges.filter { $0.fromModule == id }.compactMap { edge in
+            guard let destination = modules[edge.toModule] else { return nil }
+            let def = ModuleDatabase.module(id: destination.typeID)
+            let input = def.flatMap { $0.inputs.indices.contains(edge.toInput) ? $0.inputs[edge.toInput].name : nil }
+            let label = destination.label.isEmpty ? (def?.shortName ?? "Module") : destination.label
+            return input.map { "\(label) · \($0)" } ?? label
+        }
+    }
+
+    /// Under the lane's name: where its output goes ("→ Note · In2 +1"), or "no cable out".
+    private func targetChip(_ targets: [String]) -> some View {
+        let text = targets.isEmpty ? "no cable out"
+            : (targets.count == 1 ? "→ \(targets[0])" : "→ \(targets[0]) +\(targets.count - 1)")
+        return Text(text)
+            .font(.system(size: 10))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .foregroundStyle(targets.isEmpty ? Color.secondary : SeqColor.blue)
+            .padding(.horizontal, 7).padding(.vertical, 1)
+            .overlay(Capsule().strokeBorder(targets.isEmpty ? SeqColor.cardBorder : SeqColor.blue.opacity(0.6)))
+            .frame(maxWidth: 130, alignment: .leading)
+            .help(targets.joined(separator: "\n"))
+    }
+
     private func editor(for id: Int, modules: [Int: G2Module]) -> SequenceEditing? {
         guard let module = modules[id], let layout = SequencerLayout(typeID: module.typeID) else { return nil }
         return SequenceEditing(state: state, target: .init(slot: slot, area: area, moduleID: id),
                                module: module, layout: layout)
     }
 
-    /// A click selects the lane (⇧ or ⌘ adds or removes it); clicking the only selected lane clears.
+    /// A click on a lane, selected the way files are in the Finder (`SequenceLaneSelection`): a click selects
+    /// one, ⌘-click adds or removes one, ⇧-click selects the range from the last lane clicked. A double
+    /// click opens the sequencer in Edit, like the pencil button.
     private func tap(_ id: Int) {
-        let flags = NSEvent.modifierFlags
-        if flags.contains(.shift) || flags.contains(.command) {
-            if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
-        } else {
-            selected = selected == [id] ? [] : [id]
+        if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+            open(id)
+            return
         }
+        guard state.slots.indices.contains(slot) else { return }
+        let order = SequencerClockGroup.groups(in: state.slots[slot], area: area).flatMap(\.sequencerIDs)
+        let flags = NSEvent.modifierFlags
+        var model = SequenceLaneSelection(selected: selected, anchor: anchor)
+        model.click(id, order: order, shift: flags.contains(.shift), command: flags.contains(.command))
+        selected = model.selected
+        anchor = model.anchor
     }
 
     private func rows(of groups: [SequencerClockGroup]) -> [Row] {
@@ -1665,6 +2440,7 @@ private struct SequenceAllTab: View {
     private static let headerHeight: CGFloat = 29
     /// The bars are at least this many green squares tall (user's note 2026-11-15: 4 was too much).
     private static let valueRows: CGFloat = 3
+    private static let minValueRows: CGFloat = 1.5
 
     /// One step column of the grid: gate squares are as wide as the bars, so a gate row is
     /// exactly this tall.
@@ -1672,24 +2448,40 @@ private struct SequenceAllTab: View {
         listWidth > 0 ? max(12, (listWidth - Self.beforeGrid) / CGFloat(SequencerLayout.steps)) : 30
     }
 
-    private func minLaneHeight(_ kind: SequencerLayout.Kind, column: CGFloat) -> CGFloat {
-        // The left column (name, Len/Loop, M/S) is about 86 pt tall.
-        let left = Self.laneChrome + 86
+    private func minLaneHeight(_ kind: SequencerLayout.Kind, column: CGFloat, valueRows: CGFloat) -> CGFloat {
+        // The left column (name, target chip, Len/Loop, M/S) is about 104 pt tall.
+        let left = Self.laneChrome + 104
         return switch kind {
         case .event: max(left, Self.laneChrome + 2 * column + 2)
-        case .note, .value, .controlled: max(left, Self.laneChrome + Self.valueRows * column + 2 + column)
+        case .note, .value, .controlled: max(left, Self.laneChrome + valueRows * column + 2 + column)
         }
     }
 
+    /// How many squares tall the bars are: three, as the user wanted, but fewer (down to 1.5) when the
+    /// lanes would not fit the screen — then all of them show without scrolling (user's note 2026-11-17).
+    private func fittedValueRows(_ rows: [Row], modules: [Int: G2Module], column: CGFloat) -> CGFloat {
+        let screen = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        let available = screen - 60 - WindowHeightFitter.laneChrome - 6
+        var tall = Self.valueRows
+        while tall > Self.minValueRows,
+              naturalHeight(rows, modules: modules, column: column, valueRows: tall) > available
+        {
+            tall -= 0.25
+        }
+        return tall
+    }
+
     /// Height of the list with every lane at its minimum — what the window is fitted to.
-    private func naturalHeight(_ rows: [Row], modules: [Int: G2Module], column: CGFloat) -> CGFloat {
+    private func naturalHeight(_ rows: [Row], modules: [Int: G2Module], column: CGFloat,
+                               valueRows: CGFloat) -> CGFloat
+    {
         var total: CGFloat = 0
         for row in rows {
             switch row {
             case let .header(_, first): total += Self.headerHeight + (first ? 0 : 8)
             case let .lane(id):
                 let kind = modules[id].flatMap { SequencerLayout(typeID: $0.typeID)?.kind } ?? .event
-                total += minLaneHeight(kind, column: column)
+                total += minLaneHeight(kind, column: column, valueRows: valueRows)
             }
         }
         return total + 8 * CGFloat(max(0, rows.count - 1))
@@ -1708,8 +2500,9 @@ private struct SequenceAllTab: View {
 
     private func report(natural: CGFloat, token: Int) {
         // Not before the width is known: the lane heights depend on it.
-        let ready = viewportHeight > 0 && listWidth > 0
-        onFit(WindowFit(delta: ready ? natural + 6 - viewportHeight : nil, token: token, natural: natural))
+        let ready = viewportHeight > 0 && listWidth > 0 && toolbarHeight > 0
+        onFit(WindowFit(delta: ready ? natural + 6 - viewportHeight : nil, token: token, natural: natural,
+                        toolbar: toolbarHeight > 0 ? toolbarHeight : WindowHeightFitter.toolbarHeight))
     }
 
     // MARK: Pieces
@@ -1717,7 +2510,12 @@ private struct SequenceAllTab: View {
     private func header(_ group: SequencerClockGroup, modules: [Int: G2Module]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                TopBarButton(content: .text("Select group")) { selected = Set(group.sequencerIDs) }
+                TopBarButton(content: .text("Select group")) {
+                    var model = SequenceLaneSelection()
+                    model.select(group.sequencerIDs)
+                    selected = model.selected
+                    anchor = model.anchor
+                }
                 Circle().fill(group.clockModuleID == nil ? Color.gray : SeqColor.blue).frame(width: 8, height: 8)
                 Text(clockTitle(group, modules: modules)).font(.system(size: 12, weight: .semibold))
                 Text("\(group.sequencerIDs.count) sequencer\(group.sequencerIDs.count == 1 ? "" : "s")")
@@ -1731,7 +2529,7 @@ private struct SequenceAllTab: View {
         }
     }
 
-    private func lane(_ editor: SequenceEditing) -> some View {
+    private func lane(_ editor: SequenceEditing, targets: [String], valueRows: CGFloat) -> some View {
         let id = editor.module.id
         return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
@@ -1744,7 +2542,8 @@ private struct SequenceAllTab: View {
                 .frame(width: 130, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture { tap(id) }
-                .help("Click to select, ⇧- or ⌘-click to add more lanes")
+                .help("Click to select, ⌘-click to add or remove, ⇧-click to select a range, double-click to open in Edit")
+                targetChip(targets)
                 LengthLoopControls(editor: editor, title: "Len")
                 HStack(spacing: 4) {
                     MuteSoloControls(editor: editor, ids: groupIDs(of: id))
@@ -1760,7 +2559,7 @@ private struct SequenceAllTab: View {
                     GateRow(editor: editor, row: 1, label: "Row 2", color: SeqColor.trigger,
                             fillColumns: true, rowHeight: column)
                 case .note, .value, .controlled:
-                    MiniValues(editor: editor).frame(minHeight: Self.valueRows * column, maxHeight: .infinity)
+                    MiniValues(editor: editor).frame(minHeight: valueRows * column, maxHeight: .infinity)
                     GateRow(editor: editor, row: 1, label: editor.layout.kind == .note ? "On" : "Trig",
                             color: editor.layout.kind == .note ? SeqColor.on : SeqColor.trigger,
                             fillColumns: true, rowHeight: column)
@@ -1777,12 +2576,12 @@ private struct SequenceAllTab: View {
         .frame(maxWidth: .infinity, maxHeight: editor.layout.kind == .event ? nil : .infinity)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(selected.contains(id) ? SeqColor.blue.opacity(0.12) : Color.white.opacity(0.05))
+                .fill(selected.contains(id) ? SeqColor.blue.opacity(0.12) : SeqColor.card)
                 .onTapGesture { tap(id) }
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(selected.contains(id) ? SeqColor.blue.opacity(0.8) : Color.white.opacity(0.25),
+                .strokeBorder(selected.contains(id) ? SeqColor.blue.opacity(0.8) : SeqColor.cardBorder,
                               lineWidth: 1)
         )
     }
@@ -1820,176 +2619,6 @@ private struct SequenceAllTab: View {
     }
 }
 
-// MARK: - Lanes tab
-
-/// The lanes of one instrument: every sequencer on the same clock as the module being edited,
-/// one card each, with where its output goes and its own Length. Display only for now — adding
-/// and removing lanes (Chance / Accent / Modulation) comes later. → [[Docs/roadmap]] "Rzędy (lanes)"
-private struct SequenceLanesTab: View {
-    let state: PatchState
-    let target: SequenceTarget
-    let open: (Int) -> Void
-
-    var body: some View {
-        let patch = state.slots.indices.contains(target.slot) ? state.slots[target.slot] : G2Patch()
-        let modules = Dictionary(uniqueKeysWithValues: patch.modules(in: target.area).map { ($0.id, $0) })
-        let group = SequencerClockGroup.groups(in: patch, area: target.area)
-            .first { $0.sequencerIDs.contains(target.moduleID) }
-        let ids = group?.sequencerIDs ?? [target.moduleID]
-        let edges = G2SignalGraph(patch: patch, area: target.area).edges
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(clockTitle(group, modules: modules)).font(.system(size: 12, weight: .semibold))
-                Text("\(ids.count) lane\(ids.count == 1 ? "" : "s")")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                if let clockID = group?.clockModuleID, let clock = modules[clockID] {
-                    ClockControls(state: state, slot: target.slot, area: target.area, module: clock)
-                }
-                Spacer()
-                addLaneMenu(modules: modules, edges: edges)
-                Text("Click a name to open it in Edit").font(.system(size: 10)).foregroundStyle(.secondary)
-                    .lineLimit(1).layoutPriority(-1)
-            }
-            ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(ids, id: \.self) { id in
-                        if let module = modules[id], let layout = SequencerLayout(typeID: module.typeID) {
-                            lane(SequenceEditing(state: state, target: .init(slot: target.slot, area: target.area,
-                                                                             moduleID: id),
-                                                 module: module, layout: layout),
-                                 targets: targets(of: id, edges: edges, modules: modules))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// "Add lane": Chance for each trigger output of the module being edited (SeqEvent: both rows).
-    /// Accent and Modulation come later. The output that already feeds a RndTrig is marked.
-    private func addLaneMenu(modules: [Int: G2Module], edges: [G2SignalGraph.Edge]) -> some View {
-        let outputs = modules[target.moduleID].map { PatchState.chanceOutputs(typeID: $0.typeID) } ?? []
-        let canAdd = target.slot == state.selectedSlot
-        let fits = state.chanceLaneFits(slot: target.slot, area: target.area)
-        return Menu {
-            ForEach(outputs, id: \.output) { item in
-                let done = edges.contains { edge in
-                    edge.fromModule == target.moduleID && edge.fromOutput == item.output
-                        && modules[edge.toModule]?.typeID == PatchState.chanceTriggerTypeID
-                }
-                Button("Chance — \(item.title)\(done ? " (already added)" : "")") {
-                    state.addChanceLane(slot: target.slot, area: target.area, sequencerID: target.moduleID,
-                                        trigOutput: item.output,
-                                        label: outputs.count > 1 ? "Chance \(item.title.suffix(1))" : "Chance")
-                }
-                .disabled(done || !canAdd || !fits)
-            }
-            let accentName = modules[target.moduleID].map { PatchState.accentLabel(sequencerName: sequencerName($0)) }
-            let accentDone = accentName.flatMap {
-                state.accentLaneID(slot: target.slot, area: target.area, label: $0)
-            } != nil
-            Button("Accent\(accentDone ? " (already added)" : "")") {
-                if let accentName {
-                    state.addAccentLane(slot: target.slot, area: target.area, sequencerID: target.moduleID,
-                                        label: accentName)
-                }
-            }
-            .disabled(accentDone || !canAdd || !state.accentLaneFits(slot: target.slot, area: target.area))
-            .help("A SeqLev that walks with this sequencer; its bars are the strength of each step. "
-                + "Cable its Val output where you want it (VCA, filter…). Euclid can fill it.")
-            Divider()
-            Text(fits
-                ? "Adds a SeqLev and a RndTrig (about 2.5 % cycles), wired to the same clock. One ⌘Z removes them."
-                : "Not enough DSP left in this area for a Chance lane (it would pass 100 %).")
-        } label: {
-            Label("Add lane", systemImage: "plus")
-        }
-        .menuStyle(.button)
-        .fixedSize()
-        .disabled(outputs.isEmpty)
-        .help("Add a lane to this sequencer")
-    }
-
-    private func lane(_ editor: SequenceEditing, targets: [String]) -> some View {
-        let id = editor.module.id
-        return HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Button { open(id) } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        LaneName(text: name(editor.module),
-                                 dot: laneDotColor(state: state, slot: target.slot, area: target.area, id: id))
-                        Text(typeName(editor.module)).font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                    .frame(width: 170, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Open in Edit")
-                targetChip(targets)
-                LengthLoopControls(editor: editor, title: "Length")
-            }
-            .frame(width: 170, alignment: .leading)
-            VStack(spacing: 2) {
-                switch editor.layout.kind {
-                case .event:
-                    GateRow(editor: editor, row: 0, label: "Row 1", color: SeqColor.trigger, fillColumns: true)
-                    GateRow(editor: editor, row: 1, label: "Row 2", color: SeqColor.trigger, fillColumns: true)
-                case .note, .value, .controlled:
-                    MiniValues(editor: editor).frame(height: 56)
-                    GateRow(editor: editor, row: 1, label: editor.layout.kind == .note ? "On" : "Trig",
-                            color: editor.layout.kind == .note ? SeqColor.on : SeqColor.trigger, fillColumns: true)
-                }
-            }
-            .stepOverlay(editor)
-        }
-        .padding(.horizontal, 8)
-        .padding(.top, 10)
-        .padding(.bottom, 7)
-        .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(id == target.moduleID ? SeqColor.blue.opacity(0.8) : Color.white.opacity(0.25), lineWidth: 1))
-    }
-
-    /// Where the module's output cables go: "Module · Input", the first one and a count of the rest.
-    private func targets(of id: Int, edges: [G2SignalGraph.Edge], modules: [Int: G2Module]) -> [String] {
-        edges.filter { $0.fromModule == id }.compactMap { edge in
-            guard let destination = modules[edge.toModule] else { return nil }
-            let def = ModuleDatabase.module(id: destination.typeID)
-            let input = def.flatMap { $0.inputs.indices.contains(edge.toInput) ? $0.inputs[edge.toInput].name : nil }
-            let label = destination.label.isEmpty ? (def?.shortName ?? "Module") : destination.label
-            return input.map { "\(label) · \($0)" } ?? label
-        }
-    }
-
-    private func targetChip(_ targets: [String]) -> some View {
-        let text = targets.isEmpty ? "no cable out"
-            : (targets.count == 1 ? "→ \(targets[0])" : "→ \(targets[0]) +\(targets.count - 1)")
-        return Text(text)
-            .font(.system(size: 10))
-            .lineLimit(1)
-            .foregroundStyle(targets.isEmpty ? Color.secondary : SeqColor.blue)
-            .padding(.horizontal, 7).padding(.vertical, 1)
-            .overlay(Capsule().strokeBorder(targets.isEmpty ? Color.white.opacity(0.2) : SeqColor.blue.opacity(0.6)))
-            .help(targets.joined(separator: "\n"))
-    }
-
-    private func clockTitle(_ group: SequencerClockGroup?, modules: [Int: G2Module]) -> String {
-        guard let id = group?.clockModuleID else { return "No clock" }
-        guard let clock = modules[id] else { return "Clock" }
-        let type = ModuleDatabase.module(id: clock.typeID)?.shortName ?? "Clock"
-        return "Clock: \(clock.label.isEmpty ? type : clock.label)"
-    }
-
-    private func typeName(_ module: G2Module) -> String {
-        ModuleDatabase.module(id: module.typeID)?.shortName ?? "Sequencer"
-    }
-
-    private func name(_ module: G2Module) -> String {
-        module.label.isEmpty ? typeName(module) : module.label
-    }
-}
-
 /// What the All tab asks of the window: grow or shrink by `delta` (nil until the lane list
 /// has been measured), once per `token` — the token changes when the lanes change, so the
 /// window is not fitted again while the user stretches it by hand.
@@ -1998,6 +2627,8 @@ private struct WindowFit: Equatable {
     var token: Int
     /// Height the lanes need at the current width.
     var natural: CGFloat
+    /// Height of the toolbar as laid out at the current width (it wraps into more rows in a narrow window).
+    var toolbar: CGFloat = WindowHeightFitter.toolbarHeight
 }
 
 /// Resizes the Sequence Editor window from inside its content. `.lanes`: fits the window to
@@ -2006,7 +2637,7 @@ private struct WindowFit: Equatable {
 private struct WindowHeightFitter: NSViewRepresentable {
     enum Mode: Equatable {
         case normal
-        case lanes(delta: CGFloat?, token: Int, natural: CGFloat)
+        case lanes(delta: CGFloat?, token: Int, natural: CGFloat, toolbar: CGFloat)
         /// Content that has a natural height (SeqEvent in Edit): fitted once, then free.
         /// `floor`: the least the window may be dragged to, when lower than the fitted height.
         case fixed(height: CGFloat, floor: CGFloat? = nil)
@@ -2018,8 +2649,8 @@ private struct WindowHeightFitter: NSViewRepresentable {
         var token: Int?
         var pending = false
         var mode: Mode?
-        /// All tab: the height that shows every lane (or the screen, for very long lists) —
-        /// also the least the window may be dragged to, so no lane is cut off.
+        /// All tab: the least the window may be dragged to — the bar and about one lane; below the
+        /// height that shows every lane the list scrolls.
         var laneMinimum: CGFloat = 160
         var observer: NSObjectProtocol?
         var enforcing = false
@@ -2093,9 +2724,16 @@ private struct WindowHeightFitter: NSViewRepresentable {
 
     /// Window content around the lane list in the All tab: panel padding 2 × 12, header and toolbar
     /// rows (one control tall each) and the two 8 pt gaps between them and the list.
-    /// The grouped toolbar is two rows of caption + control at the usual window width.
-    private static let toolbarHeight: CGFloat = 2 * (15 + TopBarMetrics.controlSide) + 8
-    private static let laneChrome: CGFloat = 24 + 16 + TopBarMetrics.controlSide + toolbarHeight
+    /// The grouped toolbar is two rows of caption + control at the usual window width; each group box
+    /// adds its 4 pt padding top and bottom and the 4 pt gap under the caption (they were missing, and the
+    /// last lane was cut — user's screenshot 2026-11-17).
+    static let toolbarHeight: CGFloat = 2 * (15 + 4 + TopBarMetrics.controlSide + 8) + 8
+    static let laneChrome: CGFloat = chrome(toolbar: toolbarHeight)
+
+    /// Everything around the lane list: panel padding, the gaps, the header row and the toolbar as measured.
+    static func chrome(toolbar: CGFloat) -> CGFloat {
+        24 + 16 + TopBarMetrics.controlSide + toolbar
+    }
 
     private static func apply(_ mode: Mode, to window: NSWindow, coordinator: Coordinator) {
         let normal = PanelController.Panel.sequenceEditor.minWindowSize ?? CGSize(width: 720, height: 460)
@@ -2120,7 +2758,8 @@ private struct WindowHeightFitter: NSViewRepresentable {
             guard coordinator.token != Int(wanted) else { return }
             coordinator.token = Int(wanted)
             height = wanted
-        case let .lanes(delta, token, natural):
+        case let .lanes(delta, token, natural, toolbar):
+            let chrome = Self.chrome(toolbar: toolbar)
             window.contentMinSize = NSSize(width: normal.width, height: 160)
             let screen = (window.screen?.visibleFrame.height ?? 900) - 60
             if coordinator.token != token {
@@ -2132,9 +2771,12 @@ private struct WindowHeightFitter: NSViewRepresentable {
             // viewport: readings taken while the window was moving gave a wrong figure, and the
             // floor stuck at the screen height (user's screenshot 2026-11-15, window could not be
             // made even slightly lower). It follows the lanes as they grow with the window width.
-            let needed = min(max(natural + 6 + Self.laneChrome, 160), screen)
-            coordinator.laneMinimum = needed
-            (window as? FloatingPanel)?.minimumContentHeight = needed
+            let needed = min(max(natural + 6 + chrome, 160), screen)
+            // The window opens at `needed`, but may be dragged lower: the lane list scrolls (user's note
+            // 2026-11-17). The floor keeps the bar and about one lane in view.
+            let floor = min(needed, chrome + 160)
+            coordinator.laneMinimum = floor
+            (window as? FloatingPanel)?.minimumContentHeight = floor
             // Fit once per set of lanes, as soon as the list has been measured (`delta` is nil
             // until it has a width), then the user can stretch the window.
             guard coordinator.pending, delta != nil else { return }
@@ -2242,7 +2884,7 @@ private struct MiniValues: View {
                     let cellY = min(size.height - 5, max(0, y - 2.5))
                     context.draw(Text(NoteName.name(values[step]))
                         .font(.system(size: 8, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(strong ? 0.8 : 0.35)),
+                        .foregroundStyle(strong ? SeqColor.noteLabelStrong : SeqColor.noteLabelWeak),
                         at: CGPoint(x: x + columnWidth / 2, y: cellY >= 11 ? cellY - 6 : cellY + 11), anchor: .center)
                 }
             } else {
@@ -2335,7 +2977,7 @@ private struct MuteSoloControls: View {
     }
 }
 
-/// Length and Loop of one sequencer, for the lane cards of the All and Lanes tabs (Edit has its own
+/// Length and Loop of one sequencer, for the lane cards of the All tab (Edit has its own
 /// toolbar). Loop on = the pattern repeats; off = it plays once (1-Cycle, used in chains).
 private struct LengthLoopControls: View {
     let editor: SequenceEditing
@@ -2349,7 +2991,7 @@ private struct LengthLoopControls: View {
                 }
             }
             if editor.layout.loopIndex != nil {
-                TopBarButton(content: .text("Loop"), isOn: editor.isLooping, tint: SeqColor.blue) {
+                SeqToolButton(icon: "repeat", title: "Loop", isOn: editor.isLooping) {
                     editor.setLooping(!editor.isLooping)
                 }
                 .help("Loop, or play once (1-Cycle, used in chains)")
@@ -2373,7 +3015,7 @@ private struct JackLabel: View {
 
     var body: some View {
         let label = HStack(spacing: 4) {
-            Circle().fill(link == nil ? Color.white.opacity(0.25) : SeqColor.blue).frame(width: 6, height: 6)
+            Circle().fill(link == nil ? SeqColor.cardBorder : SeqColor.blue).frame(width: 6, height: 6)
             Text(title).font(.system(size: 10, weight: .medium))
             if let link {
                 Text(link.text).font(.system(size: 10)).lineLimit(1).underline(hovering)
@@ -2626,7 +3268,7 @@ private struct StepOverlay: View {
 /// Caption, value box and ▲▼ arrows — the same controls as Master Clock on the top bar,
 /// so the window looks like the rest of the editor. Drag the value up/down or hold an
 /// arrow; a whole drag is one ⌘Z.
-private struct SeqNumberControl: View {
+struct SeqNumberControl: View {
     let title: String
     let value: Int
     let range: ClosedRange<Int>
@@ -2678,7 +3320,7 @@ private func drawValueLabel(_ context: GraphicsContext, text: String, x: CGFloat
 {
     guard columnWidth >= 20 else { return }
     context.draw(Text(text).font(.system(size: 8, design: .monospaced))
-        .foregroundStyle(Color.white.opacity(strong ? 0.85 : 0.4)),
+        .foregroundStyle(strong ? SeqColor.labelStrong : SeqColor.labelWeak),
         at: CGPoint(x: x + columnWidth / 2, y: barTop >= 11 ? barTop - 6 : barTop + 8), anchor: .center)
 }
 
@@ -2776,6 +3418,7 @@ private struct SequenceEuclidTab: View {
         case same = "Same on all"
         case canon = "Canon"
         case spread = "Spread"
+        case interlock = "Interlock"
         var id: String { rawValue }
     }
 
@@ -2844,19 +3487,36 @@ private struct SequenceEuclidTab: View {
                 .labelsHidden()
                 .frame(width: 120)
                 .help("Same on all: the same rhythm on every ticked sequencer. Canon: each next one shifted by Offset. "
-                    + "Spread: one rhythm shared out — hit 1 to the first, hit 2 to the second…")
+                    + "Spread: one rhythm shared out — hit 1 to the first, hit 2 to the second… "
+                    + "Interlock: the first plays the rhythm, the others fill its gaps.")
                 SeqNumberControl(title: "Hits", value: groupHits, range: 0 ... 16, state: state, patchGesture: false) {
                     groupHits = $0
                 }
                 SeqNumberControl(title: "Offset", value: groupOffset, range: 0 ... 15, state: state, patchGesture: false) {
                     groupOffset = $0
                 }
-                .help(groupMode == .spread ? "Rotate the shared rhythm" : "Canon: shift of each next sequencer")
+                .help(groupMode == .spread ? "Rotate the shared rhythm"
+                    : groupMode == .interlock ? "Rotate the rhythm of the first sequencer"
+                    : "Canon: shift of each next sequencer")
                 .disabled(groupMode == .same)
                 TopBarButton(content: .text("Apply")) { applyGroupEuclid(chosen) }
                     .help("Write the rhythm into the ticked sequencers (their own Steps stay). One ⌘Z.")
+                Menu("Kit") {
+                    ForEach(EuclidKit.all) { kit in
+                        Button("\(kit.name) — \(kit.summary)") { applyKit(kit, chosen) }
+                    }
+                }
+                .menuStyle(.button)
+                .fixedSize()
+                .help("A ready set of rhythms for the ticked sequencers, in the order of the cards: part 1 to the first "
+                    + "row, part 2 to the next… (a SeqEvent takes two). Sets their Steps too. One ⌘Z.")
+                SeqToolButton(icon: "dice", title: "Random", tint: SeqColor.generate) { applyRandomGroup(chosen) }
+                    .help("A new Euclidean rhythm for every ticked row: the share of steps that play rises from the first "
+                        + "(sparse, a kick) to the last (busy, a hat), and the second row never plays with the first. "
+                        + "Their own Steps stay. One ⌘Z.")
                 Spacer()
             }
+            meetingPoints(chosen)
         }
     }
 
@@ -2894,8 +3554,90 @@ private struct SequenceEuclidTab: View {
         }
     }
 
+    /// A row of the group: the sequencer, which row of it, and the steps it plays.
+    private typealias GroupSlot = (editor: SequenceEditing, row: Int, steps: Int)
+
+    private func groupSlots(_ chosen: [SequenceEditing]) -> [GroupSlot] {
+        chosen.flatMap { editor in
+            Self.rows(of: editor).map { item in
+                (editor: editor, row: item.row,
+                 steps: editor.layout.lengthIndex == nil ? SequencerLayout.steps : editor.length)
+            }
+        }
+    }
+
+    /// Writes one pattern into each row, as one undo step; the sequencers keep their own Steps.
+    private func writeGroup(_ slots: [GroupSlot], _ patterns: [[Bool]]) {
+        state.beginParameterGesture()
+        defer { state.endParameterGesture() }
+        var perEditor: [Int: (editor: SequenceEditing, changes: [Int: Int])] = [:]
+        for (index, slot) in slots.enumerated() where index < patterns.count {
+            let flags = patterns[index].map { $0 ? 1 : 0 }
+            let padded = flags + Array(repeating: 0, count: SequencerLayout.steps - flags.count)
+            var entry = perEditor[slot.editor.module.id] ?? (slot.editor, [:])
+            entry.changes.merge(slot.editor.changes(row: slot.row, padded)) { $1 }
+            perEditor[slot.editor.module.id] = entry
+        }
+        for entry in perEditor.values { entry.editor.write(entry.changes) }
+    }
+
+    /// Interlock: the first row plays E(Hits) rotated by Offset; the rows after it deal out its rests.
+    private func applyInterlock(_ chosen: [SequenceEditing]) {
+        let slots = groupSlots(chosen)
+        guard !slots.isEmpty else { return }
+        let reference = slots.map(\.steps).max() ?? SequencerLayout.steps
+        let lanes = EuclidGroup.interlock(hits: min(groupHits, reference), steps: reference,
+                                          rotation: groupOffset % max(1, reference), lanes: slots.count)
+        writeGroup(slots, slots.indices.map { Array(lanes[$0].prefix(slots[$0].steps)) })
+    }
+
+    /// Random group: see `EuclidGroup.randomLanes`.
+    private func applyRandomGroup(_ chosen: [SequenceEditing]) {
+        let slots = groupSlots(chosen)
+        guard !slots.isEmpty else { return }
+        var generator = SystemRandomNumberGenerator()
+        writeGroup(slots, EuclidGroup.randomLanes(steps: slots.map(\.steps), using: &generator))
+    }
+
+    /// Meeting points: for each step of the time the ticked rows take to start over together (32 at most),
+    /// how many of them hit there. Blue = two or more meet, solid blue = every row.
+    private func meetingPoints(_ chosen: [SequenceEditing]) -> some View {
+        let lanes: [[Bool]] = groupSlots(chosen).map { slot in
+            Array(slot.editor.layout.row(slot.row, in: slot.editor.parameters).prefix(slot.steps)).map { $0 != 0 }
+        }
+        let counts = EuclidGroup.meetingCounts(lanes: lanes, span: EuclidGroup.span(ofLengths: lanes.map(\.count)))
+        let meets = counts.filter { $0 >= 2 }.count
+        return HStack(spacing: 8) {
+            Text("Meeting points").font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 2) {
+                ForEach(counts.indices, id: \.self) { step in
+                    let count = counts[step]
+                    let all = lanes.count >= 2 && count == lanes.count
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(all ? SeqColor.blue.opacity(0.55) : (count >= 2 ? SeqColor.blue.opacity(0.22)
+                                : (count == 1 ? SeqColor.green.opacity(0.18) : SeqColor.empty)))
+                        .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(
+                            count >= 2 ? SeqColor.blue : (count == 1 ? SeqColor.green.opacity(0.6) : SeqColor.rim),
+                            lineWidth: 1
+                        ))
+                        .overlay(Text(count >= 2 ? "\(count)" : "").font(.system(size: 9, design: .monospaced)))
+                        .frame(minWidth: 8, maxWidth: 22, minHeight: 18, maxHeight: 18)
+                }
+            }
+            Text("\(meets) of \(counts.count) steps")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .help("Steps where two or more ticked rows hit together (the number is how many). With different lengths the "
+            + "row shows the time until they all start over, 32 steps at most.")
+    }
+
     /// Group Euclid: one rhythm over all rows of the ticked sequencers, each keeping its own Steps.
     private func applyGroupEuclid(_ chosen: [SequenceEditing]) {
+        if groupMode == .interlock {
+            applyInterlock(chosen)
+            return
+        }
         let slots = chosen.flatMap { editor in
             Self.rows(of: editor).map { item in
                 (editor: editor, row: item.row, steps: editor.layout.lengthIndex == nil ? SequencerLayout.steps : editor.length)
@@ -2905,6 +3647,8 @@ private struct SequenceEuclidTab: View {
         var patterns: [[Bool]] = []
         var rotations: [Int] = []
         switch groupMode {
+        case .interlock:
+            return // handled above
         case .same, .canon:
             for (index, slot) in slots.enumerated() {
                 let rotation = groupMode == .canon ? (groupOffset * index) % max(1, slot.steps) : 0
@@ -2933,11 +3677,40 @@ private struct SequenceEuclidTab: View {
             var entry = perEditor[slot.editor.module.id] ?? (slot.editor, [:])
             entry.changes.merge(slot.editor.changes(row: slot.row, padded)) { $1 }
             perEditor[slot.editor.module.id] = entry
-            if groupMode != .spread {
+            if groupMode == .same || groupMode == .canon {
                 // So the card reads "E(h,n) rN" instead of "edited".
                 SequenceEditorMemory.shared.euclid[.init(target: slot.editor.target, row: slot.row)] =
                     .init(hits: min(groupHits, slot.steps), rotation: rotations[index], invert: false)
             }
+        }
+        for entry in perEditor.values { entry.editor.write(entry.changes) }
+    }
+
+    /// Kit: the parts of the kit go to the rows of the ticked sequencers in card order, each row taking
+    /// the steps of its part. A SeqEvent has one Length for both rows, so its second row follows the
+    /// steps of its first. Rows without a part, and parts without a row, are left out. One ⌘Z.
+    private func applyKit(_ kit: EuclidKit, _ chosen: [SequenceEditing]) {
+        let slots = chosen.flatMap { editor in Self.rows(of: editor).map { (editor: editor, row: $0.row) } }
+        guard !slots.isEmpty else { return }
+        state.beginParameterGesture()
+        defer { state.endParameterGesture() }
+        var stepsOf: [Int: Int] = [:]
+        var perEditor: [Int: (editor: SequenceEditing, changes: [Int: Int])] = [:]
+        for (index, slot) in slots.enumerated() where index < kit.parts.count {
+            let part = kit.parts[index]
+            let id = slot.editor.module.id
+            let hasLength = slot.editor.layout.lengthIndex != nil
+            let steps = stepsOf[id] ?? (hasLength ? part.steps : SequencerLayout.steps)
+            stepsOf[id] = steps
+            let flags = part.pattern(steps: steps).map { $0 ? 1 : 0 }
+            let padded = flags + Array(repeating: 0, count: SequencerLayout.steps - flags.count)
+            var entry = perEditor[id] ?? (slot.editor, [:])
+            entry.changes.merge(slot.editor.changes(row: slot.row, padded)) { $1 }
+            if let lengthIndex = slot.editor.layout.lengthIndex { entry.changes[lengthIndex] = steps - 1 }
+            perEditor[id] = entry
+            // So the card reads "E(h,n) rN" instead of "edited".
+            SequenceEditorMemory.shared.euclid[.init(target: slot.editor.target, row: slot.row)] =
+                .init(hits: min(part.hits, steps), rotation: part.rotation % steps, invert: false)
         }
         for entry in perEditor.values { entry.editor.write(entry.changes) }
     }
@@ -2984,9 +3757,9 @@ private struct SequenceEuclidTab: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(SeqColor.card))
         .overlay(RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(selected ? SeqColor.blue.opacity(0.8) : Color.white.opacity(0.25), lineWidth: 1))
+            .strokeBorder(selected ? SeqColor.blue.opacity(0.8) : SeqColor.cardBorder, lineWidth: 1))
     }
 
     /// SeqEvent: both rows as the one rhythm that comes out — green = Row 1 only, blue = Row 2 only,
@@ -3187,11 +3960,16 @@ private struct EuclidRowEditor: View {
                     layerChips
                     Spacer()
                     Menu("Presets") {
-                        ForEach(EuclideanRhythm.presets) { preset in
-                            Button("\(preset.name)  \(preset.hits)/\(preset.steps)") {
-                                apply(.init(hits: preset.hits, rotation: 0, invert: false), steps: preset.steps)
+                        ForEach(EuclideanRhythm.Category.allCases) { category in
+                            Menu(category.title) {
+                                ForEach(EuclideanRhythm.presets(in: category)) { preset in
+                                    Button("\(preset.name)  \(preset.hits)/\(preset.steps)") {
+                                        apply(.init(hits: preset.hits, rotation: preset.rotation, invert: false),
+                                              steps: preset.steps)
+                                    }
+                                    .disabled(editor.layout.lengthIndex == nil && preset.steps != SequencerLayout.steps)
+                                }
                             }
-                            .disabled(editor.layout.lengthIndex == nil && preset.steps != SequencerLayout.steps)
                         }
                     }
                     .frame(width: 100)

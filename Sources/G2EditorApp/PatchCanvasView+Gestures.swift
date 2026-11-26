@@ -249,7 +249,11 @@ extension PatchCanvasView {
     var incDecPressGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { g in
-                guard incDecHold == nil, selection.pendingPaste == nil else { return }
+                // Trafienie liczy się z punktu wciśnięcia, więc sprawdzamy je raz — przy
+                // samym mouseDown. Wcześniej przy KAŻDYM ruchu myszy (np. kręcąc gałką)
+                // przeszukiwaliśmy od nowa wszystkie moduły, choć wynik nie mógł się zmienić.
+                guard g.translation == .zero, incDecHold == nil,
+                      selection.pendingPaste == nil else { return }
                 let lp = CGPoint(x: g.startLocation.x / zoom, y: g.startLocation.y / zoom)
                 guard let hit = findIncDecButton(at: lp) else { return }
                 incDecHold = hit
@@ -344,7 +348,9 @@ extension PatchCanvasView {
     var pushPressGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { g in
-                guard pushHold == nil, selection.pendingPaste == nil else { return }
+                // Jak w `incDecPressGesture`: szukamy przycisku tylko przy mouseDown.
+                guard g.translation == .zero, pushHold == nil,
+                      selection.pendingPaste == nil else { return }
                 let lp = CGPoint(x: g.startLocation.x / zoom, y: g.startLocation.y / zoom)
                 guard let hit = findPushButton(at: lp) else { return }
                 pushHold = hit

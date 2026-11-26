@@ -17,6 +17,8 @@ public struct SlotHeader: Equatable {
     public var activeVariation: Int
     public var patchVolume: Int
     public var activeMuted: Int
+    /// Octave Shift of the active variation, 0…4 = −2…+2 (the "Oct" control of the bar).
+    public var octaveShift: Int
     /// Gałki i źródła ośmiu morfów w aktywnej wariacji.
     public var morphDials: [Int]
     public var morphModes: [Int]
@@ -29,6 +31,20 @@ public struct SlotHeader: Equatable {
     public var knobPageUsed: [Bool]
     /// Przystanki fadera wariacji — wariacje 1–8 bez kopii poprzedniej (`G2VariationFade`).
     public var faderStops: [Int]
+    /// Ile modułów i kabli w każdym obszarze — liczniki w belce i podtytuł okna. Gdyby
+    /// czytały patch, każdy ruch gałki budziłby belkę (zmierzone 2026-11-25).
+    public var voiceModuleCount: Int
+    public var fxModuleCount: Int
+    public var voiceCableCount: Int
+    public var fxCableCount: Int
+
+    public func moduleCount(in area: PatchArea) -> Int {
+        area == .voice ? voiceModuleCount : fxModuleCount
+    }
+
+    public func cableCount(in area: PatchArea) -> Int {
+        area == .voice ? voiceCableCount : fxCableCount
+    }
 
     public init(patch: G2Patch) {
         let variation = patch.activeVariation
@@ -41,6 +57,7 @@ public struct SlotHeader: Equatable {
             ? patch.variationSettings[variation] : nil
         patchVolume = settings?[keyPath: G2PatchSetting.patchVolume.keyPath] ?? 0
         activeMuted = settings?[keyPath: G2PatchSetting.activeMuted.keyPath] ?? 0
+        octaveShift = settings?[keyPath: G2PatchSetting.octaveShift.keyPath] ?? 2
         morphDials = (0 ..< G2Morph.count).map { patch.morphDial($0, in: variation) }
         morphModes = (0 ..< G2Morph.count).map { patch.morphMode($0, in: variation) }
         let assignedMorphs = Set(patch.morphs(in: variation).map(\.morph))
@@ -50,6 +67,10 @@ public struct SlotHeader: Equatable {
             (0 ..< G2KnobPages.knobsPerPage).contains { patch.knobAssignment(page: page, slot: $0) != nil }
         }
         faderStops = G2VariationFade.stops(of: patch)
+        voiceModuleCount = patch.voiceModules.count
+        fxModuleCount = patch.fxModules.count
+        voiceCableCount = patch.voiceCables.count
+        fxCableCount = patch.fxCables.count
     }
 
     public static let empty = SlotHeader(patch: G2Patch())

@@ -27,10 +27,17 @@ enum AppFonts {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Przed pierwszym oknem: panel Patches skanuje folder, gdy tylko się pokaże.
+    func applicationWillFinishLaunching(_: Notification) {
+        // Lista patchy z poprzedniego skanu pokazuje się od razu po starcie (DiskBankScan).
+        DiskBankLibrary.scanCacheDirectory = DiskBankScanCache.defaultDirectory
+    }
+
     func applicationDidFinishLaunching(_: Notification) {
         takeOverOpenDocuments()
         AppFonts.register()
         FilePanels.installEditShortcuts()
+        ClickThrough.install()
         SettingsWindow.applyAppearance(UserDefaults.standard.string(forKey: AppAppearance.storageKey) ?? "")
         // Uruchomiony przez wtyczkę DAW: bez ikony w Docku i bez wychodzenia na wierzch.
         if PluginHost.isBackground {

@@ -15,11 +15,14 @@ public enum SequencePresets {
         public let steps: [Int]
         /// Rhythms only: Row 2 on/off flags.
         public let second: [Int]
+        /// Note figures only: the style submenu a figure sits in (`nil` = the main list).
+        public let group: String?
 
-        init(_ name: String, _ steps: [Int], second: [Int] = []) {
+        init(_ name: String, _ steps: [Int], second: [Int] = [], group: String? = nil) {
             self.name = name
             self.steps = steps
             self.second = second
+            self.group = group
         }
     }
 
@@ -55,6 +58,75 @@ public enum SequencePresets {
         Preset("Root and fifth walk", [0, 0, 7, 0, 5, 0, 7, 10]),
         Preset("Acid line", [0, 0, 12, 0, 0, 10, 0, 7, 0, 12, 0, 3, 0, 0, 5, 7]),
         Preset("Minor pentatonic", [0, 3, 5, 7, 10, 7, 5, 3]),
+        // Added 2026-11-18 (user's request for more): chord arpeggios, runs, bass and groove figures.
+        Preset("Major 7 arpeggio", [0, 4, 7, 11]),
+        Preset("Minor 7 arpeggio", [0, 3, 7, 10]),
+        Preset("Dominant 7 arpeggio", [0, 4, 7, 10]),
+        Preset("Sus4 arpeggio", [0, 5, 7, 12]),
+        Preset("Major arpeggio down", [12, 7, 4, 0]),
+        Preset("Minor arpeggio down", [12, 7, 3, 0]),
+        Preset("Power fifths", [0, 7, 12, 7]),
+        Preset("Octave and fifth", [0, 12, 7, 12]),
+        Preset("Syncopated octaves", [0, 12, 0, 0, 12, 0, 12, 0]),
+        Preset("Pedal tone", [0, 7, 0, 12, 0, 7, 0, 10]),
+        Preset("Rolling bass", [0, 0, 12, 0, 0, 10, 0, 7]),
+        Preset("Blues riff", [0, 3, 5, 6, 7, 10, 7, 5]),
+        Preset("Major pentatonic run", [0, 2, 4, 7, 9, 7, 4, 2]),
+        Preset("Dorian run", [0, 2, 3, 5, 7, 9, 10, 12]),
+        Preset("Phrygian line", [0, 1, 3, 5, 7, 5, 3, 1]),
+        Preset("Whole tone run", [0, 2, 4, 6, 8, 10, 8, 6]),
+        Preset("Chromatic climb", [0, 1, 2, 3, 4, 5, 6, 7]),
+        Preset("Hirajoshi", [0, 2, 3, 7, 8, 7, 3, 2]),
+        Preset("Tritone", [0, 6]),
+        Preset("Minor third bounce", [0, 3]),
+        Preset("Major arpeggio, 3 octaves", [0, 4, 7, 12, 16, 19, 24, 19, 16, 12, 7, 4]),
+        Preset("Minor arpeggio, 3 octaves", [0, 3, 7, 12, 15, 19, 24, 19, 15, 12, 7, 3]),
+        Preset("Fourths stack", [0, 5, 10, 15, 10, 5]),
+        Preset("Octave staircase", [0, 12, 24, 12]),
+    ] + styles
+
+    /// Figures by style (added 2026-11-18 — more presets at the user's request): each is one bar of 16 steps in
+    /// semitones above the root, meant for a minor key unless the name says otherwise. Repeated notes are on
+    /// purpose: the rhythm comes from the step row (Step on) and the Rhythm bank.
+    private static let styles: [Preset] = [
+        // Acid
+        Preset("Acid squelch", [0, 0, 0, 12, 0, 0, 7, 0, 0, 12, 0, 0, 10, 0, 7, 5], group: "Acid"),
+        Preset("Acid climb", [0, 0, 3, 0, 5, 0, 7, 0, 10, 0, 12, 0, 10, 0, 7, 3], group: "Acid"),
+        Preset("Acid octave jumps", [0, 12, 0, 12, 0, 0, 12, 0, 0, 12, 0, 7, 0, 12, 0, 0], group: "Acid"),
+        Preset("Acid slide", [0, 0, 0, 3, 3, 5, 5, 7, 7, 10, 10, 12, 12, 10, 7, 3], group: "Acid"),
+        // Trance
+        Preset("Trance arp", [0, 7, 12, 15, 12, 7, 0, 7, 3, 10, 15, 19, 15, 10, 3, 10], group: "Trance"),
+        Preset("Rolling octaves", [0, 12, 7, 12, 0, 12, 7, 12, 3, 15, 10, 15, 5, 17, 12, 17], group: "Trance"),
+        Preset("Uplifting lead", [12, 14, 15, 19, 15, 14, 12, 10, 12, 14, 15, 19, 22, 19, 15, 14], group: "Trance"),
+        Preset("Trance pluck", [0, 0, 12, 0, 7, 0, 12, 0, 0, 0, 12, 0, 7, 0, 12, 0], group: "Trance"),
+        // Techno
+        Preset("Root pulse", [0], group: "Techno"),
+        Preset("Rumble octaves", [0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 12, 0], group: "Techno"),
+        Preset("Minor chug", [0, 0, 3, 0, 0, 0, 5, 0, 0, 0, 3, 0, 0, 7, 0, 0], group: "Techno"),
+        Preset("Techno stab", [0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 7, 0], group: "Techno"),
+        // Dub techno
+        Preset("Dub minor 9", [0, 3, 7, 10, 14, 10, 7, 3], group: "Dub techno"),
+        Preset("Dub sparse", [0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0], group: "Dub techno"),
+        Preset("Dub fifth echo", [0, 7, 0, 7, 3, 10, 3, 10], group: "Dub techno"),
+        // House and disco
+        Preset("House piano riff", [0, 3, 7, 3, 10, 7, 3, 0, 5, 8, 12, 8, 7, 10, 14, 10], group: "House & disco"),
+        Preset("Funky house bass", [0, 12, 0, 10, 0, 7, 0, 5, 0, 12, 0, 10, 0, 7, 3, 0], group: "House & disco"),
+        Preset("Disco octaves", [0, 12, 0, 12, 0, 12, 0, 12, 5, 17, 5, 17, 7, 19, 7, 19], group: "House & disco"),
+        Preset("Offbeat chord root", [0, 0, 0, 0, 3, 3, 3, 3, 5, 5, 5, 5, 7, 7, 7, 7], group: "House & disco"),
+        // Drum and bass
+        Preset("DnB bass line", [0, 0, 12, 0, 0, 10, 0, 0, 7, 0, 0, 5, 0, 3, 0, 0], group: "Drum & bass"),
+        Preset("Jungle sub", [0, 0, 0, 12, 0, 0, 10, 0, 0, 7, 0, 0, 12, 0, 0, 5], group: "Drum & bass"),
+        Preset("Reese walk", [0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 5, 5, 7, 7], group: "Drum & bass"),
+        // Funk
+        Preset("Funk slap", [0, 12, 0, 0, 10, 0, 12, 0, 0, 7, 0, 5, 0, 3, 5, 0], group: "Funk"),
+        Preset("Funk walk", [0, 0, 3, 5, 7, 5, 3, 0, 0, 0, 5, 7, 10, 7, 5, 3], group: "Funk"),
+        Preset("Octave pops", [0, 0, 12, 0, 0, 12, 0, 12], group: "Funk"),
+        // Ambient and arps
+        Preset("Ambient fifths", [0, 7, 12, 7, 14, 7, 12, 7], group: "Ambient & arps"),
+        Preset("Lydian shimmer", [0, 7, 11, 14, 18, 14, 11, 7], group: "Ambient & arps"),
+        Preset("Pentatonic drift", [0, 2, 7, 4, 9, 7, 12, 9], group: "Ambient & arps"),
+        Preset("Sus2 arpeggio", [0, 2, 7, 12, 14, 12, 7, 2], group: "Ambient & arps"),
+        Preset("Open fifths and sixths", [0, 7, 9, 14, 12, 9, 7, 4], group: "Ambient & arps"),
     ]
 
     /// Notes for the 16 steps: the figure repeated, above `base`, kept inside 0…127.

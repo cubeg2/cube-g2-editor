@@ -191,15 +191,4 @@ public enum CanvasOverlayMode: String, CaseIterable, Sendable {
         case .midiControllers: "MIDI CC Assignments"
         }
     }
-
-    /// Numer klawisza funkcyjnego — `nil` dla `.none`.
-    public var functionKey: Int? {
-        switch self {
-        case .none: nil
-        case .values: 5
-        case .morphGroups: 6
-        case .knobAssignments: 7
-        case .midiControllers: 8
-        }
-    }
 }

@@ -153,6 +153,11 @@ struct PatchLoadReadout: View {
     let layout: Layout
     var scale: CGFloat = 1
 
+    /// The end of the tooltip: the user's shortcut for the DSP Load window.
+    @MainActor static var dspHint: String {
+        ShortcutStore.shared.stroke(for: .dspLoad).map { " (\($0.display) for the full picture)" } ?? ""
+    }
+
     /// Ghost i podgląd leżą na ciemnym tle — tam etykiety są białe; w belce muszą
     /// iść za motywem systemu, bo pasek bywa jasny.
     var labelColor: Color = .primary
@@ -169,7 +174,7 @@ struct PatchLoadReadout: View {
                 group("FX", load: fx)
             }
             .fixedSize()
-            .help("Patch load — cycles and memory for the Voice and FX areas (⌘⌥3 for the full picture)")
+            .help("Patch load — cycles and memory for the Voice and FX areas" + PatchLoadReadout.dspHint)
         case .preview:
             HStack(alignment: .bottom, spacing: PatchLoadMetrics.cellGap * 3 * scale) {
                 group("VA", load: voice)

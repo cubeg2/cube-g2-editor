@@ -36,6 +36,14 @@ enum PluginHost {
         }
         writeLaunchHint()
         bridge.onShowEditor = { showEditor() }
+        // Tag nadany z wtyczki ma być od razu widoczny w panelu Patches (jego lista jest osobna od skanu mostu).
+        bridge.onTagsChanged = { url, tags in DiskBankLibrary.patches.updateTags(tags, at: url) }
+        // Własne wzory sekwencji wtyczki to ta sama biblioteka co Presets ▸ My patterns w oknie Sequence Editor.
+        bridge.loadUserPatterns = { SequenceEditorMemory.shared.library }
+        bridge.saveUserPatterns = { library in
+            SequenceEditorMemory.shared.library = library
+            SequenceEditorMemory.shared.saveLibrary()
+        }
         bridge.onQuitRequest = {
             guard isBackground else { return false }
             // Chwila na wysłanie odpowiedzi, zanim proces zniknie.

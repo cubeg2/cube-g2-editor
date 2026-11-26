@@ -797,6 +797,8 @@ struct PatchCanvasView: View {
     /// Building Block upuszczony na kanwę — zwraca numery nowych modułów tego obszaru,
     /// które zostają zaznaczone (zbędny osprzęt bloku kasuje się wtedy jednym Delete).
     var onInsertBlock: ((_ url: URL, _ column: Int, _ row: Int) -> Set<Int>)?
+    /// A patch from the Patches panel dropped on the canvas: it loads into this canvas's slot.
+    var onDropPatch: ((SlotPatchDrag) -> Void)?
     /// Polecenia menu pod prawym przyciskiem, których kanwa nie wykona sama —
     /// przypisania gałek i CC, operacje na kablach, „Paste Params" (patrz
     /// `PatchCanvasCommands`). Puste w trybie podglądu.
@@ -1153,6 +1155,9 @@ struct PatchCanvasView: View {
         .onContinuousHover { phase in
             switch phase {
             case let .active(loc):
+                // Kręcona gałka: dymek z wartością stoi pod nią, a każdy zapis tu
+                // przeliczałby całą kanwę jeszcze raz na ruch myszy.
+                guard dragTarget == nil else { return }
                 hoverScreenPt = loc
                 hoverInCanvas = true
                 let lp = CGPoint(x: loc.x / zoom, y: loc.y / zoom)
@@ -1227,6 +1232,7 @@ struct PatchCanvasView: View {
                     activeModuleID = nil
                     return true
                 },
+                onDropPatch: onDropPatch,
                 onBlockHover: { blockHover = $0 },
                 dragSource: dragSource
             )

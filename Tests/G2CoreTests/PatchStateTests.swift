@@ -498,21 +498,164 @@ final class PatchStateTests: XCTestCase {
 
     // MARK: - Cykl życia dokumentu
 
-    func testSuccessfulLoadClearsUndoHistory() {
+    /// Wczytanie pliku to krok undo (prośba użytkownika 2026-11-25): ⌘Z oddaje slotowi
+    /// poprzedni patch, a starsze edycje dalej da się cofać.
+    func testLoadingAPatchUndoesAndRedoesAndKeepsEarlierHistory() {
         var patch = G2Patch()
         patch.voiceModules = [makeModule(id: 1)]
         let state = makeState(patch: patch)
         performUndoStep(on: state) {
             state.setParameter(moduleID: 1, paramIndex: 0, value: 20, area: .voice)
         }
+        let edited = state.patch
+        var restored: [Int] = []
+        state.onSlotRestore = { slot, _ in restored.append(slot) }
+        let url = fixtureURL("simplesynth001-20240802.pch2")
+
+        state.load(url: url)
+        let loaded = state.patch
+        XCTAssertNil(state.errorMessage)
+        XCTAssertEqual(state.undoManager.undoActionName, "Load Patch")
+
+        state.undoManager.undo()
+        XCTAssertEqual(state.patch, edited)
+        XCTAssertNil(state.slotFileURLs[0])
+        XCTAssertEqual(restored, [0])
+
+        state.undoManager.redo()
+        XCTAssertEqual(state.patch, loaded)
+        XCTAssertEqual(state.slotFileURLs[0], url)
+        XCTAssertFalse(state.slotHasUnsavedChanges(0))
+        XCTAssertEqual(restored, [0, 0])
+
+        state.undoManager.undo()
+        state.undoManager.undo()
+        XCTAssertEqual(state.patch.voiceModules.first?.parameters.first, 10)
+    }
+
+    func testSeveralLoadsUndoOneByOne() {
+        let state = makeState()
+        let first = fixtureURL("simplesynth001-20240802.pch2")
+        let second = fixtureURL("test_3osc.pch2")
+        state.load(url: first)
+        state.load(url: second)
+        state.load(url: first, intoSlot: 2)
+
+        state.undoManager.undo()
+        XCTAssertNil(state.slotFileURLs[2])
+        XCTAssertEqual(state.slotFileURLs[0], second)
+        state.undoManager.undo()
+        XCTAssertEqual(state.slotFileURLs[0], first)
+        XCTAssertEqual(state.selectedSlot, 0)
+        state.undoManager.undo()
+        XCTAssertNil(state.slotFileURLs[0])
+        XCTAssertFalse(state.undoManager.canUndo)
+    }
+
+    func testBrokenFileAddsNoUndoStep() {
+        let state = makeState()
+        state.load(url: fixtureURL("missing-file.pch2"))
+        XCTAssertNotNil(state.errorMessage)
+        XCTAssertFalse(state.undoManager.canUndo)
+    }
+
+    func testLoadingAPerformanceUndoesToTheWholePreviousContent() throws {
+        let state = makeState()
+        let patchURL = fixtureURL("simplesynth001-20240802.pch2")
+        state.load(url: patchURL, intoSlot: 1)
+        let before = state.slots
+        let performance = try temporaryPerformanceFile(named: "Undo me")
+        defer { try? FileManager.default.removeItem(at: performance) }
+        var restored = 0
+        state.onDocumentRestore = { restored += 1 }
+
+        state.load(url: performance)
+        let loaded = state.slots
+        XCTAssertEqual(state.undoManager.undoActionName, "Load Performance")
+
+        state.undoManager.undo()
+        XCTAssertEqual(state.slots, before)
+        XCTAssertEqual(state.slotFileURLs, [nil, patchURL, nil, nil])
+        XCTAssertNil(state.performanceFileURL)
+        XCTAssertFalse(state.hasPerformanceSettings)
+        XCTAssertEqual(state.selectedSlot, 1)
+        XCTAssertEqual(restored, 1)
+
+        state.undoManager.redo()
+        XCTAssertEqual(state.slots, loaded)
+        XCTAssertEqual(state.performanceFileURL, performance)
+        XCTAssertEqual(state.performanceName, "Undo me")
+        XCTAssertEqual(restored, 2)
+    }
+
+    func testLikeOriginalLoadUndoesInOneStep() {
+        let state = makeState()
+        state.slots = (0 ..< 4).map { namedPatch("Old \($0)") }
+        state.selectedSlot = 2
+
+        state.load(url: fixtureURL("simplesynth001-20240802.pch2"), patchOpenMode: .likeOriginal)
+        state.undoManager.undo()
+
+        XCTAssertEqual(state.slots.map(\.name), ["Old 0", "Old 1", "Old 2", "Old 3"])
+        XCTAssertEqual(state.selectedSlot, 2)
+        XCTAssertFalse(state.undoManager.canUndo)
+    }
+
+    func testPatchChosenFromABankCanBeUndone() {
+        let state = makeState()
+        state.loadFromDevice(patches: (0 ..< 4).map { namedPatch("Nord \($0)") })
+
+        state.expectBankLoad()
+        state.replaceSlotFromDevice(slot: 1, patch: namedPatch("Bank"))
+        state.replaceSlotFromDevice(slot: 1, patch: namedPatch("Bank"))
+        state.endBankLoad()
+        XCTAssertEqual(state.undoManager.undoActionName, "Load from G2")
+
+        state.undoManager.undo()
+        XCTAssertEqual(state.slots[1].name, "Nord 1")
+        XCTAssertFalse(state.undoManager.canUndo)
+        state.undoManager.redo()
+        XCTAssertEqual(state.slots[1].name, "Bank")
+    }
+
+    func testPerformanceChosenFromABankCanBeUndone() {
+        let state = makeState()
+        state.loadFromDevice(patches: (0 ..< 4).map { namedPatch("Nord \($0)") }, performanceName: "Before")
+
+        state.expectBankLoad()
+        state.replaceSlotsFromDevice(patches: (0 ..< 4).map { namedPatch("Bank \($0)") }, performanceName: "After")
+        state.endBankLoad()
+        state.undoManager.undo()
+
+        XCTAssertEqual(state.slots.map(\.name), ["Nord 0", "Nord 1", "Nord 2", "Nord 3"])
+        XCTAssertEqual(state.performanceName, "Before")
+    }
+
+    func testBankPatchLikeOriginalUndoesInOneStep() {
+        let state = makeState()
+        state.loadFromDevice(patches: (0 ..< 4).map { namedPatch("Nord \($0)") })
+
+        state.clearSlotsForBankPatch()
+        state.markSentToDevice()
+        state.expectBankLoad()
+        state.replaceSlotFromDevice(slot: 0, patch: namedPatch("Bank"))
+        state.endBankLoad()
+        state.undoManager.undo()
+
+        XCTAssertEqual(state.slots.map(\.name), ["Nord 0", "Nord 1", "Nord 2", "Nord 3"])
+        XCTAssertFalse(state.undoManager.canUndo)
+    }
+
+    /// Patch załadowany na froncie Norda nie jest krokiem undo i czyści historię.
+    func testPatchLoadedOnTheNordClearsUndoHistory() {
+        let state = makeState()
+        state.loadFromDevice(patches: (0 ..< 4).map { namedPatch("Nord \($0)") })
+        state.newPatch()
         XCTAssertTrue(state.undoManager.canUndo)
 
-        state.load(url: fixtureURL("simplesynth001-20240802.pch2"))
+        state.replaceSlotFromDevice(slot: 0, patch: namedPatch("Front panel"))
 
-        XCTAssertNil(state.errorMessage)
-        XCTAssertEqual(state.fileName, "simplesynth001-20240802.pch2")
         XCTAssertFalse(state.undoManager.canUndo)
-        XCTAssertFalse(state.undoManager.canRedo)
     }
 
     /// Opcja „jak oryginał”: `.pch2` do slotu A, B–D puste, cały komplet jedzie do Norda.
@@ -690,8 +833,8 @@ final class PatchStateTests: XCTestCase {
         XCTAssertTrue(state.isLoaded)
     }
 
-    /// ⌘Z po New wraca do patcha z chwili kliknięcia (prośba z FB 2026-09-25); edycje sprzed
-    /// New przepadają, bo dotyczyły tamtej zawartości.
+    /// ⌘Z po New wraca do patcha z chwili kliknięcia (prośba z FB 2026-09-25), a kolejne
+    /// ⌘Z cofa edycje sprzed New.
     func testNewPatchUndoesToThePatchItReplaced() {
         var patch = G2Patch()
         patch.voiceModules = [makeModule(id: 1)]
@@ -701,7 +844,7 @@ final class PatchStateTests: XCTestCase {
         }
         let edited = state.patch
         var restored: [Int] = []
-        state.onSlotRestore = { restored.append($0) }
+        state.onSlotRestore = { slot, _ in restored.append(slot) }
 
         state.newPatch()
         XCTAssertTrue(state.patch.voiceModules.isEmpty)
@@ -709,7 +852,7 @@ final class PatchStateTests: XCTestCase {
 
         state.undoManager.undo()
         XCTAssertEqual(state.patch, edited)
-        XCTAssertFalse(state.undoManager.canUndo, "historia sprzed New przepada")
+        XCTAssertTrue(state.undoManager.canUndo, "edycja sprzed New zostaje w historii")
         XCTAssertEqual(restored, [0])
 
         state.undoManager.redo()
@@ -758,6 +901,39 @@ final class PatchStateTests: XCTestCase {
         XCTAssertEqual(state.performance.masterClock, 120)
         XCTAssertFalse(state.performance.masterClockRunning)
         XCTAssertEqual(state.performanceName, "Empty perf")
+    }
+
+    func testNewPerformanceUndoesToThePreviousContentAndRedoes() {
+        let state = makeState()
+        let url = fixtureURL("simplesynth001-20240802.pch2")
+        state.load(url: url, intoSlot: 2)
+        let before = state.slots
+        var restored = 0
+        state.onDocumentRestore = { restored += 1 }
+
+        state.newPerformance()
+        XCTAssertEqual(state.undoManager.undoActionName, "New Performance")
+
+        state.undoManager.undo()
+        XCTAssertEqual(state.slots, before)
+        XCTAssertEqual(state.slotFileURLs, [nil, nil, url, nil])
+        XCTAssertEqual(state.selectedSlot, 2)
+        XCTAssertFalse(state.hasPerformanceSettings)
+        XCTAssertEqual(restored, 1)
+
+        state.undoManager.redo()
+        XCTAssertTrue(state.slots.allSatisfy(\.voiceModules.isEmpty))
+        XCTAssertEqual(state.performanceName, "Empty perf")
+        XCTAssertEqual(restored, 2)
+    }
+
+    func testAppStartLeavesNothingToUndo() {
+        let state = PatchState()
+
+        state.startEmpty()
+
+        XCTAssertFalse(state.undoManager.canUndo)
+        XCTAssertFalse(state.undoManager.canRedo)
     }
 
     // MARK: - Nazwa performance'u

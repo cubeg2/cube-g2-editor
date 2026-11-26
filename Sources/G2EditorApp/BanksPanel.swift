@@ -324,18 +324,6 @@ struct BanksPanel: View {
         nonmutating set { folderLibrary.currentPath = newValue }
     }
 
-    /// Obciążenie obu obszarów slotu z focusem po wstawieniu bloku: raport Norda, bez niego
-    /// szacunek z tabeli kosztów — tak samo jak pasek pod modułem z palety.
-    private func blockLoadAfter(_ block: G2Patch) -> (voice: G2PatchLoad?, fx: G2PatchLoad?) {
-        let slot = state.selectedSlot
-        func load(_ area: PatchArea) -> G2PatchLoad {
-            let now = device.patchLoad(slot: slot, area: area)
-                ?? .estimate(area: area, modules: state.patch.modules(in: area), cables: state.patch.cables(in: area))
-            return now.adding(block.modules(in: area))
-        }
-        return (load(.voice), load(.fx))
-    }
-
     /// Biblioteka listy folderów: Disk albo Blocks — obie chodzą tym samym kodem.
     private var folderLibrary: DiskBankLibrary {
         source == .blocks ? .blocks : library
@@ -369,15 +357,27 @@ struct BanksPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $sourceRaw) {
-                ForEach(Source.allCases, id: \.rawValue) { Text($0.rawValue).tag($0.rawValue) }
+            // Zakładki po lewej, szukanie i filtry po prawej — jeden rząd, jak w przeglądarce wtyczki.
+            HStack(spacing: 4) {
+                Picker("", selection: $sourceRaw) {
+                    ForEach(Source.allCases, id: \.rawValue) { Text($0.rawValue).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer(minLength: 2)
+                searchField
+                switch source {
+                case .nord:
+                    nordCategoryMenu
+                    nordSortMenu
+                case .disk, .blocks:
+                    categoryMenu
+                    sortMenu
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .padding(.horizontal, 8)
-            .padding(.top, 8)
-
-            searchField
+            .padding(.vertical, 6)
 
             Divider()
 
@@ -386,7 +386,7 @@ struct BanksPanel: View {
             case .disk, .blocks: diskList
             }
         }
-        .environment(\.blockLoadPreview, showDragLoad ? blockLoadAfter : nil)
+        .environment(\.blockLoadPreview, showDragLoad ? BlockLoadPreview(state: state, device: device) : nil)
         .onReceive(state.fileURLChanges) { openPath = $0?.standardizedFileURL.path }
     }
 
@@ -398,6 +398,7 @@ struct BanksPanel: View {
             TextField("Search", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
+                .frame(minWidth: 40)
             if !query.isEmpty {
                 Button {
                     query = ""
@@ -406,8 +407,10 @@ struct BanksPanel: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 6)
+        .frame(height: 20)
+        .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
+        .frame(minWidth: 70, maxWidth: 120)
     }
 
     // MARK: - Banki Norda
@@ -511,21 +514,7 @@ struct BanksPanel: View {
     private func nordRow(_ entry: G2BankEntry) -> some View {
         let slots = loadedSlots(entry)
         let selected = nordSelection.contains(entry.id)
-        return Button {
-            let modifiers = NSApp.currentEvent?.modifierFlags ?? []
-            if modifiers.contains(.command) || modifiers.contains(.shift) {
-                selectNordEntry(entry, extend: modifiers.contains(.shift))
-                return
-            }
-            clearNordSelection()
-            // Opcja „jak oryginał” obejmuje też patch z banku Norda: A, B–D puste (#137).
-            if entry.kind == .patch, PatchOpenMode.stored == .likeOriginal {
-                guard UnsavedChangesGuard.shared.confirmDiscard() else { return }
-                Task { await device.loadFromBankAsOnlyPatch(entry, state: state) }
-                return
-            }
-            Task { await device.loadFromBank(entry, intoSlot: state.selectedSlot) }
-        } label: {
+        return nordRowControl(entry) {
             HStack(spacing: 6) {
                 Text(entry.displayLocation)
                     .font(.system(size: 10, design: .monospaced))
@@ -551,7 +540,6 @@ struct BanksPanel: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
         // Ten sam wygląd co otwarty plik w źródle „Disk”; zaznaczenie mocniej.
         .listRowBackground(selected ? Color.accentColor.opacity(0.5)
             : slots.isEmpty ? nil : Color.accentColor.opacity(0.22))
@@ -567,6 +555,41 @@ struct BanksPanel: View {
                     .disabled(device.isBusy)
             }
         }
+    }
+
+    /// A patch row is dragged onto a slot button, so it cannot be a button (a button
+    /// swallows the drag); a performance has no slot to go to and stays one.
+    @ViewBuilder
+    private func nordRowControl(_ entry: G2BankEntry, @ViewBuilder label: () -> some View) -> some View {
+        if entry.kind == .patch {
+            label()
+                .onTapGesture { clickNordRow(entry) }
+                .onDrag { NSItemProvider(object: SlotPatchDrag.bankEntry(id: entry.id).payload as NSString) }
+                .accessibilityAddTraits(.isButton)
+        } else {
+            Button {
+                clickNordRow(entry)
+            } label: {
+                label()
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func clickNordRow(_ entry: G2BankEntry) {
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        if modifiers.contains(.command) || modifiers.contains(.shift) {
+            selectNordEntry(entry, extend: modifiers.contains(.shift))
+            return
+        }
+        clearNordSelection()
+        // Opcja „jak oryginał” obejmuje też patch z banku Norda: A, B–D puste (#137).
+        if entry.kind == .patch, PatchOpenMode.stored == .likeOriginal {
+            guard UnsavedChangesGuard.shared.confirmDiscard() else { return }
+            Task { await device.loadFromBankAsOnlyPatch(entry, state: state) }
+            return
+        }
+        Task { await device.loadFromBank(entry, intoSlot: state.selectedSlot) }
     }
 
     // MARK: - Zaznaczanie wielu pozycji (⌘ / Shift)
@@ -766,8 +789,6 @@ struct BanksPanel: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            nordCategoryMenu
-            nordSortMenu
             barButton("arrow.clockwise", help: "Read the banks again") {
                 Task { await device.refreshBankList() }
             }
@@ -877,7 +898,12 @@ struct BanksPanel: View {
             // wyżej to rzeczy, po które sięga się przed czytaniem listy, a nie po.
             diskBar
             Divider()
-            if isSearching {
+            if folderLibrary.items.isEmpty, folderLibrary.isScanning {
+                // Pierwszy skan bez listy z pamięci (nowy folder, pierwsze uruchomienie):
+                // przy 100 tysiącach plików to kilka sekund — bez znaku życia lista
+                // wyglądała na pustą (prośba Kuby 2026-11-25).
+                DiskScanningPlaceholder(found: folderLibrary.scanFound)
+            } else if isSearching {
                 // Szukanie przeszukuje CAŁĄ bibliotekę, nie tylko otwarty folder —
                 // stąd płaska lista z podpisaną ścieżką.
                 let highlightedPath = folderLibrary.highlightedFile?.standardizedFileURL.path
@@ -887,6 +913,7 @@ struct BanksPanel: View {
                         isOpen: item.isFile(atPath: openPath), isHighlighted: item.isFile(atPath: highlightedPath),
                         onOpen: onOpenFile, onDropToFolder: source == .blocks ? acceptBlockExport : nil
                     )
+                    .equatable()
                 }
                 .listStyle(.plain)
                 .disabled(!device.acceptsPatchChange)
@@ -977,14 +1004,16 @@ struct BanksPanel: View {
 
             Spacer(minLength: 4)
 
+            if folderLibrary.isScanning, !folderLibrary.items.isEmpty {
+                // Lista z poprzedniego skanu już stoi, a folder jest sprawdzany w tle.
+                ProgressView()
+                    .controlSize(.mini)
+                    .help("Checking the folder for new and changed files…")
+            }
             Text(count)
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-
-            categoryMenu
-
-            sortMenu
 
             barButton("arrow.clockwise", help: "Scan the folder again") {
                 Task { await folderLibrary.scan() }
@@ -1085,7 +1114,7 @@ struct BanksPanel: View {
     }
 
     private var count: String {
-        if folderLibrary.isScanning { return "scanning…" }
+        if folderLibrary.isScanning, folderLibrary.items.isEmpty { return "loading…" }
         if let message = folderLibrary.message { return message }
         return "\(folderLibrary.fileCount(under: isSearching ? "" : diskPath))"
     }
@@ -1219,6 +1248,29 @@ struct PatchKindBadge: View {
 
 // MARK: - Wiersze listy z dysku
 
+/// Wskaźnik w miejscu listy, dopóki pierwszy skan folderu nie skończy — z liczbą
+/// plików znalezionych do tej pory, żeby było widać, że coś się dzieje.
+private struct DiskScanningPlaceholder: View {
+    let found: Int
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Loading patches…")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            if found > 0 {
+                Text("\(found.formatted()) found")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 /// Zawartość folderu `path`: podfoldery jako grupy rozwijane W MIEJSCU (systemowy
 /// trójkąt, zawartość wcięta, dowolnie głęboko — jak lista w Finderze), potem pliki.
 /// Osobny widok, bo rekurencja: funkcja zwracająca `some View` nie może wołać samej siebie.
@@ -1258,6 +1310,7 @@ private struct DiskFolderRows: View {
                 isOpen: item.isFile(atPath: openPath), isHighlighted: item.isFile(atPath: highlightedPath),
                 onOpen: onOpenFile, onDropToFolder: onDropToFolder
             )
+            .equatable()
         }
     }
 
@@ -1309,7 +1362,7 @@ private struct DiskFolderRows: View {
 /// Jeden plik: nazwa, kropki tagów Findera, kategoria, znaczek „pch” / „prf” z prawej,
 /// opcjonalnie folder pod spodem (w wynikach szukania, gdzie lista jest płaska). Prawy przycisk: to, co w Finderze —
 /// tagi, zmiana nazwy, pokaż w Finderze, do Kosza.
-private struct DiskFileRow: View {
+private struct DiskFileRow: View, Equatable {
     let library: DiskBankLibrary
     let item: DiskBankItem
     let showsFolder: Bool
@@ -1326,6 +1379,17 @@ private struct DiskFileRow: View {
 
     /// Moduły, DSP i głosy — do dymka i czerwonej kropki. Liczone, gdy wiersz pojawi się na
     /// ekranie (cały plik trzeba sparsować), poza głównym wątkiem, raz na wersję pliku.
+    /// Porównanie bez domknięć — wiersz rysuje się od nowa tylko wtedy, gdy zmieniło się to,
+    /// co widać. `onOpen` i `onDropToFolder` przychodzą od rodzica przy każdym jego
+    /// przeliczeniu jako nowe domknięcia (robiące to samo), a domknięć SwiftUI nie umie
+    /// porównać: przełączenie okna albo ruch gałki przeliczał przez to ~300 wierszy
+    /// (zmierzone 2026-11-25) → [[Docs/ui/canvas-performance]].
+    static func == (lhs: DiskFileRow, rhs: DiskFileRow) -> Bool {
+        lhs.library === rhs.library && lhs.item == rhs.item && lhs.showsFolder == rhs.showsFolder
+            && lhs.isOpen == rhs.isOpen && lhs.isHighlighted == rhs.isHighlighted
+            && (lhs.onDropToFolder == nil) == (rhs.onDropToFolder == nil)
+    }
+
     @State private var summary: DiskFileSummary?
     @AppStorage(ExpansionBoard.storageKey) private var hasExpansion = false
     @Environment(\.blockLoadPreview) private var blockLoadPreview
@@ -1371,10 +1435,16 @@ private struct DiskFileRow: View {
                     NSItemProvider(object: BuildingBlockDragData.string(url: item.url) as NSString)
                 } preview: {
                     BlockDragPreview(name: item.name,
-                                     load: BuildingBlockDragData.block(at: item.url).flatMap { blockLoadPreview?($0) })
+                                     load: BuildingBlockDragData.block(at: item.url).flatMap { blockLoadPreview?.load(after: $0) })
                 }
         } else if inBlocks {
             label
+        } else if !item.isPerformance {
+            // Not a button for the same reason as a block: a button swallows the drag.
+            label
+                .onTapGesture { onOpen(item.url) }
+                .onDrag { NSItemProvider(object: SlotPatchDrag.file(item.url).payload as NSString) }
+                .accessibilityAddTraits(.isButton)
         } else {
             Button {
                 onOpen(item.url)
@@ -1489,14 +1559,7 @@ private struct DiskFileRow: View {
     }
 
     private static func tagName(color: Int) -> String {
-        let rank = FinderTag(name: "", color: color).rainbowRank
-        if let favourites = UserDefaults(suiteName: "com.apple.finder")?.stringArray(forKey: "FavoriteTagNames"),
-           favourites.count == 8, !favourites[rank + 1].isEmpty
-        {
-            return favourites[rank + 1]
-        }
-        let labels = NSWorkspace.shared.fileLabels
-        return color < labels.count ? labels[color] : "Tag \(color)"
+        FinderTag.favouriteName(color: color)
     }
 
     /// Tag koloru o nazwie z Findera („Czerwony") pokazany po angielsku; tag z własną
@@ -1634,13 +1697,12 @@ private final class PatchStepKeysNSView: NSView {
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window,
-              event.modifierFlags.intersection([.command, .control, .shift, .option]) == .option,
-              let direction = ArrowDirection.from(keyCode: event.keyCode),
-              direction == .up || direction == .down,
-              !(window.firstResponder is NSText)
+              !(window.firstResponder is NSText),
+              let stroke = KeyStroke(event: event),
+              let command = ShortcutStore.shared.command(for: stroke, in: .patchesPanel)
         else { return event }
         // Trzymany klawisz nie przewija: każdy krok wysyła do G2 cały patch.
-        if !event.isARepeat { step?(direction == .down) }
+        if !event.isARepeat { step?(command == .nextPatch) }
         return nil
     }
 }

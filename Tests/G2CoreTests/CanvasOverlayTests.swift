@@ -27,10 +27,7 @@ final class CanvasOverlayTests: XCTestCase {
 
     /// Numery klawiszy muszą się zgadzać z tabelą na str. 132.
     func testFunctionKeysMatchTheManual() {
-        XCTAssertEqual(CanvasOverlayMode.values.functionKey, 5)
-        XCTAssertEqual(CanvasOverlayMode.morphGroups.functionKey, 6)
-        XCTAssertEqual(CanvasOverlayMode.knobAssignments.functionKey, 7)
-        XCTAssertEqual(CanvasOverlayMode.midiControllers.functionKey, 8)
-        XCTAssertNil(CanvasOverlayMode.none.functionKey)
+        let commands: [ShortcutCommand] = [.showValues, .showMorphGroups, .showKnobs, .showMidi]
+        XCTAssertEqual(commands.map(\.defaultStroke?.display), ["F5", "F6", "F7", "F8"])
     }
 }

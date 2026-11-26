@@ -194,7 +194,10 @@ final class VirtualDeviceLauncher {
         // że to my go zamknęliśmy, i nie pokazuje alertu o „zatrzymaniu".
         isRunning = false
         process = nil
-        task.terminate()
+        // Jeden SIGTERM, tylko do opiekuna — on przekaże go programowi. `Process.terminate()` bije
+        // w całą grupę procesów, więc wirtualny G2 dostawał drugi sygnał i ginął bez zapisu banków
+        // (log kończył się na „Terminated: 15", pliki flash/EEPROM zostawały stare; 2026-11-19).
+        kill(task.processIdentifier, SIGTERM)
         task.waitUntilExit()
     }
 

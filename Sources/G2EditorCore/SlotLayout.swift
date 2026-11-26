@@ -42,14 +42,4 @@ public enum SlotLayout: String, CaseIterable, Sendable {
         case .windows: "Windows"
         }
     }
-
-    /// Klawisz skrótu w menu View (z ⌘⌥, jak szuflady). S — single, F — four rows,
-    /// D — detached windows; ⌘⌥W odpada, bo to systemowe „Close All".
-    public var shortcutKey: Character {
-        switch self {
-        case .single: "s"
-        case .fourRows: "f"
-        case .windows: "d"
-        }
-    }
 }

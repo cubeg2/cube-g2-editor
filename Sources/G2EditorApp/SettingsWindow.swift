@@ -2,7 +2,8 @@
 // Jedno okno ustawień z zakładkami, jak w Logic Pro (decyzja użytkownika 2026-10-15).
 // Zastępuje cztery arkusze: Options, Patch Settings, Performance Settings i Synth Settings.
 //
-// Okno jednego stałego rozmiaru, szerokie i niskie; stoi nad patchem jak panele.
+// Okno jednego stałego rozmiaru, szerokie i niskie; stoi nad patchem jak panele. Wyjątek:
+// Shortcuts — długa lista, więc okno staje u góry ekranu na całą jego wysokość (`fit`).
 // Zakładki w czterech grupach, rozdzielonych tą samą kreską co sekcje górnej belki:
 // edytor na tym Macu (General, Display, Connection, Shortcuts) | sam Nord (Synth) |
 // otwarty plik (Patch, Performance) | program (Updates, Feedback). Okno nie blokuje edytora — można grać i zmieniać.
@@ -66,6 +67,9 @@ final class SettingsSelection {
         didSet { UserDefaults.standard.set(tab.rawValue, forKey: Self.key) }
     }
 
+    /// Height of the Shortcuts page, set when the window takes the height of the screen.
+    var tallPageHeight = SettingsWindow.pageHeight
+
     init() {
         tab = UserDefaults.standard.string(forKey: Self.key).flatMap(SettingsTab.init) ?? .general
     }
@@ -85,7 +89,13 @@ enum SettingsWindow {
     /// co trzymały do wyjścia (jak `TrySendData` przy zamknięciu dialogu oryginału).
     static let willClose = Notification.Name("g2.settingsWindowWillClose")
 
+    static let identifier = NSUserInterfaceItemIdentifier("g2-settings")
+
     private static var window: NSWindow?
+    /// Where the window stood before the Shortcuts page moved it; `nil` = not moved.
+    private static var frameBeforeTall: NSRect?
+    /// Content height of the window on every other page.
+    private static var normalHeight: CGFloat = 0
     private static var delegate: Delegate?
     private static var activationObservers: [NSObjectProtocol] = []
     private static let selection = SettingsSelection()
@@ -95,7 +105,38 @@ enum SettingsWindow {
         if let tab { selection.tab = tab }
         if window == nil { makeWindow(state: state, device: device) }
         window?.title = selection.tab.title
+        let wasVisible = window?.isVisible == true
+        fit(to: selection.tab, animate: wasVisible)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// On Shortcuts the window stands at the top of the screen and takes its whole height,
+    /// keeping its place sideways; on the other pages it is back where it was (user request
+    /// 2026-11-26).
+    private static func fit(to tab: SettingsTab, animate: Bool) {
+        guard let window else { return }
+        guard tab == .shortcuts, let visible = (window.screen ?? NSScreen.main)?.visibleFrame else {
+            leaveTall(animate: animate)
+            return
+        }
+        if frameBeforeTall == nil {
+            frameBeforeTall = window.frame
+            // The tall frame must not become the remembered place of the window.
+            window.setFrameAutosaveName("")
+        }
+        var frame = window.frame
+        frame.origin.y = visible.minY
+        frame.size.height = visible.height
+        let content = window.contentRect(forFrameRect: frame).height
+        selection.tallPageHeight = max(pageHeight, content - (normalHeight - pageHeight))
+        window.setFrame(frame, display: true, animate: animate)
+    }
+
+    private static func leaveTall(animate: Bool) {
+        guard let window, let before = frameBeforeTall else { return }
+        frameBeforeTall = nil
+        window.setFrame(before, display: true, animate: animate)
+        window.setFrameAutosaveName(autosaveName)
     }
 
     /// Rozmiar treści okna — do sprawdzenia w `--snapshot-settings`, że okno nie
@@ -113,9 +154,13 @@ enum SettingsWindow {
     }
 
     private static func makeWindow(state: PatchState, device: DeviceConnection) {
-        let root = SettingsRoot(selection: selection, state: state, device: device,
-                                onTab: { Self.window?.title = $0.title })
-        let controller = NSHostingController(rootView: root)
+        let root = SettingsRoot(selection: selection, state: state, device: device, onTab: {
+            Self.window?.title = $0.title
+            Self.fit(to: $0, animate: true)
+        })
+        // Pinned to the top: while the window grows or shrinks the tab bar must not move.
+        let controller = NSHostingController(rootView: root
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
         controller.sizingOptions = []
         // `FloatingPanel` jak panele edytora: okno stoi NAD patchem — zwykłe okno chowało
         // się pod głównym przy każdym kliknięciu w kanwę (zgłoszenie 2026-10-15).
@@ -131,13 +176,21 @@ enum SettingsWindow {
         window.delegate = delegate
         self.window = window
         self.delegate = delegate
-        // Stały rozmiar — liczony raz z `sizeThatFits` (nie z `fittingSize`, który przy
+        window.identifier = identifier
+        // Stały rozmiar: pasek zakładek, kreska i strona. Liczony z samego paska, nie
+        // z `controller` — jego widok wypełnia całe okno (a `fittingSize` okna przy
         // wyłączonym `sizingOptions` oddawał prawie zero, #138).
-        window.setContentSize(controller.sizeThatFits(in: CGSize(width: contentWidth, height: 10000)))
+        let bar = NSHostingView(rootView: VStack(spacing: 0) {
+            SettingsTabBar(selection: selection)
+            Divider()
+        })
+        normalHeight = bar.fittingSize.height + pageHeight
+        let size = NSSize(width: contentWidth, height: normalHeight)
+        window.setContentSize(size)
         // Zapamiętujemy tylko MIEJSCE okna.
         if !window.setFrameUsingName(Self.autosaveName) { window.center() }
         window.setFrameAutosaveName(Self.autosaveName)
-        window.setContentSize(controller.sizeThatFits(in: CGSize(width: contentWidth, height: 10000)))
+        window.setContentSize(size)
         startWatchingActivation()
     }
 
@@ -160,6 +213,8 @@ enum SettingsWindow {
     private final class Delegate: NSObject, NSWindowDelegate {
         func windowWillClose(_: Notification) {
             NotificationCenter.default.post(name: SettingsWindow.willClose, object: nil)
+            // The next opening starts from the remembered place again.
+            SettingsWindow.leaveTall(animate: false)
         }
     }
 }
@@ -171,25 +226,30 @@ struct SettingsRoot: View {
     let device: DeviceConnection
     let onTab: (SettingsTab) -> Void
 
+    private var pageHeight: CGFloat {
+        selection.tab == .shortcuts ? selection.tallPageHeight : SettingsWindow.pageHeight
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             SettingsTabBar(selection: selection)
             Divider()
-            Self.page(selection.tab, state: state, device: device)
-                .frame(width: SettingsWindow.contentWidth, height: SettingsWindow.pageHeight,
-                       alignment: .top)
+            Self.page(selection.tab, state: state, device: device, height: pageHeight)
+                .frame(width: SettingsWindow.contentWidth, height: pageHeight, alignment: .top)
         }
         .fixedSize()
         .onChange(of: selection.tab) { onTab(selection.tab) }
     }
 
     @ViewBuilder
-    static func page(_ tab: SettingsTab, state: PatchState, device: DeviceConnection) -> some View {
+    static func page(_ tab: SettingsTab, state: PatchState, device: DeviceConnection,
+                     height: CGFloat = SettingsWindow.pageHeight) -> some View
+    {
         switch tab {
         case .general: GeneralSettingsTab()
         case .display: DisplaySettingsTab()
         case .connection: ConnectionSettingsTab(device: device)
-        case .shortcuts: ShortcutsSettingsTab()
+        case .shortcuts: ShortcutsSettingsTab(height: height)
         case .updates: UpdatesSettingsTab()
         case .feedback: FeedbackSettingsTab(device: device)
         case .synth: SynthSettingsTab(device: device)
@@ -318,14 +378,20 @@ enum SettingsSnapshot {
             SettingsWindow.show(.general, state: state, device: device)
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
             let general = SettingsWindow.contentSize ?? .zero
+            SettingsWindow.show(.shortcuts, state: state, device: device)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            let shortcuts = SettingsWindow.contentSize ?? .zero
             SettingsWindow.show(.patch, state: state, device: device)
             RunLoop.main.run(until: Date().addingTimeInterval(0.6))
             let patch = SettingsWindow.contentSize ?? .zero
             print("Okno: General \(Int(general.width))×\(Int(general.height)), "
+                + "Shortcuts \(Int(shortcuts.width))×\(Int(shortcuts.height)), "
                 + "Patch \(Int(patch.width))×\(Int(patch.height))")
             if !tooTall.isEmpty { print("❌ Za wysokie: \(tooTall.joined(separator: ", "))") }
+            // Shortcuts grows to the screen; every other page keeps the one size.
             let windowOK = general.width >= SettingsWindow.contentWidth
                 && general.height > SettingsWindow.pageHeight && general == patch
+                && shortcuts.height > general.height
             return windowOK && tooTall.isEmpty ? 0 : 1
         }
     }

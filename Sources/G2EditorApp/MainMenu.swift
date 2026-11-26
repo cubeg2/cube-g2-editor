@@ -165,6 +165,7 @@ struct MainMenuCommands: Commands {
                 guard let state else { return }
                 BuildingBlockInsert.insertFile(into: state, selections: selections)
             }
+            .shortcut(.insertPatchFile)
             .disabled(state?.isLoaded != true)
 
             Divider()
@@ -204,7 +205,7 @@ struct MainMenuCommands: Commands {
             // Ten sam picker co Open — akceptuje `.pch2` i `.prf2`. Oryginał ma osobne
             // okno wyboru performance'ów; u nas rozstrzyga rozszerzenie pliku.
             Button("Load Performance…") { fileOpen = true }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .shortcut(.loadPerformance)
                 .disabled(fileOpen == nil)
             FileMenuSavePerfButton(state: state)
             FileMenuSavePerfAsButton(state: state)
@@ -212,7 +213,7 @@ struct MainMenuCommands: Commands {
 
         // Edit — trzy grupy naraz, patrz `EditMenuCommands`. Osobno się nie zmieszczą:
         // `CommandsBuilder` przyjmuje najwyżej dziesięć członów w jednym `body`.
-        EditMenuCommands(state: state, canvas: canvas, selections: selections)
+        EditMenuCommands(state: state, device: device, canvas: canvas, selections: selections)
 
         // View — patrz `ViewMenuCommands`.
         ViewMenuCommands(state: state, canvas: canvas, panels: panels)
@@ -220,10 +221,10 @@ struct MainMenuCommands: Commands {
         // Patch — Clavia menu
         CommandMenu("Patch") {
             Button("Patch Settings") { state?.showPatchSettings = true }
-                .keyboardShortcut("p", modifiers: [.command])
+                .shortcut(.patchSettings)
                 .disabled(state == nil)
             Button("Notes (Textpad)") { state?.showPatchNotes = true }
-                .keyboardShortcut("j", modifiers: [.command])
+                .shortcut(.patchNotes)
                 .disabled(state == nil)
 
             Divider()
@@ -246,7 +247,7 @@ struct MainMenuCommands: Commands {
                 guard let state, let device else { return }
                 Task { await device.send(state, onlyFocusedSlot: true) }
             }
-            .keyboardShortcut("d", modifiers: [.command])
+            .shortcut(.sendToSlot)
             .disabled(state == nil || device?.status != .connected)
         }
 
@@ -254,7 +255,7 @@ struct MainMenuCommands: Commands {
         CommandMenu("Performance") {
             // Sekcja 0x11 istnieje tylko w plikach .prf2 — dla patcha nie ma czego pokazać.
             Button("Performance Settings") { state?.showPerformanceSettings = true }
-                .keyboardShortcut("r", modifiers: [.command])
+                .shortcut(.performanceSettings)
                 .disabled(!(state?.hasPerformanceSettings ?? false))
 
             PerformanceModeButton(device: device)
@@ -266,10 +267,10 @@ struct MainMenuCommands: Commands {
 
             Divider()
 
-            SlotSwitchButton(state: state, index: 0, label: "Slot: A", shortcut: "1")
-            SlotSwitchButton(state: state, index: 1, label: "Slot: B", shortcut: "2")
-            SlotSwitchButton(state: state, index: 2, label: "Slot: C", shortcut: "3")
-            SlotSwitchButton(state: state, index: 3, label: "Slot: D", shortcut: "4")
+            SlotSwitchButton(state: state, index: 0, command: .menuSlotA)
+            SlotSwitchButton(state: state, index: 1, command: .menuSlotB)
+            SlotSwitchButton(state: state, index: 2, command: .menuSlotC)
+            SlotSwitchButton(state: state, index: 3, command: .menuSlotD)
         }
 
         // Synth — Clavia menu
@@ -281,6 +282,7 @@ struct MainMenuCommands: Commands {
             // Zapis do banku prawdziwego Norda — od 2026-11-04, tylko tą drogą (jedno
             // miejsce wskazane przez użytkownika) → [[Docs/usb/bank-dump]].
             Button("Save In Synth…") { state?.showSaveInSynth = true }
+                .shortcut(.saveInSynth)
                 .disabled(state == nil || device?.status != .connected || device?.isBusy == true)
 
             Divider()
@@ -289,9 +291,11 @@ struct MainMenuCommands: Commands {
             // odwrotnie, z punktu widzenia komputera (decyzja użytkownika 2026-10-13).
             // Działa też z wirtualnym G2 — jego flash ma bank fabryczny (krok 2 bank-dump).
             Button("Download Banks from G2…") { state?.showBankUpload = true }
+                .shortcut(.downloadBanks)
                 .disabled(device?.status != .connected || device?.bankEntries.isEmpty != false)
             // Folder do jednego banku Norda — od 2026-11-04 (decyzja użytkownika).
             Button("Upload Banks to G2…") { state?.showBankDownload = true }
+                .shortcut(.uploadBanks)
                 .disabled(device?.status != .connected || device?.isBusy == true)
 
             Divider()
@@ -310,6 +314,7 @@ struct MainMenuCommands: Commands {
             // („…to Selection", „…from Selection") działają na zaznaczeniu, więc siedzą
             // w menu pod prawym przyciskiem nad modułem.
             Button("Deassign All MIDI") { state?.clearAllMidiControllers() }
+                .shortcut(.deassignAllMidi)
                 .disabled(state?.isLoaded != true)
 
             Divider()
@@ -411,7 +416,7 @@ private struct FileMenuNewButton: View {
             guard let device else { return }
             Task { await device.send(state, onlyFocusedSlot: kind != .performance, followDocument: true) }
         }
-        .keyboardShortcut("n", modifiers: modifiers)
+        .shortcut(kind == .patch ? .newPatch : .newPerformance)
         .disabled(state == nil)
     }
 
@@ -419,13 +424,6 @@ private struct FileMenuNewButton: View {
         switch kind {
         case .patch: "New Patch"
         case .performance: "New Performance"
-        }
-    }
-
-    private var modifiers: EventModifiers {
-        switch kind {
-        case .patch: [.command]
-        case .performance: [.command, .shift]
         }
     }
 }
@@ -454,7 +452,7 @@ private struct FileMenuOpenButton: View {
 
     var body: some View {
         Button("Open Patch…") { fileOpen = true }
-            .keyboardShortcut("o", modifiers: [.command])
+            .shortcut(.openPatch)
             .disabled(fileOpen == nil)
     }
 }
@@ -479,7 +477,7 @@ private struct FileMenuSaveButton: View {
                 SaveActions.save(state)
             }
         }
-        .keyboardShortcut("s", modifiers: [.command])
+        .shortcut(.save)
         .disabled(state?.isLoaded != true)
     }
 }
@@ -495,7 +493,7 @@ private struct FileMenuSaveAsButton: View {
             guard let state else { return }
             SaveActions.saveAs(state)
         }
-        .keyboardShortcut("s", modifiers: [.command, .shift])
+        .shortcut(.saveAs)
         .disabled(state?.isLoaded != true)
     }
 }
@@ -512,6 +510,7 @@ private struct DeleteUnusedModulesButton: View {
         Button(count > 0 ? "Delete Unused Modules (\(count))" : "Delete Unused Modules") {
             state?.deleteUnusedModules(area: area)
         }
+        .shortcut(.deleteUnusedModules)
         .disabled(count == 0)
     }
 }
@@ -552,6 +551,7 @@ private struct FileMenuSavePerfButton: View {
             guard let state else { return }
             SaveActions.savePerformance(state)
         }
+        .shortcut(.savePerformance)
         .disabled(state?.isLoaded != true)
     }
 }
@@ -566,6 +566,7 @@ private struct FileMenuSavePerfAsButton: View {
             guard let state else { return }
             SaveActions.savePerformanceAs(state)
         }
+        .shortcut(.savePerformanceAs)
         .disabled(state?.isLoaded != true)
     }
 }
@@ -580,7 +581,7 @@ private struct SynthSettingsButton: View {
 
     var body: some View {
         Button("Synth Settings…") { state?.showSynthSettings = true }
-            .keyboardShortcut("g", modifiers: [.command])
+            .shortcut(.synthSettings)
             .disabled(device?.synthSettings == nil)
     }
 }
@@ -604,7 +605,7 @@ private struct UploadActiveSlotButton: View {
                 state.selectedSlot = upload.slot
             }
         }
-        .keyboardShortcut("u", modifiers: [.command])
+        .shortcut(.getActiveSlot)
         .disabled(state == nil || device?.status != .connected || device?.isSending == true)
     }
 }
@@ -621,13 +622,14 @@ private struct MidiOutButtons: View {
             guard let state, let device else { return }
             Task { await device.sendControllerSnapshot(slot: state.selectedSlot) }
         }
+        .shortcut(.controllerSnapshot)
         .disabled(state == nil || !ready)
         .help("The G2 sends the current values of the knobs assigned to MIDI CCs out of its MIDI OUT.")
         Button("Dump One") {
             guard let device else { return }
             Task { await device.dumpOne() }
         }
-        .keyboardShortcut("1", modifiers: [.command, .shift])
+        .shortcut(.dumpOne)
         .disabled(!ready)
         .help("The G2 sends the patch in its active slot as SysEx out of its MIDI OUT.")
     }
@@ -644,6 +646,7 @@ private struct PerformanceModeButton: View {
                 Task { await device.setPerformanceMode(on) }
             }
         ))
+        .shortcut(.performanceMode)
         .disabled(device?.status != .connected)
     }
 }
@@ -734,7 +737,7 @@ private struct ZoomMenuButton: View {
             case .actualSize: canvas.requestZoom(CGFloat(standardZoom))
             }
         }
-        .keyboardShortcut(shortcut, modifiers: [.command])
+        .shortcut(command)
         .disabled(isDisabled(zoom: zoom))
     }
 
@@ -746,11 +749,11 @@ private struct ZoomMenuButton: View {
         }
     }
 
-    private var shortcut: KeyEquivalent {
+    private var command: ShortcutCommand {
         switch kind {
-        case .zoomIn: "="
-        case .zoomOut: "-"
-        case .actualSize: "0"
+        case .zoomIn: .zoomIn
+        case .zoomOut: .zoomOut
+        case .actualSize: .actualSize
         }
     }
 
@@ -782,7 +785,7 @@ private struct ZoomToFitMenuButton: View {
             )
             canvas.zoomToFit(contentSize: contentSize)
         }
-        .keyboardShortcut("0", modifiers: [.command, .shift])
+        .shortcut(.zoomToFit)
         .disabled(canvas == nil || state?.isLoaded != true)
     }
 }
@@ -800,11 +803,9 @@ private struct OverlayMenu: View {
                 Button {
                     canvas?.overlayMode = mode
                 } label: {
-                    if let key = mode.functionKey {
-                        Text(selected ? "✓ \(mode.title)  (F\(key))" : "\(mode.title)  (F\(key))")
-                    } else {
-                        Text(selected ? "✓ \(mode.title)" : mode.title)
-                    }
+                    // The key is handled by `EditorKeyboardShortcuts`, so the title names it.
+                    let key = ShortcutCommand.overlay(mode).flatMap { ShortcutStore.shared.stroke(for: $0) }
+                    Text((selected ? "✓ " : "") + mode.title + (key.map { "  (\($0.display))" } ?? ""))
                 }
             }
         }
@@ -819,7 +820,9 @@ private struct CablesMenu: View {
     var body: some View {
         Menu("Cables") {
             Button("Show All") { canvas?.showAllCables() }
+                .shortcut(.showAllCables)
             Button("Hide All") { canvas?.hideAllCables() }
+                .shortcut(.hideAllCables)
 
             Divider()
 
@@ -853,6 +856,7 @@ private struct PanelShadingToggle: View {
     var body: some View {
         Toggle("3D Buttons and Screens", isOn: $panelShading)
             .onChange(of: panelShading) { ModulePreviewCache.shared.redraw() }
+            .shortcut(.raisedButtons)
     }
 }
 
@@ -863,7 +867,7 @@ private struct ExtendedToolbarToggle: View {
 
     var body: some View {
         Toggle("Extended Toolbar", isOn: $extendedToolbar)
-            .keyboardShortcut("t", modifiers: [.command])
+            .shortcut(.extendedToolbar)
     }
 }
 
@@ -881,7 +885,7 @@ private struct SlotLayoutMenu: View {
                     get: { layoutRaw == layout.rawValue },
                     set: { _ in layoutRaw = layout.rawValue }
                 ))
-                .keyboardShortcut(KeyEquivalent(layout.shortcutKey), modifiers: [.command, .option])
+                .shortcut(ShortcutCommand.layout(layout))
             }
         }
         .disabled(state == nil)
@@ -921,7 +925,7 @@ private struct SidePanelMenu: View {
                 get: { panels?.isOpen(panel) == true },
                 set: { _ in panels?.toggle(panel) }
             ))
-            .keyboardShortcut(KeyEquivalent(panel.shortcutKey), modifiers: [.command, .option])
+            .shortcut(ShortcutCommand.panel(panel))
             .disabled(panels == nil)
         }
     }
@@ -930,22 +934,14 @@ private struct SidePanelMenu: View {
 private struct SlotSwitchButton: View {
     let state: PatchState?
     let index: Int
-    let label: String
-    let shortcut: KeyEquivalent
-
-    init(state: PatchState?, index: Int, label: String, shortcut: String) {
-        self.state = state
-        self.index = index
-        self.label = label
-        self.shortcut = KeyEquivalent(Character(shortcut))
-    }
+    let command: ShortcutCommand
 
     var body: some View {
         let isActive = state?.selectedSlot == index
-        Button(isActive ? "✓ \(label)" : label) {
+        Button(isActive ? "✓ \(command.title)" : command.title) {
             state?.selectedSlot = index
         }
-        .keyboardShortcut(shortcut, modifiers: [.command])
+        .shortcut(command)
         .disabled(state == nil)
     }
 }
@@ -958,13 +954,14 @@ private struct SlotSwitchButton: View {
 /// SwiftUI i nikim takim nie jest. Obie grupy podmieniamy na własne.
 private struct EditMenuCommands: Commands {
     let state: PatchState?
+    let device: DeviceConnection?
     let canvas: CanvasViewState?
     let selections: CanvasSelectionHub?
 
     var body: some Commands {
         CommandGroup(replacing: .undoRedo) {
-            UndoMenuButton(state: state, redo: false)
-            UndoMenuButton(state: state, redo: true)
+            UndoMenuButton(state: state, device: device, redo: false)
+            UndoMenuButton(state: state, device: device, redo: true)
         }
 
         CommandGroup(replacing: .pasteboard) {
@@ -988,20 +985,27 @@ private struct EditMenuCommands: Commands {
 /// przy każdej operacji — dzięki temu z menu widać, co dokładnie się cofnie.
 private struct UndoMenuButton: View {
     let state: PatchState?
+    /// Póki Nord przyjmuje albo oddaje patch, historia stoi: drugie ⌘Z w trakcie
+    /// wysyłki cofniętego patcha do niego by nie doszło.
+    let device: DeviceConnection?
     let redo: Bool
 
     var body: some View {
         // Odczyt licznika wiąże pozycję z historią undo — bez niego tytuł i wyszarzenie
         // zostawały na stanie sprzed kilku operacji (patrz `PatchState.undoRevision`).
+        // `let _`, bo w `body` (ViewBuilder) samo `_ =` się nie kompiluje.
+        // swiftlint:disable:next redundant_discardable_let
         let _ = state?.undoRevision
         let manager = state?.undoManager
         let possible = redo ? (manager?.canRedo ?? false) : (manager?.canUndo ?? false)
         let name = redo ? (manager?.redoActionName ?? "") : (manager?.undoActionName ?? "")
+        let busy = device?.acceptsPatchChange == false
         Button(title(name: name, possible: possible)) {
+            guard device?.acceptsPatchChange != false else { return }
             if redo { manager?.redo() } else { manager?.undo() }
         }
         .keyboardShortcut("z", modifiers: redo ? [.command, .shift] : [.command])
-        .disabled(!possible)
+        .disabled(!possible || busy)
     }
 
     private func title(name: String, possible: Bool) -> String {
@@ -1056,6 +1060,7 @@ private struct EditPasteboardCommands: View {
             guard let state, let selection else { return }
             BuildingBlockSave.save(from: state, area: area, moduleIDs: selection.targets)
         }
+        .shortcut(.saveSelectionAsBlock)
         .disabled(state?.isLoaded != true || selection?.isEmpty != false)
     }
 
@@ -1131,7 +1136,9 @@ private struct CopyVariationMenu: View {
     let state: PatchState?
 
     var body: some View {
-        let active = state?.patch.activeVariation ?? 0
+        // Nagłówek, nie `patch` — menu główne czytające patch budowało się od nowa
+        // przy każdym ruchu gałki (canvas-performance).
+        let active = state.map { $0.header(slot: $0.selectedSlot).activeVariation } ?? 0
         Menu("Copy Variation") {
             ForEach(0 ..< 8, id: \.self) { variation in
                 Button("To Variation \(variation + 1)") {

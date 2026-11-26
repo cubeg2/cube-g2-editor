@@ -37,11 +37,14 @@ public enum PluginAutomation {
         public var value: Double
         public var text: String
         public var name: String
+        /// Nazwa modułu osobno (gałki stron): wtyczka nie zgaduje podziału „Moduł Parametr” na spacji.
+        public var module: String
 
-        public init(value: Double, text: String, name: String = "") {
+        public init(value: Double, text: String, name: String = "", module: String = "") {
             self.value = value
             self.text = text
             self.name = name
+            self.module = module
         }
     }
 
@@ -91,7 +94,7 @@ public enum PluginAutomation {
         guard let target else { return Entry(value: 0, text: "", name: "") }
         let value = min(max(target.value, 0), target.maxValue)
         return Entry(value: target.maxValue > 0 ? Double(value) / Double(target.maxValue) : 0,
-                     text: target.text, name: target.name)
+                     text: target.text, name: target.name, module: target.module)
     }
 
     /// Na co wskazuje gałka strony — ta sama rozpiska co w oknie Parameter Pages

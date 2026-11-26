@@ -35,6 +35,44 @@ enum KeyEventScope {
         window.firstResponder is NSText || window.firstResponder is NSTextField
     }
 
+    /// ⌘X, ⌘C, ⌘V i ⌘A przy pisaniu w polu idą wprost do pola: monitor widzi klawisz, zanim
+    /// dostaną go niewidoczne przyciski kanwy i menu Edit, które mają te same skróty i
+    /// zajmują się modułami, a nie tekstem. Bez tego ⌘V w wyszukiwarce panelu Patches nic
+    /// nie wklejało, choć „Paste” z menu pod prawym klawiszem działało (zgłoszenie Kuby
+    /// 2026-11-17). `true` = pole przyjęło polecenie, zdarzenie ma zniknąć.
+    ///
+    /// ⌘Z i ⌘⇧Z działają tak samo: pozycje Undo / Redo w menu cofają patch (nasz stos
+    /// w `PatchState`), więc po wklejeniu do pola ⌘Z cofało patch zamiast wklejenia (zgłoszenie
+    /// Kuby 2026-11-17). Pole dostaje je tylko wtedy, gdy ma co cofnąć (lub ponowić); inaczej
+    /// skrót idzie dalej do patcha, żeby kursor stojący w pustym polu nie zabierał cofania.
+    @MainActor
+    static func forwardTextEditingShortcut(_ event: NSEvent, in window: NSWindow) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        guard isTyping(in: window) else { return false }
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if key == "z", flags == .command || flags == [.command, .shift] {
+            let redo = flags.contains(.shift)
+            if let manager = window.firstResponder?.undoManager, !(redo ? manager.canRedo : manager.canUndo) {
+                return false
+            }
+            return NSApp.sendAction(Selector(redo ? "redo:" : "undo:"), to: nil, from: nil)
+        }
+        guard flags == .command, let selector = textEditingSelector(for: key) else { return false }
+        return NSApp.sendAction(selector, to: nil, from: nil)
+    }
+
+    /// Polecenie edycji tekstu dla litery skrótu z ⌘; `nil` dla pozostałych liter.
+    static func textEditingSelector(for characters: String?) -> Selector? {
+        switch characters?.lowercased() {
+        case "x": #selector(NSText.cut(_:))
+        case "c": #selector(NSText.copy(_:))
+        case "v": #selector(NSText.paste(_:))
+        case "a": #selector(NSText.selectAll(_:))
+        default: nil
+        }
+    }
+
     private static func isTextOrList(_ view: NSView) -> Bool {
         view is NSTextView || view is NSTextField || view is NSTableView
     }

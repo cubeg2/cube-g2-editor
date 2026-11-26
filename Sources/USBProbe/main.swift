@@ -549,6 +549,14 @@ let saveSlotPath: String? = {
 /// `0x37` (drogą pewną, nie molekułami). Sprawdzane odczytem: czy w slocie leży patch
 /// o nazwie z listy banków.
 let bankTestSlot = slotArgument("--banktest-slot")
+/// `--loadperfbank <bank> <miejsce>` (od 1) — performance z banku do czterech slotów (`0x0A`, slot 4),
+/// z odczytem slotów i nagłówka. Nadpisuje wszystkie cztery sloty urządzenia — tylko wirtualny G2.
+let loadPerfBankTarget: (bank: Int, place: Int)? = {
+    guard let index = args.firstIndex(of: "--loadperfbank"), index + 2 < args.count,
+          let bank = Int(args[index + 1]), let place = Int(args[index + 2]) else { return nil }
+    return (bank, place)
+}()
+
 /// `--soak [ile] [--legacy-drain]` — obciążenie strumienia USB: pętla komend, które
 /// dostają odpowiedź, przy chodzących powiadomieniach. Liczy dwie usterki z #91:
 /// „stream mismatch" i „no acknowledgement". Domyślnie mierzy to, czym chodzi
@@ -1773,6 +1781,26 @@ do {
         print("  \"\(patch.name)\": fx \(patch.fxModules.count)m/\(patch.fxCables.count)k, "
             + "voice \(patch.voiceModules.count)m/\(patch.voiceCables.count)k, \(data.count) B")
         print("Wgrasz to z powrotem przez: swift run USBProbe --loadfile \(path) --slot \(letter)")
+    } else if let target = loadPerfBankTarget {
+        guard await manager.isEmulator else {
+            print("⛔ --loadperfbank nadpisuje cztery sloty — tylko z wirtualnym G2.")
+            exit(1)
+        }
+        let entries = try await manager.readBankList()
+        guard let entry = entries.first(where: {
+            $0.kind == .performance && $0.bank == target.bank - 1 && $0.patch == target.place - 1
+        }) else {
+            print("❌ Brak performance'u \(target.bank):\(target.place) na liście banków.")
+            exit(1)
+        }
+        print("\n--- LOADPERFBANK: \(entry.displayLocation) \"\(entry.name)\" → cztery sloty ---")
+        let result = try await manager.retrieveFromBank(
+            slot: 4, bank: entry.bank, patch: entry.patch, expectedName: entry.name
+        )
+        print("✅ Nagłówek: \"\(result.performance?.name ?? "?")\"")
+        for (slot, patch) in result.patches.enumerated() {
+            print("   slot \(slotLabel(slot)): \"\(patch.name)\" fx \(patch.fxModules.count)m, voice \(patch.voiceModules.count)m")
+        }
     } else if let slot = bankTestSlot {
         // `0x0A` — to samo, co PATCH LOAD na froncie Norda. Komenda NADPISUJE slot,
         // więc najpierw zrzut do pliku tymczasowego; przywracamy nim drogą `0x37`,
@@ -4266,6 +4294,16 @@ do {
         print("\nPowiadomień łącznie: \(entries.count)")
         for (sub, count) in histogram.sorted(by: { $0.key < $1.key }) {
             print(String(format: "    0x%02X × %d  %@", sub, count, subCommandName(sub)))
+        }
+
+        // Level meters (0x3A) and LEDs (0x39) per slot — which slots the device reports at all.
+        for sub in [G2UsbProtocol.subResponseVolumeData, G2UsbProtocol.subResponseLedData] {
+            let perSlot = Dictionary(grouping: entries.filter { $0.note.subCommand == sub }) { $0.note.slot }
+            for (slot, packets) in perSlot.sorted(by: { $0.key < $1.key }) {
+                let loudest = packets.flatMap { $0.note.payload.dropFirst() }.map { Int($0 & 0x0F) }.max() ?? 0
+                print(String(format: "    0x%02X slot %@ × %d, highest low nibble %d", sub,
+                             String(Character(UnicodeScalar(UInt8(65 + Int(slot))))), packets.count, loudest))
+            }
         }
 
         // Zegar główny osobno: 0x3F liczy się do strumieni, a 0x5D tonie w powodzi 0x40

@@ -7,7 +7,7 @@ Cube G2 Editor keeps the familiar layout and workflow of the original G2 editor,
 so patches look and behave the way G2 players know them, and runs natively on
 current Macs.
 
-> **Public beta 0.1.11.** It is developed and tested on a real G2, but it is still
+> **Public beta 0.1.12.** It is developed and tested on a real G2, but it is still
 > beta software that sends patches to your synth. **Back up your banks first**
 > (Synth ▸ Download Banks from G2…).
 >
@@ -54,7 +54,7 @@ only tells you; it never downloads or installs anything by itself.
   colors.
 - Four slots and performances, variations, morphs, parameter pages and the
   global knobs.
-- Module library with previews, cable chains, keyboard shortcuts.
+- Module library with previews, cable chains, keyboard shortcuts you can change.
 - Patch Mutator and Patch Adjuster for exploring new sounds.
 - Spectrum and X-Y plot from your audio interface inputs.
 - Backup of the G2's memory banks to your Mac.

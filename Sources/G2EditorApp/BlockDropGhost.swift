@@ -95,14 +95,39 @@ struct BlockDragPreview: View {
     }
 }
 
-/// Obciążenie obu obszarów po wstawieniu bloku — dla `BlockDragPreview`. Ustawia je
-/// panel Patches (zna patch i Norda), czyta wiersz bloku; `nil` = miernik wyłączony.
+/// Obciążenie obu obszarów slotu z focusem po wstawieniu bloku — dla `BlockDragPreview`:
+/// raport Norda, bez niego szacunek z tabeli kosztów, tak samo jak pasek pod modułem
+/// z palety. Ustawia je panel Patches, czyta wiersz bloku; `nil` = miernik wyłączony.
+///
+/// Wartość, nie domknięcie: domknięcia SwiftUI nie umie porównać, więc każda zmiana
+/// otoczenia (choćby ruch gałki na kanwie) przeliczała od nowa ~300 wierszy listy
+/// plików, które czytają tę wartość (zmierzone 2026-11-25) → [[Docs/ui/canvas-performance]].
+struct BlockLoadPreview: Equatable {
+    let state: PatchState
+    let device: DeviceConnection
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.state === rhs.state && lhs.device === rhs.device
+    }
+
+    @MainActor
+    func load(after block: G2Patch) -> (voice: G2PatchLoad?, fx: G2PatchLoad?) {
+        let slot = state.selectedSlot
+        func load(_ area: PatchArea) -> G2PatchLoad {
+            let now = device.patchLoad(slot: slot, area: area)
+                ?? .estimate(area: area, modules: state.patch.modules(in: area), cables: state.patch.cables(in: area))
+            return now.adding(block.modules(in: area))
+        }
+        return (load(.voice), load(.fx))
+    }
+}
+
 private struct BlockLoadPreviewKey: EnvironmentKey {
-    static let defaultValue: ((G2Patch) -> (voice: G2PatchLoad?, fx: G2PatchLoad?))? = nil
+    static let defaultValue: BlockLoadPreview? = nil
 }
 
 extension EnvironmentValues {
-    var blockLoadPreview: ((G2Patch) -> (voice: G2PatchLoad?, fx: G2PatchLoad?))? {
+    var blockLoadPreview: BlockLoadPreview? {
         get { self[BlockLoadPreviewKey.self] }
         set { self[BlockLoadPreviewKey.self] = newValue }
     }

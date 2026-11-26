@@ -50,6 +50,8 @@ struct SlotBarView: View {
     @FocusState private var nameFocused: Bool
     /// Tryb głosów w trakcie przeciągania okienka Voices — `nil`, gdy mysz puszczona.
     @State private var draggedVoiceMode: Int?
+    /// "Oct" between Variations and Morph Groups — Settings ▸ Display, hidden by default.
+    @AppStorage(OctaveShiftControl.storageKey) private var showOctaveShift = false
 
     /// Nagłówek patcha tego pasa — celowo NIE `state.slots[slot]`: pas czyta tylko
     /// to, co pokazuje, więc ruch gałki w module go nie budzi (patrz `SlotHeader`).
@@ -100,6 +102,12 @@ struct SlotBarView: View {
             topBarFlowDivider()
 
             VariationBarView(state: state, slot: slot)
+
+            if showOctaveShift {
+                topBarFlowDivider()
+
+                OctaveShiftControl(state: state, slot: slot)
+            }
 
             topBarFlowDivider()
 

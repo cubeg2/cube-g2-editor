@@ -10,6 +10,7 @@
 // kursor stanie nad wierszem (`summary(of:)`) — dla całego folderu byłoby to parsowanie
 // dziesiątek tysięcy plików. Wyszukiwanie po zawartości to osobne zadanie z planu.
 
+import AppKit
 import Foundation
 import G2Core
 import Observation
@@ -36,6 +37,21 @@ public struct FinderTag: Sendable, Equatable, Hashable {
     /// Angielska nazwa koloru tagu; tag bez koloru (lub spoza listy) — pusta.
     public var colorName: String {
         color > 0 && color < Self.colorNames.count ? Self.colorNames[color] : ""
+    }
+
+    /// Nazwa tagu do zapisania w pliku: z listy ulubionych tagów Findera użytkownika (`FavoriteTagNames`,
+    /// u niego po polsku: „Czerwony"…), żeby nadany tag był TYM SAMYM co w Finderze, a nie nowym „Red"
+    /// obok „Czerwony" — `NSWorkspace.fileLabels` daje angielskie nazwy nawet na polskim systemie.
+    /// Wspólne dla panelu Patches i mostu wtyczki.
+    public static func favouriteName(color: Int) -> String {
+        let rank = FinderTag(name: "", color: color).rainbowRank
+        if let favourites = UserDefaults(suiteName: "com.apple.finder")?.stringArray(forKey: "FavoriteTagNames"),
+           favourites.count == 8, !favourites[rank + 1].isEmpty
+        {
+            return favourites[rank + 1]
+        }
+        let labels = NSWorkspace.shared.fileLabels
+        return color < labels.count ? labels[color] : "Tag \(color)"
     }
 
     /// Pozycja w tęczy z menu Findera (czerwony → szary), bez koloru na końcu — po tym
@@ -70,6 +86,10 @@ public struct DiskBankItem: Sendable, Equatable, Identifiable {
     /// Kategoria patcha z pliku (`G2PatchCategory`); 0 = brak albo nieznana
     /// (performance, plik z iCloud, którego nie ma na dysku).
     public let category: Int
+    /// Data ostatniej zmiany atrybutów (tagi Findera też ją przestawiają) z chwili skanu —
+    /// razem z datą treści i rozmiarem mówi, że tagów i kategorii nie trzeba czytać od nowa.
+    /// `nil` = nieznana (pozycja poprawiona w miejscu), plik zostanie przeczytany.
+    public let attributesChanged: Date?
 
     public var id: String {
         url.path
@@ -77,8 +97,9 @@ public struct DiskBankItem: Sendable, Equatable, Identifiable {
 
     public init(
         url: URL, name: String, isPerformance: Bool, modified: Date, size: Int = 0,
-        relativeFolder: String, tags: [FinderTag] = [], category: Int = 0
+        relativeFolder: String, tags: [FinderTag] = [], category: Int = 0, attributesChanged: Date? = nil
     ) {
+        self.attributesChanged = attributesChanged
         self.category = category
         self.url = url
         self.name = name
@@ -198,10 +219,19 @@ public final class DiskBankLibrary {
     /// patchy z 2006 roku leży zwykle w jednym miejscu i nie przenosi się co sesję.
     public private(set) var folder: URL?
     public private(set) var items: [DiskBankItem] = [] {
-        didSet { rebuildTree() }
+        didSet { if !installingPreparedTree { rebuildTree() } }
     }
 
     public private(set) var isScanning = false
+    /// Ile plików skan już znalazł — wskaźnik ładowania pokazuje to, gdy lista jest pusta.
+    public private(set) var scanFound = 0
+
+    /// Gdzie trzymać pamięć skanów (`DiskBankScanCache`). Ustawia ją aplikacja przy starcie;
+    /// bez niej (testy) każdy skan czyta folder od zera i nic nie zapisuje.
+    public static var scanCacheDirectory: URL?
+
+    /// Lista z drzewem policzonym poza głównym wątkiem — `items` nie liczy go wtedy drugi raz.
+    @ObservationIgnored private var installingPreparedTree = false
 
     /// Plik podświetlony na liście — świeżo zapisany blok, żeby było widać, gdzie wylądował.
     public var highlightedFile: URL?
@@ -328,18 +358,44 @@ public final class DiskBankLibrary {
     /// Przegląda folder rekurencyjnie. Skan idzie poza głównym wątkiem — katalog
     /// z kilkoma tysiącami plików na wolnym dysku potrafi zająć sekundy, a panel
     /// ma w tym czasie zostać klikalny.
+    ///
+    /// Pierwszy skan w sesji najpierw pokazuje listę z poprzedniego (`DiskBankScanCache`),
+    /// a dysk sprawdza w tle: otwiera tylko pliki nowe albo zmienione. Drzewo folderów
+    /// też liczy się w tle — przy 100 tysiącach plików to sekunda pracy, której główny
+    /// wątek nie może robić (2026-11-25).
     public func scan() async {
         guard let folder, !isScanning else { return }
         isScanning = true
+        scanFound = 0
         defer { isScanning = false }
+        let cacheDirectory = Self.scanCacheDirectory
+
+        if items.isEmpty, let cacheDirectory {
+            let settings = treeSettings
+            let cached = await Task.detached(priority: .userInitiated) { () -> PreparedList? in
+                guard let items = DiskBankScanCache.load(folder: folder, directory: cacheDirectory),
+                      !items.isEmpty else { return nil }
+                return PreparedList(items: items, settings: settings)
+            }.value
+            if let cached, self.folder == folder { install(cached) }
+        }
 
         // Na listę czeka użytkownik, więc priorytet jak dla jego akcji — przy `.utility`
-        // skan dostaje słabsze rdzenie. Sortowanie też poza głównym wątkiem.
-        items = await Task.detached(priority: .userInitiated) { [limit = scanLimit] in
-            Self.scanFolder(folder, limit: limit).sorted { lhs, rhs in
-                lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        // skan dostaje słabsze rdzenie.
+        let known = items
+        let settings = treeSettings
+        let progress = ScanProgress { [weak self] count in
+            Task { @MainActor in self?.scanFound = count }
+        }
+        let prepared = await Task.detached(priority: .userInitiated) { [limit = scanLimit] in
+            let scanned = Self.scanFolder(folder, limit: limit, known: known, progress: progress)
+            if let cacheDirectory, scanned != known {
+                DiskBankScanCache.save(scanned, folder: folder, directory: cacheDirectory)
             }
+            return scanned == known ? nil : PreparedList(items: scanned, settings: settings)
         }.value
+        guard self.folder == folder else { return }
+        if let prepared { install(prepared) }
         // Urwany skan musi być widoczny: lista wygląda tak samo jak kompletna, a brakuje
         // w niej całych folderów — tych, do których enumerator doszedł za późno (#102).
         if items.count >= scanLimit {
@@ -353,14 +409,52 @@ public final class DiskBankLibrary {
         }
     }
 
+    /// Lista posortowana po nazwie razem z drzewem — liczone poza głównym wątkiem.
+    private struct PreparedList: Sendable {
+        let items: [DiskBankItem]
+        let tree: FolderTree
+        let categories: [Int]
+        let settings: TreeSettings
+
+        init(items: [DiskBankItem], settings: TreeSettings) {
+            self.items = items
+            self.settings = settings
+            (tree, categories) = DiskBankLibrary.buildTree(items, settings: settings)
+        }
+    }
+
+    private func install(_ prepared: PreparedList) {
+        installingPreparedTree = true
+        items = prepared.items
+        installingPreparedTree = false
+        // W międzyczasie mógł się zmienić filtr albo kolejność — wtedy drzewo od nowa.
+        if prepared.settings == treeSettings {
+            availableCategories = prepared.categories
+            tree = prepared.tree
+        } else {
+            rebuildTree()
+        }
+    }
+
+    /// Licznik znalezionych plików dla wskaźnika ładowania, wołany z wątku skanu.
+    private struct ScanProgress: Sendable {
+        let report: @Sendable (Int) -> Void
+    }
+
     /// Czysty przegląd katalogu — bez stanu, więc może biec poza głównym wątkiem.
+    /// `known` to lista z poprzedniego skanu: plik o tej samej dacie treści, dacie
+    /// atrybutów i rozmiarze bierze z niej tagi i kategorię bez otwierania.
     ///
     /// Zmierzone na 45 643 plikach (2026-10-25, #156): pytanie o iCloud przy KAŻDYM pliku
     /// brało 3,4 s z 5,2 s, więc zadajemy je tylko w folderze, który sam leży w iCloud — poza
-    /// nim pliki są na dysku. Tagi i 4 KB nagłówka czytamy na wszystkich rdzeniach naraz.
-    private nonisolated static func scanFolder(_ folder: URL, limit: Int) -> [DiskBankItem] {
+    /// nim pliki są na dysku. Na 109 601 plikach (2026-11-25): czytanie na wszystkich
+    /// rdzeniach naraz ~22 s, na czterech wątkach z jednym otwarciem pliku ~2,5 s.
+    private nonisolated static func scanFolder(_ folder: URL, limit: Int, known: [DiskBankItem],
+                                               progress: ScanProgress?) -> [DiskBankItem]
+    {
         let inCloud = (try? folder.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
-        var keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey, .fileSizeKey]
+        var keys: [URLResourceKey] = [.contentModificationDateKey, .attributeModificationDateKey,
+                                      .isRegularFileKey, .fileSizeKey]
         if inCloud {
             keys += [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
         }
@@ -373,18 +467,38 @@ public final class DiskBankLibrary {
         for case let url as URL in walker {
             guard urls.count < limit else { break }
             let ext = url.pathExtension.lowercased()
-            if ext == "pch2" || ext == "prf2" { urls.append(url) }
-        }
-
-        let base = folder.standardizedFileURL.path
-        var found = [DiskBankItem?](repeating: nil, count: urls.count)
-        found.withUnsafeMutableBufferPointer { buffer in
-            let slots = ScanSlots(buffer: buffer)
-            DispatchQueue.concurrentPerform(iterations: urls.count) { index in
-                slots.buffer[index] = item(at: urls[index], base: base, keys: keys)
+            if ext == "pch2" || ext == "prf2" {
+                urls.append(url)
+                if urls.count % 2000 == 0 { progress?.report(urls.count) }
             }
         }
-        return found.compactMap { $0 }
+        progress?.report(urls.count)
+
+        let base = folder.standardizedFileURL.path
+        let previous = Dictionary(known.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var found = [DiskBankItem?](repeating: nil, count: urls.count)
+        // Cztery wątki, każdy na swoim kawałku listy. Więcej nie przyspiesza: system plików
+        // blokuje równoległe odczyty, a przy wątku na plik skan był kilka razy wolniejszy.
+        let workers = min(4, max(1, urls.count / 500))
+        let chunk = (urls.count + workers - 1) / max(workers, 1)
+        found.withUnsafeMutableBufferPointer { buffer in
+            let slots = ScanSlots(buffer: buffer)
+            DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                let range = (worker * chunk) ..< min(urls.count, (worker + 1) * chunk)
+                for index in range {
+                    slots.buffer[index] = item(at: urls[index], base: base, keys: keys, previous: previous)
+                }
+            }
+        }
+        let items = found.compactMap { $0 }
+        // Ten sam komplet plików co poprzednio = ta sama kolejność; sortowanie 100 tysięcy
+        // nazw to sekunda.
+        if items.count == known.count {
+            let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let ordered = known.compactMap { byID[$0.id] }
+            if ordered.count == items.count { return ordered }
+        }
+        return items.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     /// Wyniki skanu zapisywane z wielu wątków naraz — każdy pisze wyłącznie do swojej
@@ -394,21 +508,38 @@ public final class DiskBankLibrary {
     }
 
     /// Jeden plik z dysku jako pozycja listy; `nil` dla czegoś, co tylko nazywa się `.pch2`.
-    private nonisolated static func item(at url: URL, base: String, keys: [URLResourceKey]) -> DiskBankItem? {
+    private nonisolated static func item(at url: URL, base: String, keys: [URLResourceKey],
+                                         previous: [String: DiskBankItem]) -> DiskBankItem?
+    {
         let values = try? url.resourceValues(forKeys: Set(keys))
         guard values?.isRegularFile != false else { return nil }
+        let modified = values?.contentModificationDate ?? .distantPast
+        let size = values?.fileSize ?? 0
+        let changed = values?.attributeModificationDate
+        if let old = previous[url.path], changed != nil, old.attributesChanged == changed,
+           old.modified == modified, old.size == size
+        {
+            return old
+        }
         let ext = url.pathExtension.lowercased()
         let parent = url.deletingLastPathComponent().standardizedFileURL.path
         let relative = parent.hasPrefix(base) ? String(parent.dropFirst(base.count)) : parent
+        let local = isLocal(values)
+        // Plik tylko w chmurze: tagi z atrybutów po ścieżce, bez otwierania (otwarcie by go
+        // ściągało); na dysku — jedno otwarcie na tagi i nagłówek.
+        let contents = local
+            ? DiskBankFileReader.read(url, readCategory: ext == "pch2")
+            : DiskBankFileReader.Contents(tags: finderTags(at: url), category: 0)
         return DiskBankItem(
             url: url,
             name: url.deletingPathExtension().lastPathComponent,
             isPerformance: ext == "prf2",
-            modified: values?.contentModificationDate ?? .distantPast,
-            size: values?.fileSize ?? 0,
+            modified: modified,
+            size: size,
             relativeFolder: relative.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-            tags: finderTags(at: url),
-            category: ext == "pch2" && isLocal(values) ? patchCategory(at: url) : 0
+            tags: contents.tags,
+            category: contents.category,
+            attributesChanged: changed
         )
     }
 
@@ -419,15 +550,6 @@ public final class DiskBankLibrary {
         return values?.ubiquitousItemDownloadingStatus == .current
     }
 
-    /// Kategoria z początku pliku — sekcja opisu leży zaraz za nagłówkiem tekstowym,
-    /// więc 4 KB wystarcza z zapasem.
-    private nonisolated static func patchCategory(at url: URL) -> Int {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return 0 }
-        defer { try? handle.close() }
-        guard let head = try? handle.read(upToCount: 4096) else { return 0 }
-        return PatchParser.category(ofPatchFileHead: head) ?? 0
-    }
-
     /// Tagi Findera. Dwie drogi, bo na dysku bywają obie:
     ///   • `com.apple.metadata:_kMDItemUserTags` — lista `Nazwa\nKolor`, tak zapisuje
     ///     Finder od Mavericks; `URLResourceKey.tagNamesKey` dałby same nazwy, bez koloru;
@@ -435,7 +557,13 @@ public final class DiskBankLibrary {
     ///     z biblioteki zsynchronizowanej przez iCloud mają TYLKO ją (sprawdzone
     ///     2026-09-16 na `Ptches pch2 i prf2/…/Drum`), numeracja kolorów ta sama.
     nonisolated static func finderTags(at url: URL) -> [FinderTag] {
-        if let data = extendedAttribute("com.apple.metadata:_kMDItemUserTags", at: url),
+        finderTags(userTags: extendedAttribute("com.apple.metadata:_kMDItemUserTags", at: url),
+                   finderInfo: extendedAttribute("com.apple.FinderInfo", at: url))
+    }
+
+    /// Tagi z surowych atrybutów (`DiskBankFileReader` czyta je przez otwarty plik).
+    nonisolated static func finderTags(userTags: Data?, finderInfo: Data?) -> [FinderTag] {
+        if let data = userTags,
            let entries = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String],
            !entries.isEmpty
         {
@@ -445,7 +573,7 @@ public final class DiskBankLibrary {
                 return FinderTag(name: parts.first.map(String.init) ?? entry, color: color)
             }
         }
-        if let info = extendedAttribute("com.apple.FinderInfo", at: url), info.count >= 10 {
+        if let info = finderInfo, info.count >= 10 {
             let color = Int(info[9] >> 1) & 7
             if color > 0 {
                 return [FinderTag(name: FinderTag.colorNames[color], color: color)]
@@ -545,6 +673,16 @@ public final class DiskBankLibrary {
         ))
     }
 
+    /// Tagi zmieniła inna biblioteka (np. most wtyczki DAW) i plik już je ma — poprawiamy tylko listę
+    /// w pamięci, bez zapisu i bez skanu. Pliku spoza tej listy nie dotyka.
+    public func updateTags(_ tags: [FinderTag], at url: URL) {
+        guard let item = items.first(where: { $0.url == url }), item.tags != tags else { return }
+        replace(item, with: DiskBankItem(
+            url: item.url, name: item.name, isPerformance: item.isPerformance, modified: item.modified,
+            size: item.size, relativeFolder: item.relativeFolder, tags: tags, category: item.category
+        ))
+    }
+
     /// Zmienia nazwę pliku (bez rozszerzenia — to zostaje). Ukośnik w nazwie zrobiłby folder.
     public func rename(_ item: DiskBankItem, to name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
@@ -566,7 +704,26 @@ public final class DiskBankLibrary {
 
     private func replace(_ old: DiskBankItem, with new: DiskBankItem) {
         guard let index = items.firstIndex(where: { $0.id == old.id }) else { return }
-        items[index] = new
+        guard new.name != old.name else {
+            items[index] = new
+            return
+        }
+        // Lista trzyma kolejność po nazwie — drzewo przy sortowaniu po nazwie już jej nie
+        // poprawia (`buildTree`), więc nowa nazwa wchodzi od razu na swoje miejsce.
+        var list = items
+        list.remove(at: index)
+        var low = 0
+        var high = list.count
+        while low < high {
+            let mid = (low + high) / 2
+            if list[mid].name.localizedStandardCompare(new.name) == .orderedAscending {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        list.insert(new, at: low)
+        items = list
     }
 
     // MARK: - Sortowanie
@@ -639,16 +796,35 @@ public final class DiskBankLibrary {
     /// filtrowało i sortowało wszystko od nowa — SwiftUI woła to przy KAŻDYM
     /// przerysowaniu panelu, więc koszt mnożył się przez liczbę folderów. Zmierzone na
     /// 20 000 plików: 221 ms na przerysowanie, czyli kółeczko bez końca → #103.
-    private struct FolderTree {
+    private struct FolderTree: Sendable {
         var children: [String: [String]] = [:]
         var files: [String: [DiskBankItem]] = [:]
         var counts: [String: Int] = [:]
     }
 
+    /// To, od czego zależy drzewo poza samymi plikami: filtr i kolejność.
+    private struct TreeSettings: Sendable, Equatable {
+        var showsPatches: Bool
+        var showsPerformances: Bool
+        var categoryFilter: Int?
+        var sortOrder: DiskBankSort
+        var sortReversed: Bool
+
+        func passes(_ item: DiskBankItem) -> Bool {
+            (item.isPerformance ? showsPerformances : showsPatches)
+                && (categoryFilter.map { item.category == $0 } ?? true)
+        }
+    }
+
+    private var treeSettings: TreeSettings {
+        TreeSettings(showsPatches: showsPatches, showsPerformances: showsPerformances,
+                     categoryFilter: categoryFilter, sortOrder: sortOrder, sortReversed: sortReversed)
+    }
+
     private var tree = FolderTree()
 
     /// Ścieżka i wszystkie jej nadrzędne, od katalogu głównego: `A/B` → `["", "A", "A/B"]`.
-    private static func ancestry(of path: String) -> [String] {
+    private nonisolated static func ancestry(of path: String) -> [String] {
         guard !path.isEmpty else { return [""] }
         var result = [""]
         var current = ""
@@ -660,36 +836,49 @@ public final class DiskBankLibrary {
     }
 
     private func rebuildTree() {
+        (tree, availableCategories) = Self.buildTree(items, settings: treeSettings)
+    }
+
+    /// Drzewo folderów i kategorie z listy — bez stanu, więc skan liczy je w tle.
+    private nonisolated static func buildTree(_ items: [DiskBankItem],
+                                              settings: TreeSettings) -> (FolderTree, [Int])
+    {
         var tree = FolderTree()
         var children: [String: Set<String>] = [:]
-        availableCategories = Set(items.map(\.category)).filter { $0 > 0 }.sorted {
+        let categories = Set(items.map(\.category)).filter { $0 > 0 }.sorted {
             G2PatchCategory.name($0).localizedStandardCompare(G2PatchCategory.name($1)) == .orderedAscending
         }
         // Filtr działa już na drzewie: foldery bez pasującego pliku znikają, a liczby przy
         // nazwach liczą tylko to, co widać.
-        for item in items where passesFilter(item) {
+        for item in items where settings.passes(item) {
             tree.files[item.relativeFolder, default: []].append(item)
-            let chain = Self.ancestry(of: item.relativeFolder)
-            for (depth, folder) in chain.enumerated() {
-                tree.counts[folder, default: 0] += 1
+        }
+        // Piętra wyżej liczone raz na FOLDER, nie na plik — folderów są tysiące, plików
+        // ponad sto tysięcy (biblioteka Kuby, 2026-11-25).
+        for (folder, files) in tree.files {
+            let chain = ancestry(of: folder)
+            for (depth, ancestor) in chain.enumerated() {
+                tree.counts[ancestor, default: 0] += files.count
                 if depth + 1 < chain.count {
                     let child = chain[depth + 1]
-                    let name = folder.isEmpty ? child : String(child.dropFirst(folder.count + 1))
-                    children[folder, default: []].insert(name)
+                    let name = ancestor.isEmpty ? child : String(child.dropFirst(ancestor.count + 1))
+                    children[ancestor, default: []].insert(name)
                 }
             }
         }
         for (folder, names) in children {
             tree.children[folder] = names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         }
+        // Lista przychodzi już po nazwie (skan i pamięć skanu), więc przy kolejności po
+        // nazwie wystarczy ją zostawić albo odwrócić.
         for (folder, files) in tree.files {
-            tree.files[folder] = Self.sorted(files, by: sortOrder, reversed: sortReversed)
+            switch (settings.sortOrder, settings.sortReversed) {
+            case (.name, false): break
+            case (.name, true): tree.files[folder] = files.reversed()
+            default: tree.files[folder] = sorted(files, by: settings.sortOrder, reversed: settings.sortReversed)
+            }
         }
-        self.tree = tree
-    }
-
-    private func passesFilter(_ item: DiskBankItem) -> Bool {
-        showsKind(performance: item.isPerformance) && (categoryFilter.map { item.category == $0 } ?? true)
+        return (tree, categories)
     }
 
     /// Podfoldery leżące BEZPOŚREDNIO w `path`, po nazwie.
@@ -720,7 +909,8 @@ public final class DiskBankLibrary {
     /// liter i znaków diakrytycznych. Wynik w bieżącej kolejności.
     public func items(matching query: String) -> [DiskBankItem] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        let shown = items.filter(passesFilter)
+        let settings = treeSettings
+        let shown = items.filter(settings.passes)
         guard !trimmed.isEmpty else { return Self.sorted(shown, by: sortOrder, reversed: sortReversed) }
         return Self.sorted(shown.filter {
             $0.name.localizedCaseInsensitiveContains(trimmed)
