@@ -20,6 +20,9 @@ current Macs.
 **[Download the latest release](https://github.com/cubeg2/cube-g2-editor/releases/latest)**
 (`Cube-G2-Editor-<version>-beta.dmg`)
 
+📄 **Shortcuts & Tricks:** a free four-page PDF with keyboard shortcuts and tips.
+[Join the Cube G2 Discord](https://discord.gg/2kUhfYRa2t) to download it.
+
 What changed in each version: [release notes](Sources/G2EditorApp/Resources/ReleaseNotes.md)
 (also in the app, under Settings ▸ Updates).
 

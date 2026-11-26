@@ -1,6 +1,8 @@
 ## 0.1.12 — November 26, 2026
 **Big performance update, Sequence Editor upgrades and more.**
 
+📄 **Shortcuts & Tricks:** a free four-page PDF with keyboard shortcuts and tips. [Join the Cube G2 Discord](https://discord.gg/2kUhfYRa2t) to download it.
+
 **Faster and smoother:**
 - **Knobs follow the mouse on large patches.** The lag, and knobs that kept turning after you let go, are gone.
 - **No more slowing down during long sessions.** The editor was piling up background work with every change to the patch.
