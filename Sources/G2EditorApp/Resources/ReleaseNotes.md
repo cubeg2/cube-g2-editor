@@ -27,7 +27,7 @@
 - **Light mode** is easier to read: visible sections, light faders and a darker playhead.
 
 **Other changes:**
-- **Slot meters.** A level meter under each slot button A–D shows which slots are actually sounding, not only which are switched on (with a G2 or a Virtual G2 connected).
+- **Slot meters.** A level meter under each slot button A–D shows which slots are actually sounding, not only which are switched on (with a G2 connected).
 - **Drag a patch onto a slot.** Drag a patch from the Patches panel (Disk or the G2 banks) onto a slot button A–D, or onto the patch itself, to load it into that slot. A `.pch2` file dragged from Finder onto a slot button goes into that slot too. ⌘Z takes it back, and a slot that was silent goes silent again.
 - **Empty slots open switched off.** Opening a `.prf2` no longer lights the buttons of slots that hold no modules, and does not ask you to save for that.
 - **Oct** in the slot bar, between Variations and Morph Groups: the patch's Octave Shift with − and + and five LEDs, as on the keyboard's front panel. Handy on the G2 Engine, which has no such buttons. Off by default: turn it on in Settings ▸ Display.
